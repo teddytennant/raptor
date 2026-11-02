@@ -1,0 +1,19 @@
+/target
+.DS_Store
+
+# Android: built by scripts/build-android.sh
+apps/android/.gradle/
+apps/android/.kotlin/
+apps/android/local.properties
+apps/android/**/build/
+apps/android/app/src/main/jniLibs/
+apps/android/app/src/main/java/uniffi/
+
+# iOS: built by scripts/build-apple.sh and xcodegen
+apps/ios/ShrewKit/.build/
+apps/ios/ShrewKit/.swiftpm/
+apps/ios/ShrewKit/ShrewFFI.xcframework/
+apps/ios/ShrewKit/Sources/ShrewKit/Generated/
+apps/ios/Shrew.xcodeproj/
+xcuserdata/
+DerivedData/

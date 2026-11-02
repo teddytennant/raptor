@@ -1,0 +1,355 @@
+package dev.shrew.app.ui
+
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import dev.shrew.app.ShrewApplication
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import uniffi.shrew_ffi.AgentState
+import uniffi.shrew_ffi.AttentionItem
+import uniffi.shrew_ffi.Block
+import uniffi.shrew_ffi.Connectivity
+import uniffi.shrew_ffi.Server
+import uniffi.shrew_ffi.Session
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun HomeScreen(
+    onOpenSession: (serverId: String, sessionId: String, blockId: String?) -> Unit,
+    onAddServer: () -> Unit,
+    onEditServer: (Server) -> Unit,
+) {
+    val app = ShrewApplication.instance
+    val state by app.state.collectAsState()
+    var refreshing by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val needs = state.attention.filter { it.block.agent?.state == AgentState.BLOCKED || it.block.agent?.state == AgentState.ERROR }
+
+    Column(Modifier.fillMaxSize().background(Ink.bg).statusBarsPadding()) {
+        Row(Modifier.fillMaxWidth().height(56.dp).padding(start = 20.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Shrew", style = MaterialTheme.typography.titleLarge, color = Ink.text, modifier = Modifier.weight(1f))
+            IconButton(onClick = onAddServer) { Icon(Icons.Default.Add, "Add server", tint = Ink.text) }
+        }
+        PullToRefreshBox(
+            isRefreshing = refreshing,
+            onRefresh = {
+                refreshing = true
+                state.servers.forEach { app.core.reconnect(it.id) }
+                scope.launch { delay(600); refreshing = false }
+            },
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            if (state.servers.isEmpty()) {
+                EmptyState(onAddServer)
+                return@PullToRefreshBox
+            }
+            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 32.dp)) {
+                if (needs.isNotEmpty()) {
+                    item { Header("Needs you") }
+                    items(needs, key = { "n" + it.serverId + it.block.id }) { NeedsRow(it) { onOpenSession(it.serverId, it.sessionId, it.block.id) } }
+                }
+                for (srv in state.servers) {
+                    item(key = "s" + srv.id) { ServerHeader(srv, onEditServer) { sid -> onOpenSession(srv.id, sid, null) } }
+                    if (srv.connectivity is Connectivity.Online && srv.sessions.isEmpty()) {
+                        item(key = "e" + srv.id) {
+                            Text("No sessions", color = Ink.tertiary, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
+                        }
+                    }
+                    items(srv.sessions, key = { srv.id + it.id }) { s ->
+                        SessionRow(srv, s) { onOpenSession(srv.id, s.id, null) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun Header(text: String, trailing: @Composable (() -> Unit)? = null) {
+    Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 20.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(text.uppercase(), style = MaterialTheme.typography.labelMedium, color = Ink.tertiary, modifier = Modifier.weight(1f))
+        trailing?.invoke()
+    }
+}
+
+/** What a row says under its title: where it is and what's running. */
+internal fun detail(b: Block?): String {
+    if (b == null) return ""
+    return listOfNotNull(b.shortPwd.takeIf { it.isNotEmpty() }, runningName(b)).distinct().joinToString(" · ")
+}
+
+/** What's running, in words a person would use. Shells and junk names (some tools
+ *  rename their process to a version number) fall back to the terminal title. */
+internal fun runningName(b: Block): String? {
+    val shells = setOf("bash", "zsh", "fish", "sh", "nu", "dash", "ksh", "tcsh", "login")
+    val p = b.process.trim()
+    val junk = p.isEmpty() || p.none { it.isLetter() } || p in shells
+    val title = b.name.trim().takeIf { it.isNotEmpty() && it != b.shortPwd && it !in shells && it.any { c -> c.isLetter() } }
+    return when {
+        !junk -> p
+        title != null -> title
+        p in shells -> p
+        else -> null
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun SessionRow(srv: Server, s: Session, onOpen: () -> Unit) {
+    val app = ShrewApplication.instance
+    val st = LocalStatus.current
+    val scope = rememberCoroutineScope()
+    var menu by remember { mutableStateOf(false) }
+    var renaming by remember { mutableStateOf(false) }
+    val active = s.windows.firstOrNull { it.id == s.activeWindowId } ?: s.windows.firstOrNull()
+    val focused = active?.blocks?.firstOrNull { it.id == active.focusedBlockId } ?: active?.blocks?.firstOrNull()
+    val online = srv.connectivity is Connectivity.Online
+    val agent = s.agentState?.takeIf { it != AgentState.IDLE }
+
+    Box {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .combinedClickable(enabled = online, onClick = onOpen, onLongClick = { menu = true })
+                .padding(horizontal = 20.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Tile(glyph(focused), Modifier.size(36.dp))
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(s.label, color = if (online) Ink.text else Ink.tertiary, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                    if (agent != null) {
+                        Spacer(Modifier.width(8.dp))
+                        Box(Modifier.size(7.dp).clip(CircleShape).background(st.agent(agent)))
+                    }
+                }
+                val d = detail(focused)
+                if (d.isNotEmpty()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(d, style = MonoSmall, color = Ink.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            val panes = s.blockCount.toInt()
+            if (s.windows.size > 1 || panes > 1) {
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    if (s.windows.size > 1) "${s.windows.size}" else "$panes",
+                    style = MonoSmall,
+                    color = Ink.secondary,
+                    modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(Ink.raised).padding(horizontal = 7.dp, vertical = 2.dp),
+                )
+            }
+        }
+        DropdownMenu(menu, { menu = false }) {
+            DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; renaming = true })
+            DropdownMenuItem(text = { Text("New window") }, onClick = {
+                menu = false
+                scope.launch { runCatching { app.core.newWindow(srv.id, s.id) } }
+            })
+            DropdownMenuItem(text = { Text("End session", color = MaterialTheme.colorScheme.error) }, onClick = {
+                menu = false
+                scope.launch { runCatching { app.core.destroySession(srv.id, s.id) } }
+            })
+        }
+    }
+    HorizontalDivider(Modifier.padding(start = 70.dp), color = Ink.hairline)
+    if (renaming) RenameDialog(s.label, onDismiss = { renaming = false }) { name ->
+        renaming = false
+        scope.launch { runCatching { app.core.renameSession(srv.id, s.id, name) } }
+    }
+}
+
+@Composable
+private fun RenameDialog(current: String, onDismiss: () -> Unit, onDone: (String) -> Unit) {
+    var name by remember { mutableStateOf(current) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Rename session") },
+        text = { OutlinedTextField(name, { name = it }, singleLine = true) },
+        confirmButton = { TextButton(onClick = { onDone(name.trim()) }, enabled = name.isNotBlank()) { Text("Rename") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        containerColor = Ink.raised,
+    )
+}
+
+@Composable
+private fun ServerHeader(srv: Server, onEdit: (Server) -> Unit, onCreated: (String) -> Unit) {
+    val app = ShrewApplication.instance
+    val scope = rememberCoroutineScope()
+    var menu by remember { mutableStateOf(false) }
+    val st = LocalStatus.current
+    val (dot, status) = when (val c = srv.connectivity) {
+        is Connectivity.Online -> st.online to (srv.latencyMs?.let { "${it} ms" } ?: "")
+        is Connectivity.Connecting -> st.connecting to "connecting"
+        is Connectivity.Offline -> st.error to "offline"
+        is Connectivity.Idle -> st.offline to ""
+    }
+    Column {
+        Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 4.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(6.dp).clip(CircleShape).background(dot))
+            Spacer(Modifier.width(8.dp))
+            Text(srv.name, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Ink.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            Text(status, style = MonoSmall.copy(fontSize = 11.sp), color = Ink.tertiary)
+            if (srv.connectivity is Connectivity.Online) {
+                IconButton(onClick = { scope.launch { runCatching { app.core.createSession(srv.id, null) }.onSuccess(onCreated) } }) {
+                    Icon(Icons.Default.Add, "New session", tint = Ink.secondary, modifier = Modifier.size(20.dp))
+                }
+            }
+            Box {
+                IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Server options", tint = Ink.tertiary, modifier = Modifier.size(20.dp)) }
+                DropdownMenu(menu, { menu = false }) {
+                    DropdownMenuItem(text = { Text("Edit") }, onClick = { menu = false; onEdit(srv) })
+                    DropdownMenuItem(text = { Text("Reconnect") }, onClick = { menu = false; app.core.reconnect(srv.id) })
+                    DropdownMenuItem(text = { Text("Remove", color = MaterialTheme.colorScheme.error) }, onClick = { menu = false; app.core.removeServer(srv.id) })
+                }
+            }
+        }
+        if (srv.connectivity is Connectivity.Offline) {
+            Row(Modifier.padding(start = 34.dp, end = 20.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text((srv.connectivity as Connectivity.Offline).error, color = Ink.secondary, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                TextButton(onClick = { app.core.reconnect(srv.id) }) { Text("Retry") }
+            }
+        }
+        HorizontalDivider(color = Ink.hairline)
+    }
+}
+
+/** An agent waiting on you: what it said, the last few lines, and a reply box. */
+@Composable
+private fun NeedsRow(item: AttentionItem, onOpen: () -> Unit) {
+    val app = ShrewApplication.instance
+    val st = LocalStatus.current
+    val a = item.block.agent ?: return
+    val color = st.agent(a.state)
+    var reply by remember { mutableStateOf("") }
+    var preview by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(item.block.id, a.updatedAt) {
+        preview = runCatching { app.core.previewText(item.serverId, item.sessionId, item.block.id) }.getOrNull()
+            ?.lines()?.map { it.trimEnd() }?.filter { it.isNotBlank() }?.takeLast(4)?.joinToString("\n")
+    }
+    fun send() {
+        val t = reply
+        if (t.isEmpty()) return
+        reply = ""
+        scope.launch { runCatching { app.core.quickReply(item.serverId, item.sessionId, item.block.id, t + "\r") } }
+    }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Ink.surface)
+            .combinedClickable(onClick = onOpen)
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(7.dp).clip(CircleShape).background(color))
+            Spacer(Modifier.width(8.dp))
+            Text(a.app.ifEmpty { item.block.name }, color = Ink.text, fontWeight = FontWeight.Medium, fontSize = 15.sp)
+            Spacer(Modifier.width(8.dp))
+            Text(agentLabel(a), color = color, fontSize = 13.sp)
+            Spacer(Modifier.weight(1f))
+            Text(item.sessionLabel, style = MonoSmall, color = Ink.tertiary, maxLines = 1)
+        }
+        val msg = a.message.ifEmpty { a.title }
+        if (msg.isNotEmpty()) Text(msg, color = Ink.text, fontSize = 14.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+        preview?.takeIf { it.isNotEmpty() }?.let {
+            Text(it, style = MonoSmall, color = Ink.secondary, maxLines = 4, modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Ink.terminal).padding(10.dp))
+        }
+        Row(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Ink.raised).padding(start = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.weight(1f)) {
+                if (reply.isEmpty()) Text("Reply", color = Ink.tertiary, fontSize = 14.sp)
+                BasicTextField(
+                    reply,
+                    { reply = it },
+                    singleLine = true,
+                    textStyle = TextStyle(color = Ink.text, fontSize = 14.sp, fontFamily = Mono),
+                    cursorBrush = SolidColor(Ink.accent),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send, autoCorrectEnabled = false),
+                    keyboardActions = KeyboardActions(onSend = { send() }),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            IconButton(onClick = { send() }, enabled = reply.isNotEmpty()) {
+                Icon(Icons.AutoMirrored.Filled.Send, "Send", tint = if (reply.isNotEmpty()) Ink.accent else Ink.tertiary, modifier = Modifier.size(18.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmptyState(onAdd: () -> Unit) {
+    Column(Modifier.fillMaxSize().padding(32.dp), verticalArrangement = Arrangement.Center) {
+        Text("No servers yet", color = Ink.text, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Shrew connects to a Rex server — on your Mac, or any machine on your tailnet — and keeps your sessions one tap away.",
+            color = Ink.secondary,
+            fontSize = 15.sp,
+            lineHeight = 21.sp,
+        )
+        Spacer(Modifier.height(20.dp))
+        TextButton(onClick = onAdd, contentPadding = PaddingValues(0.dp)) { Text("Add a server", fontSize = 15.sp) }
+    }
+}

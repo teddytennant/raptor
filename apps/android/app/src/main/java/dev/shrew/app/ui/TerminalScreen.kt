@@ -1,0 +1,612 @@
+package dev.shrew.app.ui
+
+import android.view.Choreographer
+import android.view.HapticFeedbackConstants
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import dev.shrew.app.Focus
+import dev.shrew.app.ShrewApplication
+import dev.shrew.app.terminal.Modifiers
+import dev.shrew.app.terminal.TerminalView
+import kotlinx.coroutines.launch
+import uniffi.shrew_ffi.AgentState
+import uniffi.shrew_ffi.Block
+import uniffi.shrew_ffi.Key
+import uniffi.shrew_ffi.Session
+import uniffi.shrew_ffi.Terminal
+import uniffi.shrew_ffi.TerminalListener
+import uniffi.shrew_ffi.TerminalStatus
+import uniffi.shrew_ffi.Window
+
+/** A short glyph for what a pane is running, shown on tiles and in the dock. */
+fun glyph(b: Block?): String {
+    val p = (b?.process ?: "").lowercase()
+    return when {
+        b == null -> ">_"
+        p.isEmpty() || p in setOf("bash", "zsh", "fish", "sh", "nu", "dash", "ksh", "login") -> ">_"
+        p.startsWith("nvim") -> "N"
+        p == "vim" || p == "vi" -> "V"
+        p.startsWith("claude") || b.agent?.app?.lowercase()?.contains("claude") == true -> "✳"
+        p.startsWith("codex") -> "◎"
+        p.startsWith("python") -> "Py"
+        p == "node" || p == "bun" || p == "deno" -> "JS"
+        p in setOf("htop", "top", "btop") -> "◔"
+        p == "ssh" || p == "mosh" -> "⇄"
+        p == "git" || p == "lazygit" || p == "tig" -> "±"
+        p.none { it.isLetter() } -> (b.name.firstOrNull { it.isLetter() } ?: '•').uppercase()
+        else -> p.first().uppercase()
+    }
+}
+
+/** What the open terminal exposes to the screen's chrome. */
+class TermHandle(val view: TerminalView, val modifiers: Modifiers, val control: MutableState<Boolean>)
+
+/** The live key bar, published by the open terminal so the screen can place it. */
+private val activeKeyBar = mutableStateOf<(@Composable () -> Unit)?>(null)
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?, onBack: () -> Unit) {
+    val app = ShrewApplication.instance
+    val state by app.state.collectAsState()
+    val themeId by app.themeId.collectAsState()
+    val theme = themeById(themeId)
+    var sid by remember { mutableStateOf(sessionId) }
+    val server = state.servers.firstOrNull { it.id == serverId }
+    val session = server?.sessions?.firstOrNull { it.id == sid }
+    var windowId by remember { mutableStateOf<String?>(null) }
+    var blockId by remember { mutableStateOf(initialBlockId) }
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(session?.id, session?.activeWindowId, blockId) {
+        val s = session ?: return@LaunchedEffect
+        val win = s.windows.firstOrNull { w -> w.blocks.any { it.id == blockId } }
+            ?: s.windows.firstOrNull { it.id == (windowId ?: s.activeWindowId) }
+            ?: s.windows.firstOrNull()
+        windowId = win?.id
+        if (blockId == null || win?.blocks?.none { it.id == blockId } == true) {
+            blockId = win?.focusedBlockId ?: win?.blocks?.firstOrNull()?.id
+        }
+    }
+    val window = session?.windows?.firstOrNull { it.id == windowId }
+    val block = window?.blocks?.firstOrNull { it.id == blockId }
+
+    DisposableEffect(serverId, sid, blockId) {
+        app.focus = Focus(serverId, sid, blockId)
+        onDispose { app.focus = null }
+    }
+
+    // Chrome takes its colors from the terminal it floats on.
+    var termColors by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    val tc = termColors
+    val chrome = if (theme.ansi == null && tc != null) Chrome.of(Color(tc.first), Color(tc.second), Color(theme.accent)) else Chrome.of(theme)
+
+    ShrewTheme(chrome) {
+        val ime = WindowInsets.isImeVisible
+        val density = LocalDensity.current
+        var topH by remember { mutableIntStateOf(0) }
+        var bottomH by remember { mutableIntStateOf(0) }
+        val handle = remember { mutableStateOf<TermHandle?>(null) }
+
+        Box(Modifier.fillMaxSize().background(Ink.terminal).imePadding()) {
+            val b = blockId
+            if (b != null) {
+                androidx.compose.runtime.key(b) {
+                    LiveTerminal(
+                        serverId, sid, b, theme, handle,
+                        insetTop = topH.toFloat(),
+                        insetBottom = bottomH.toFloat(),
+                        onColors = { bg, fg -> termColors = bg to fg },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+            } else {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    if (session == null) CircularProgressIndicator(color = Ink.accent) else Text("Nothing open in this window", color = Ink.secondary)
+                }
+            }
+
+            // ---- floating header ----
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                    .onSizeChanged { topH = it.height + with(density) { 30.dp.roundToPx() } },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                GlassCircle(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Ink.text, modifier = Modifier.size(20.dp)) }
+                Spacer(Modifier.width(10.dp))
+                Tile(glyph(block), Modifier.size(32.dp))
+                Spacer(Modifier.width(10.dp))
+                TitleBlock(block, session, server?.sessions.orEmpty(), Modifier.weight(1f)) { other ->
+                    sid = other
+                    blockId = null
+                    windowId = null
+                }
+                Spacer(Modifier.width(8.dp))
+                if (window != null && window.blocks.size > 1) {
+                    PaneMap(window, blockId, Modifier.size(width = 54.dp, height = 38.dp)) { picked ->
+                        blockId = picked
+                        scope.launch { runCatching { app.core.focusBlock(serverId, sid, picked) } }
+                    }
+                    Spacer(Modifier.width(8.dp))
+                }
+                MoreMenu(serverId, sid, blockId, handle.value)
+            }
+
+            // ---- bottom: window dock, or the key bar while typing ----
+            Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().onSizeChanged { bottomH = it.height }) {
+                if (ime) {
+                    activeKeyBar.value?.invoke()
+                } else if (session != null) {
+                    WindowDock(serverId, session, windowId, Modifier.align(Alignment.Center).navigationBarsPadding().padding(bottom = 10.dp)) { w ->
+                        windowId = w.id
+                        blockId = w.focusedBlockId ?: w.blocks.firstOrNull()?.id
+                        scope.launch { runCatching { app.core.focusWindow(serverId, sid, w.id) } }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** The translucent surface shared by all floating chrome. */
+@Composable
+fun Modifier.glass(shape: Shape): Modifier = this.clip(shape).background(Ink.glass).border(1.dp, Ink.glassStroke, shape)
+
+@Composable
+private fun GlassCircle(size: Dp = 40.dp, onClick: () -> Unit, content: @Composable () -> Unit) {
+    Box(Modifier.size(size).glass(CircleShape).clickable(onClick = onClick), contentAlignment = Alignment.Center) { content() }
+}
+
+/** A rounded tile with a glyph for the running program. */
+@Composable
+fun Tile(text: String, modifier: Modifier) {
+    val shape = RoundedCornerShape(9.dp)
+    Box(modifier.clip(shape).background(lerp(Ink.raised, Ink.accent, 0.16f)).border(1.dp, Ink.glassStroke, shape), contentAlignment = Alignment.Center) {
+        Text(text, color = Ink.accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = if (text.length > 1) 12.sp else 15.sp)
+    }
+}
+
+@Composable
+private fun TitleBlock(block: Block?, session: Session?, sessions: List<Session>, modifier: Modifier, onSwitch: (String) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box(modifier) {
+        Column(Modifier.clip(RoundedCornerShape(8.dp)).clickable(enabled = sessions.size > 1) { open = true }.padding(vertical = 2.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(block?.let { runningName(it) } ?: "terminal", color = Ink.text, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1)
+                val pwd = block?.shortPwd.orEmpty()
+                if (pwd.isNotEmpty()) {
+                    Spacer(Modifier.width(6.dp))
+                    Text(pwd, color = Ink.secondary, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, fontFamily = Mono)
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(session?.label ?: "", color = Ink.tertiary, fontSize = 12.sp, maxLines = 1)
+                if (sessions.size > 1) Icon(Icons.Default.KeyboardArrowDown, null, tint = Ink.tertiary, modifier = Modifier.size(14.dp))
+            }
+        }
+        DropdownMenu(open, { open = false }, containerColor = Ink.raised) {
+            for (s in sessions) {
+                DropdownMenuItem(
+                    text = { Text(s.label, color = if (s.id == session?.id) Ink.accent else Ink.text) },
+                    onClick = {
+                        open = false
+                        if (s.id != session?.id) onSwitch(s.id)
+                    },
+                )
+            }
+        }
+    }
+}
+
+/** The window's pane layout in miniature. Tap a pane to switch to it. */
+@Composable
+private fun PaneMap(window: Window, selected: String?, modifier: Modifier, onPick: (String) -> Unit) {
+    val st = LocalStatus.current
+    val on = Ink.accent
+    val off = Ink.key
+    Box(modifier.glass(RoundedCornerShape(10.dp)).padding(4.dp)) {
+        Canvas(
+            Modifier.fillMaxSize().pointerInput(window) {
+                detectTapGestures { p ->
+                    val fx = p.x / size.width
+                    val fy = p.y / size.height
+                    window.blocks.firstOrNull { fx >= it.x && fx < it.x + it.w && fy >= it.y && fy < it.y + it.h }?.let { onPick(it.id) }
+                }
+            },
+        ) {
+            val gap = 2.dp.toPx()
+            for (b in window.blocks) {
+                val tint = b.agent?.takeIf { it.state != AgentState.IDLE }?.let { st.agent(it.state) }
+                drawRoundRect(
+                    color = if (b.id == selected) on.copy(alpha = 0.55f) else (tint?.copy(alpha = 0.55f) ?: off),
+                    topLeft = Offset((b.x * size.width).toFloat() + gap / 2, (b.y * size.height).toFloat() + gap / 2),
+                    size = Size((b.w * size.width).toFloat() - gap, (b.h * size.height).toFloat() - gap),
+                    cornerRadius = CornerRadius(3.dp.toPx()),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun WindowDock(serverId: String, session: Session, current: String?, modifier: Modifier, onPick: (Window) -> Unit) {
+    val app = ShrewApplication.instance
+    val scope = rememberCoroutineScope()
+    val st = LocalStatus.current
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.glass(RoundedCornerShape(50)).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+            for (w in session.windows) {
+                val focused = w.blocks.firstOrNull { it.id == w.focusedBlockId } ?: w.blocks.firstOrNull()
+                val sel = w.id == current
+                val urgent = w.blocks.any { it.agent?.state == AgentState.BLOCKED }
+                Box(
+                    Modifier.size(width = 42.dp, height = 32.dp).clip(RoundedCornerShape(50)).background(if (sel) Ink.key else Color.Transparent).clickable { onPick(w) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(glyph(focused), color = if (sel) Ink.text else Ink.secondary, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    if (urgent) Box(Modifier.align(Alignment.TopEnd).padding(top = 5.dp, end = 8.dp).size(6.dp).clip(CircleShape).background(st.blocked))
+                }
+            }
+        }
+        Spacer(Modifier.width(8.dp))
+        GlassCircle(onClick = { scope.launch { runCatching { app.core.newWindow(serverId, session.id) } } }) {
+            Icon(Icons.Default.Add, "New window", tint = Ink.text, modifier = Modifier.size(20.dp))
+        }
+    }
+}
+
+@Composable
+private fun LiveTerminal(
+    serverId: String,
+    sessionId: String,
+    blockId: String,
+    theme: ThemeSpec,
+    handle: MutableState<TermHandle?>,
+    insetTop: Float,
+    insetBottom: Float,
+    onColors: (Int, Int) -> Unit,
+    modifier: Modifier,
+) {
+    val app = ShrewApplication.instance
+    val context = LocalView.current.context
+    val modifiers = remember { Modifiers() }
+    var status by remember { mutableStateOf<TerminalStatus>(TerminalStatus.Connecting) }
+    val controlState = remember { mutableStateOf(false) }
+    var control by controlState
+    val fontSize = remember { app.core.setting("font_size")?.toFloatOrNull() ?: 13f }
+
+    val view = remember {
+        TerminalView(context, modifiers).also { v ->
+            v.fontSize = fontSize
+            v.onFontSizeChanged = { app.core.setSetting("font_size", it.toString()) }
+        }
+    }
+    view.onRequestKeyboard = { view.showKeyboard() }
+    view.onColors = onColors
+    if (view.insetTop != insetTop) view.insetTop = insetTop
+    if (view.insetBottom != insetBottom) view.insetBottom = insetBottom
+
+    DisposableEffect(blockId) {
+        val choreographer = Choreographer.getInstance()
+        var scheduled = false
+        val frameCb = Choreographer.FrameCallback {
+            scheduled = false
+            view.refresh()
+        }
+        val listener = object : TerminalListener {
+            override fun frameReady() {
+                view.post {
+                    if (!scheduled) {
+                        scheduled = true
+                        choreographer.postFrameCallback(frameCb)
+                    }
+                }
+            }
+
+            override fun statusChanged(status_: TerminalStatus) {
+                view.post { status = status_ }
+            }
+
+            override fun clipboard(text: String) {
+                view.post { view.copy(text) }
+            }
+
+            override fun sizeChanged(cols: UShort, rows: UShort) {
+                view.post { view.invalidate() }
+            }
+        }
+        val term: Terminal? = runCatching { app.core.openTerminal(serverId, sessionId, blockId, listener) }.getOrNull()
+        view.terminal = term
+        // The phone takes the size while you use it (like tmux following the active
+        // client): readable text, and the keyboard never hides the prompt.
+        term?.takeControl()
+        control = term != null
+        view.control = control
+        view.post { view.showKeyboard() }
+        onDispose {
+            choreographer.removeFrameCallback(frameCb)
+            view.terminal = null
+            term?.shutdown()
+            term?.destroy()
+        }
+    }
+
+    // Apply the chosen theme to the terminal itself.
+    LaunchedEffect(theme.id, view.terminal) {
+        val t = view.terminal ?: return@LaunchedEffect
+        val ansi = theme.ansi
+        if (ansi == null) t.useServerColors()
+        else t.setTheme(theme.foreground.toUInt(), theme.background.toUInt(), theme.cursor.toUInt(), ansi.map { it.toUInt() })
+    }
+
+    val bar: @Composable () -> Unit = remember { @Composable { KeyBar(view, modifiers) } }
+    DisposableEffect(Unit) {
+        val h = TermHandle(view, modifiers, controlState)
+        handle.value = h
+        activeKeyBar.value = bar
+        onDispose {
+            if (handle.value === h) handle.value = null
+            if (activeKeyBar.value === bar) activeKeyBar.value = null
+        }
+    }
+
+    Box(modifier) {
+        AndroidView({ view }, Modifier.fillMaxSize().clipToBounds())
+        StatusOverlay(status, Modifier.align(Alignment.Center))
+    }
+}
+
+@Composable
+private fun MoreMenu(serverId: String, sessionId: String, blockId: String?, h: TermHandle?) {
+    val app = ShrewApplication.instance
+    val scope = rememberCoroutineScope()
+    var menu by remember { mutableStateOf(false) }
+    var themes by remember { mutableStateOf(false) }
+    Box {
+        GlassCircle(onClick = { menu = true }) { Icon(Icons.Default.MoreHoriz, "More", tint = Ink.text, modifier = Modifier.size(20.dp)) }
+        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = Ink.raised) {
+            if (h != null) {
+                val control = h.control.value
+                MenuRow(if (control) "Use desktop size" else "Fit to this screen") {
+                    menu = false
+                    val t = h.view.terminal ?: return@MenuRow
+                    if (control) t.releaseControl() else t.takeControl()
+                    h.control.value = !control
+                    h.view.control = !control
+                }
+            }
+            if (blockId != null) {
+                MenuRow("Split right") { menu = false; scope.launch { runCatching { app.core.split(serverId, sessionId, blockId, false) } } }
+                MenuRow("Split down") { menu = false; scope.launch { runCatching { app.core.split(serverId, sessionId, blockId, true) } } }
+            }
+            HorizontalDivider(color = Ink.hairline)
+            if (h != null) {
+                MenuRow("Paste") { menu = false; h.view.pasteClipboard() }
+                MenuRow("Copy all text") { menu = false; h.view.terminal?.allText()?.let(h.view::copy) }
+            }
+            MenuRow("Theme") { menu = false; themes = true }
+            if (blockId != null) {
+                HorizontalDivider(color = Ink.hairline)
+                MenuRow("Close pane", color = MaterialTheme.colorScheme.error) {
+                    menu = false
+                    scope.launch { runCatching { app.core.closeBlock(serverId, sessionId, blockId) } }
+                }
+            }
+        }
+        DropdownMenu(expanded = themes, onDismissRequest = { themes = false }, containerColor = Ink.raised) {
+            val current by app.themeId.collectAsState()
+            for (t in Themes) {
+                DropdownMenuItem(
+                    leadingIcon = { Box(Modifier.size(16.dp).clip(CircleShape).background(Color(t.background)).border(1.5.dp, Color(t.accent), CircleShape)) },
+                    text = { Text(t.name, color = if (t.id == current) Ink.accent else Ink.text, fontSize = 14.sp) },
+                    onClick = { themes = false; app.setTheme(t.id) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MenuRow(text: String, color: Color = Ink.text, onClick: () -> Unit) {
+    DropdownMenuItem(text = { Text(text, color = color, fontSize = 14.sp) }, onClick = onClick)
+}
+
+@Composable
+private fun StatusOverlay(status: TerminalStatus, modifier: Modifier) {
+    val text = when (status) {
+        is TerminalStatus.Connecting -> "Connecting…"
+        is TerminalStatus.Reconnecting -> "Reconnecting…"
+        is TerminalStatus.Exited -> if (status.code == 0) "Process exited" else "Process exited (${status.code})"
+        is TerminalStatus.Ended -> status.reason
+        is TerminalStatus.Live -> null
+    }
+    AnimatedVisibility(text != null, modifier, enter = fadeIn(), exit = fadeOut()) {
+        Row(
+            Modifier.glass(RoundedCornerShape(50)).padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (status is TerminalStatus.Connecting || status is TerminalStatus.Reconnecting) {
+                CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp, color = Ink.accent)
+            }
+            Text(text ?: "", color = Ink.text, fontSize = 13.sp)
+        }
+    }
+}
+
+private data class BarKey(val label: String, val key: Key? = null, val text: String? = null, val repeat: Boolean = false)
+
+private val mainKeys = listOf(
+    BarKey("esc", Key.Escape),
+    BarKey("tab", Key.Tab),
+    BarKey("ctrl"),
+    BarKey("alt"),
+    BarKey("←", Key.Left, repeat = true),
+    BarKey("↓", Key.Down, repeat = true),
+    BarKey("↑", Key.Up, repeat = true),
+    BarKey("→", Key.Right, repeat = true),
+)
+
+private val moreKeys = listOf(
+    BarKey("|", text = "|"),
+    BarKey("~", text = "~"),
+    BarKey("/", text = "/"),
+    BarKey("-", text = "-"),
+    BarKey("`", text = "`"),
+    BarKey("home", Key.Home),
+    BarKey("end", Key.End),
+    BarKey("pgup", Key.PageUp, repeat = true),
+)
+
+/** Terminal keys on a glass strip right above the soft keyboard. Two pages, no scrolling. */
+@Composable
+private fun KeyBar(view: TerminalView, mods: Modifiers) {
+    val hv = LocalView.current
+    var more by remember { mutableStateOf(false) }
+    // Modifiers is a plain object; bump a tick so ctrl/alt highlights update.
+    var tick by remember { mutableIntStateOf(0) }
+    DisposableEffect(mods) {
+        mods.onChange = { tick++ }
+        onDispose { mods.onChange = null }
+    }
+    @Suppress("UNUSED_EXPRESSION") tick
+    fun press(k: BarKey) {
+        hv.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+        when {
+            k.label == "ctrl" -> {
+                when { mods.ctrlLocked -> { mods.ctrlLocked = false; mods.ctrl = false }; mods.ctrl -> mods.ctrlLocked = true; else -> mods.ctrl = true }
+                mods.onChange?.invoke()
+            }
+            k.label == "alt" -> {
+                when { mods.altLocked -> { mods.altLocked = false; mods.alt = false }; mods.alt -> mods.altLocked = true; else -> mods.alt = true }
+                mods.onChange?.invoke()
+            }
+            k.key != null -> view.key(k.key)
+            k.text != null -> {
+                val (c, a) = mods.consume()
+                if (c || a) view.terminal?.sendKey(Key.Char(k.text), c, a, false, false) else view.terminal?.sendText(k.text)
+            }
+        }
+    }
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp).glass(RoundedCornerShape(14.dp)).height(44.dp).padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        for (k in if (more) moreKeys else mainKeys) {
+            val on = (k.label == "ctrl" && mods.ctrl) || (k.label == "alt" && mods.alt)
+            val locked = (k.label == "ctrl" && mods.ctrlLocked) || (k.label == "alt" && mods.altLocked)
+            BarButton(
+                label = k.label,
+                background = when { locked -> Ink.accent; on -> Ink.accent.copy(alpha = 0.3f); else -> Color.Transparent },
+                foreground = if (locked) Ink.bg else Ink.text,
+                repeat = k.repeat,
+                modifier = Modifier.weight(1f),
+            ) { press(k) }
+        }
+        BarButton(label = if (more) "abc" else "•••", background = Color.Transparent, foreground = Ink.secondary, modifier = Modifier.weight(1f)) {
+            hv.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            more = !more
+        }
+    }
+}
+
+@Composable
+private fun BarButton(label: String, background: Color, foreground: Color, modifier: Modifier, repeat: Boolean = false, onPress: () -> Unit) {
+    var down by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val downColor = Ink.keyDown
+    Box(
+        modifier
+            .fillMaxSize()
+            .clip(RoundedCornerShape(9.dp))
+            .background(if (down) downColor else background)
+            .pointerInput(repeat) {
+                detectTapGestures(onPress = {
+                    down = true
+                    onPress()
+                    // Hold to repeat (arrows, paging), like a hardware key.
+                    val job = if (repeat) scope.launch {
+                        kotlinx.coroutines.delay(380)
+                        while (true) { onPress(); kotlinx.coroutines.delay(45) }
+                    } else null
+                    tryAwaitRelease()
+                    job?.cancel()
+                    down = false
+                })
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, color = foreground, fontSize = if (label.length > 2) 12.sp else 15.sp, fontFamily = Mono)
+    }
+}

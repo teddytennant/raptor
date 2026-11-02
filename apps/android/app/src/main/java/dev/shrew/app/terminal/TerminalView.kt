@@ -1,0 +1,779 @@
+package dev.shrew.app.terminal
+
+import android.annotation.SuppressLint
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.RectF
+import android.graphics.Typeface
+import android.text.InputType
+import android.view.ActionMode
+import android.view.GestureDetector
+import android.view.HapticFeedbackConstants
+import android.view.KeyEvent
+import android.view.Menu
+import android.view.MenuItem
+import android.view.MotionEvent
+import android.view.ScaleGestureDetector
+import android.view.View
+import android.view.inputmethod.BaseInputConnection
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
+import android.view.inputmethod.InputMethodManager
+import android.widget.OverScroller
+import androidx.core.content.res.ResourcesCompat
+import dev.shrew.app.R
+import uniffi.shrew_ffi.CursorShape
+import uniffi.shrew_ffi.Frame
+import uniffi.shrew_ffi.Key
+import uniffi.shrew_ffi.Terminal
+import kotlin.math.abs
+import kotlin.math.floor
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.roundToInt
+
+private const val STYLE_BOLD = 1
+private const val STYLE_ITALIC = 1 shl 1
+private const val STYLE_FAINT = 1 shl 2
+private const val STYLE_STRIKE = 1 shl 3
+private const val STYLE_OVERLINE = 1 shl 4
+private const val STYLE_SELECTED = 1 shl 5
+
+/** Sticky modifiers from the on-screen key bar, applied to the next key typed. */
+class Modifiers {
+    var ctrl = false
+    var alt = false
+    var ctrlLocked = false
+    var altLocked = false
+    var onChange: (() -> Unit)? = null
+
+    fun consume(): Pair<Boolean, Boolean> {
+        val r = ctrl to alt
+        if (!ctrlLocked) ctrl = false
+        if (!altLocked) alt = false
+        if (r.first || r.second) onChange?.invoke()
+        return r
+    }
+}
+
+/**
+ * Draws a terminal frame and turns touches and keys into terminal input.
+ *
+ * Two size modes:
+ *  - **control**: this phone owns the terminal; its grid is sized to the view.
+ *  - **mirror**: someone else (the desktop) owns the size; we scale to fit the
+ *    width and let you pinch to zoom and pan.
+ */
+@SuppressLint("ViewConstructor")
+class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
+    var terminal: Terminal? = null
+        set(value) {
+            field = value
+            frame = null
+            requestLayout()
+            invalidate()
+        }
+
+    /** Points; the user changes it by pinching. */
+    var fontSize: Float = 13f
+        set(value) {
+            field = value.coerceIn(7f, 28f)
+            updateMetrics()
+            pushDeviceGrid()
+            invalidate()
+        }
+    var onFontSizeChanged: ((Float) -> Unit)? = null
+    var onRequestKeyboard: (() -> Unit)? = null
+    var control = false
+        set(value) {
+            field = value
+            zoom = 1f
+            panX = 0f
+            invalidate()
+        }
+
+    private var frame: Frame? = null
+    private val density = resources.displayMetrics.density
+    private val typefaces = arrayOf(
+        ResourcesCompat.getFont(context, R.font.jetbrains_mono_regular) ?: Typeface.MONOSPACE,
+        ResourcesCompat.getFont(context, R.font.jetbrains_mono_bold) ?: Typeface.MONOSPACE,
+        ResourcesCompat.getFont(context, R.font.jetbrains_mono_italic) ?: Typeface.MONOSPACE,
+        ResourcesCompat.getFont(context, R.font.jetbrains_mono_bold_italic) ?: Typeface.MONOSPACE,
+    )
+    private val text = Paint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply { isLinearText = true }
+    private val fill = Paint()
+    private val line = Paint(Paint.ANTI_ALIAS_FLAG)
+    private var cellW = 8f
+    private var cellH = 16f
+    private var baseline = 12f
+    private val padding = 6f * density
+
+    // Mirror-mode zoom and pan.
+    private var zoom = 1f
+    private var panX = 0f
+
+    // Scrolling.
+    private val scroller = OverScroller(context)
+    private var scrollRemainder = 0f
+    private var lastFlingY = 0
+
+    // Cursor blink.
+    private var blinkOn = true
+    private val blink = object : Runnable {
+        override fun run() {
+            blinkOn = !blinkOn
+            invalidate()
+            postDelayed(this, 530)
+        }
+    }
+
+    // Selection.
+    private var selecting = false
+    private var selAnchor: Pair<Int, Int>? = null
+    private var actionMode: ActionMode? = null
+
+    init {
+        isFocusable = true
+        isFocusableInTouchMode = true
+        updateMetrics()
+    }
+
+    private fun updateMetrics() {
+        text.textSize = fontSize * density
+        text.typeface = typefaces[0]
+        cellW = text.measureText("M")
+        val fm = text.fontMetrics
+        cellH = (fm.descent - fm.ascent + fm.leading).let { floor(it * 1.08f) }
+        baseline = -fm.ascent + (cellH - (fm.descent - fm.ascent)) / 2f
+    }
+
+    /**
+     * Vertical shift (px) applied when the grid is taller than the view — e.g. the
+     * keyboard just opened and the remote hasn't resized yet, or we're mirroring a
+     * taller desktop terminal. Keeps the cursor row (where you type) on screen.
+     */
+    private fun offsetY(): Float {
+        val f = frame ?: return 0f
+        val s = scale()
+        val visible = height - insetTop - insetBottom
+        val contentH = f.rows.toInt() * cellH * s + padding * 2
+        if (contentH <= visible) return 0f
+        val anchorRow = (f.cursor?.row?.toInt() ?: (f.rows.toInt() - 1)) + 1
+        val needBottom = anchorRow * cellH * s + padding * 2
+        return (needBottom - visible).coerceIn(0f, contentH - visible)
+    }
+
+    /** Scale applied to the remote grid so it fits (mirror mode). */
+    private fun scale(): Float {
+        val f = frame ?: return 1f
+        if (control) return 1f
+        val needW = f.cols.toInt() * cellW + padding * 2
+        val fit = min(1f, width / needW)
+        return fit * zoom
+    }
+
+    fun deviceGrid(): Pair<Int, Int> {
+        val cols = max(10, ((width - padding * 2) / cellW).toInt())
+        val rows = max(4, ((height - insetTop - insetBottom - padding * 2) / cellH).toInt())
+        return cols to rows
+    }
+
+    private fun pushDeviceGrid() {
+        val t = terminal ?: return
+        if (width == 0 || height == 0) return
+        val (c, r) = deviceGrid()
+        t.setDeviceGrid(c.toUShort(), r.toUShort(), cellW.roundToInt().toUInt(), cellH.roundToInt().toUInt())
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        pushDeviceGrid()
+    }
+
+    /** Called on the next vsync after the core says a frame is ready. */
+    fun refresh() {
+        val t = terminal ?: return
+        val f = t.frame()
+        val prev = frame
+        frame = f
+        if (prev == null || prev.background != f.background || prev.foreground != f.foreground) {
+            onColors?.invoke(f.background.toInt(), f.foreground.toInt())
+        }
+        invalidate()
+    }
+
+    /** Called when the terminal's default colors change, so chrome can match. */
+    var onColors: ((bg: Int, fg: Int) -> Unit)? = null
+
+    /** Space covered by floating chrome; the grid is sized to what's left. */
+    var insetTop = 0f
+        set(v) { field = v; pushDeviceGrid(); invalidate() }
+    var insetBottom = 0f
+        set(v) { field = v; pushDeviceGrid(); invalidate() }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        postDelayed(blink, 530)
+    }
+
+    override fun onDetachedFromWindow() {
+        removeCallbacks(blink)
+        actionMode?.finish()
+        super.onDetachedFromWindow()
+    }
+
+    // ---- drawing ----------------------------------------------------------------
+
+    override fun onDraw(canvas: Canvas) {
+        val f = frame
+        val bg = f?.background?.toInt() ?: 0xFF0D1117.toInt()
+        // Compose hosts don't clip children; stay inside our own bounds.
+        canvas.clipRect(0, 0, width, height)
+        canvas.drawColor(bg)
+        if (f == null) return
+        val s = scale()
+        canvas.save()
+        canvas.translate(padding - panX, insetTop + padding - offsetY())
+        canvas.scale(s, s)
+
+        val fgDefault = f.foreground.toInt()
+        val selColor = blend(fgDefault, bg, 0.30f)
+        for ((rowIdx, l) in f.lines.withIndex()) {
+            val top = rowIdx * cellH
+            // Backgrounds first so glyph overhangs (italics) aren't clipped by neighbors.
+            for (run in l.runs) {
+                val selected = (run.style.toInt() and STYLE_SELECTED) != 0
+                val b = when {
+                    selected -> selColor
+                    run.bg != null -> run.bg!!.toInt()
+                    else -> continue
+                }
+                fill.color = b
+                val x = run.col.toInt() * cellW
+                canvas.drawRect(x, top, x + run.cells.toInt() * cellW, top + cellH + 0.5f, fill)
+            }
+            for (run in l.runs) {
+                val style = run.style.toInt()
+                val bold = style and STYLE_BOLD != 0
+                val italic = style and STYLE_ITALIC != 0
+                text.typeface = typefaces[(if (bold) 1 else 0) + (if (italic) 2 else 0)]
+                var color = run.fg.toInt()
+                if (style and STYLE_FAINT != 0) color = blend(color, bg, 0.5f)
+                text.color = color
+                val x0 = run.col.toInt() * cellW
+                val y = top + baseline
+                if (run.text.isNotBlank()) drawRunText(canvas, run.text, run.widths, x0, y)
+                val ul = (style shr 8) and 0xF
+                if (ul != 0 || style and (STYLE_STRIKE or STYLE_OVERLINE) != 0) {
+                    line.color = run.underlineColor?.toInt() ?: color
+                    line.strokeWidth = max(1f, density * 0.9f)
+                    val x1 = x0 + run.cells.toInt() * cellW
+                    if (ul != 0) {
+                        val uy = top + cellH - line.strokeWidth * 1.5f
+                        when (ul) {
+                            2 -> { canvas.drawLine(x0, uy, x1, uy, line); canvas.drawLine(x0, uy - 3 * density, x1, uy - 3 * density, line) }
+                            3 -> drawCurly(canvas, x0, x1, uy)
+                            4 -> drawDashed(canvas, x0, x1, uy, 1.5f * density)
+                            5 -> drawDashed(canvas, x0, x1, uy, 4f * density)
+                            else -> canvas.drawLine(x0, uy, x1, uy, line)
+                        }
+                    }
+                    if (style and STYLE_STRIKE != 0) canvas.drawLine(x0, top + cellH / 2, x1, top + cellH / 2, line)
+                    if (style and STYLE_OVERLINE != 0) canvas.drawLine(x0, top + 1, x1, top + 1, line)
+                }
+            }
+        }
+
+        f.cursor?.let { c ->
+            if (f.scrollOffset + f.scrollLen < f.scrollTotal) return@let // scrolled into history
+            if (c.blinking && !blinkOn && hasFocus()) return@let
+            val cx = c.col.toInt() * cellW
+            val cy = c.row.toInt() * cellH
+            val w = if (c.wide) cellW * 2 else cellW
+            fill.color = f.cursorColor?.toInt() ?: fgDefault
+            when {
+                c.password -> drawLock(canvas, cx, cy)
+                !hasFocus() || c.shape == CursorShape.HOLLOW_BLOCK -> {
+                    fill.style = Paint.Style.STROKE; fill.strokeWidth = density
+                    canvas.drawRect(cx + 0.5f, cy + 0.5f, cx + w - 0.5f, cy + cellH - 0.5f, fill)
+                    fill.style = Paint.Style.FILL
+                }
+                c.shape == CursorShape.BAR -> canvas.drawRect(cx, cy, cx + 2 * density, cy + cellH, fill)
+                c.shape == CursorShape.UNDERLINE -> canvas.drawRect(cx, cy + cellH - 2 * density, cx + w, cy + cellH, fill)
+                else -> {
+                    canvas.drawRect(cx, cy, cx + w, cy + cellH, fill)
+                    // Redraw the glyph under the block in the background color.
+                    val run = f.lines.getOrNull(c.row.toInt())?.runs?.firstOrNull { c.col >= it.col && c.col < it.col + it.cells }
+                    if (run != null) {
+                        val idx = graphemeIndexAt(run.widths, (c.col - run.col).toInt())
+                        val g = graphemeAt(run.text, idx)
+                        if (g.isNotBlank()) {
+                            text.color = bg
+                            canvas.drawText(g, cx, cy + baseline, text)
+                        }
+                    }
+                }
+            }
+        }
+        canvas.restore()
+
+        // Scroll position indicator while in history.
+        if (f.scrollTotal > f.scrollLen && f.scrollOffset + f.scrollLen < f.scrollTotal) {
+            val trackH = height - padding * 2
+            val thumbH = max(24 * density, trackH * f.scrollLen.toFloat() / f.scrollTotal.toFloat())
+            val y = padding + (trackH - thumbH) * f.scrollOffset.toFloat() / (f.scrollTotal - f.scrollLen).toFloat()
+            fill.color = blend(fgDefault, bg, 0.55f)
+            canvas.drawRoundRect(RectF(width - 5 * density, y, width - 2 * density, y + thumbH), 2 * density, 2 * density, fill)
+        }
+    }
+
+    private fun drawRunText(canvas: Canvas, s: String, widths: ByteArray, x0: Float, y: Float) {
+        // Fast path: every grapheme is one narrow cell and one UTF-16 unit.
+        if (s.length == widths.size && widths.all { it.toInt() == 1 }) {
+            if (s.all { it.code < 0x2500 || it.code > 0x259F }) {
+                canvas.drawText(s, x0, y, text)
+                return
+            }
+        }
+        // Place each grapheme on its cell so fallback fonts can't drift off the grid.
+        var col = 0
+        var i = 0
+        var g = 0
+        while (i < s.length) {
+            val cp = s.codePointAt(i)
+            var end = i + Character.charCount(cp)
+            // Absorb combining marks / ZWJ sequences into this grapheme.
+            while (end < s.length) {
+                val next = s.codePointAt(end)
+                val t = Character.getType(next)
+                if (t == Character.NON_SPACING_MARK.toInt() || t == Character.ENCLOSING_MARK.toInt() || next == 0x200D || next == 0xFE0F || (end > 0 && s.codePointBefore(end) == 0x200D)) {
+                    end += Character.charCount(next)
+                } else break
+            }
+            val w = widths.getOrNull(g)?.toInt() ?: 1
+            val x = x0 + col * cellW
+            if (!drawBoxChar(canvas, cp, x, y - baseline, w)) canvas.drawText(s, i, end, x, y, text)
+            col += w
+            i = end
+            g++
+        }
+    }
+
+    /** Draw box-drawing and block characters as geometry so lines join seamlessly. */
+    private fun drawBoxChar(canvas: Canvas, cp: Int, x: Float, top: Float, w: Int): Boolean {
+        if (cp !in 0x2500..0x259F) return false
+        val cw = cellW * w
+        val cx = x + cw / 2
+        val cy = top + cellH / 2
+        fill.color = text.color
+        val t = max(1f, (density * 0.9f).roundToInt().toFloat())
+        val T = t * 2
+        fun h(x1: Float, x2: Float, th: Float = t) = canvas.drawRect(x1, cy - th / 2, x2, cy + th / 2, fill)
+        fun v(y1: Float, y2: Float, th: Float = t) = canvas.drawRect(cx - th / 2, y1, cx + th / 2, y2, fill)
+        val r = x + cw
+        val b = top + cellH
+        when (cp) {
+            0x2500 -> h(x, r); 0x2501 -> h(x, r, T)
+            0x2502 -> v(top, b); 0x2503 -> v(top, b, T)
+            0x250C, 0x256D -> { h(cx - t / 2, r); v(cy - t / 2, b) }
+            0x2510, 0x256E -> { h(x, cx + t / 2); v(cy - t / 2, b) }
+            0x2514, 0x2570 -> { h(cx - t / 2, r); v(top, cy + t / 2) }
+            0x2518, 0x256F -> { h(x, cx + t / 2); v(top, cy + t / 2) }
+            0x251C -> { v(top, b); h(cx, r) }
+            0x2524 -> { v(top, b); h(x, cx) }
+            0x252C -> { h(x, r); v(cy, b) }
+            0x2534 -> { h(x, r); v(top, cy) }
+            0x253C -> { h(x, r); v(top, b) }
+            0x2550 -> { canvas.drawRect(x, cy - T, r, cy - T + t, fill); canvas.drawRect(x, cy + T - t, r, cy + T, fill) }
+            0x2551 -> { canvas.drawRect(cx - T, top, cx - T + t, b, fill); canvas.drawRect(cx + T - t, top, cx + T, b, fill) }
+            0x2580 -> canvas.drawRect(x, top, r, cy, fill)
+            0x2584 -> canvas.drawRect(x, cy, r, b, fill)
+            0x2588 -> canvas.drawRect(x, top, r, b, fill)
+            0x258C -> canvas.drawRect(x, top, cx, b, fill)
+            0x2590 -> canvas.drawRect(cx, top, r, b, fill)
+            0x2591, 0x2592, 0x2593 -> {
+                val a = fill.alpha
+                fill.alpha = when (cp) { 0x2591 -> 64; 0x2592 -> 128; else -> 192 }
+                canvas.drawRect(x, top, r, b, fill)
+                fill.alpha = a
+            }
+            in 0x2581..0x2587 -> canvas.drawRect(x, b - cellH * (cp - 0x2580) / 8f, r, b, fill)
+            in 0x2589..0x258F -> canvas.drawRect(x, top, x + cw * (0x2590 - cp) / 8f, b, fill)
+            else -> return false
+        }
+        return true
+    }
+
+    private fun drawCurly(canvas: Canvas, x0: Float, x1: Float, y: Float) {
+        val amp = 1.5f * density
+        val step = 3f * density
+        var x = x0
+        var up = true
+        while (x < x1) {
+            val nx = min(x + step, x1)
+            canvas.drawLine(x, y + (if (up) amp else -amp), nx, y + (if (up) -amp else amp), line)
+            x = nx
+            up = !up
+        }
+    }
+
+    private fun drawDashed(canvas: Canvas, x0: Float, x1: Float, y: Float, dash: Float) {
+        var x = x0
+        while (x < x1) {
+            canvas.drawLine(x, y, min(x + dash, x1), y, line)
+            x += dash * 2
+        }
+    }
+
+    private fun drawLock(canvas: Canvas, x: Float, y: Float) {
+        val w = cellW
+        fill.style = Paint.Style.FILL
+        canvas.drawRoundRect(RectF(x + w * 0.15f, y + cellH * 0.45f, x + w * 0.85f, y + cellH * 0.9f), density, density, fill)
+        fill.style = Paint.Style.STROKE
+        fill.strokeWidth = density * 1.2f
+        canvas.drawArc(RectF(x + w * 0.28f, y + cellH * 0.15f, x + w * 0.72f, y + cellH * 0.65f), 180f, 180f, false, fill)
+        fill.style = Paint.Style.FILL
+    }
+
+    private fun graphemeIndexAt(widths: ByteArray, cellOffset: Int): Int {
+        var c = 0
+        for ((i, w) in widths.withIndex()) {
+            if (cellOffset < c + w) return i
+            c += w
+        }
+        return widths.size - 1
+    }
+
+    private fun graphemeAt(s: String, index: Int): String {
+        var i = 0
+        var g = 0
+        while (i < s.length) {
+            val n = Character.charCount(s.codePointAt(i))
+            if (g == index) return s.substring(i, i + n)
+            i += n
+            g++
+        }
+        return ""
+    }
+
+    private fun blend(a: Int, b: Int, t: Float): Int {
+        fun ch(c: Int, s: Int) = (c shr s) and 0xFF
+        fun mix(s: Int) = (ch(a, s) * (1 - t) + ch(b, s) * t).roundToInt()
+        return (0xFF shl 24) or (mix(16) shl 16) or (mix(8) shl 8) or mix(0)
+    }
+
+    // ---- touch ------------------------------------------------------------------
+
+    private fun cellAt(x: Float, y: Float): Pair<Int, Int> {
+        val s = scale()
+        val col = ((x - padding + panX) / s / cellW).toInt()
+        val row = ((y - insetTop - padding + offsetY()) / s / cellH).toInt()
+        val f = frame
+        return col.coerceIn(0, (f?.cols?.toInt() ?: 1) - 1) to row.coerceIn(0, (f?.rows?.toInt() ?: 1) - 1)
+    }
+
+    private val gestures = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
+        override fun onDown(e: MotionEvent): Boolean {
+            scroller.forceFinished(true)
+            return true
+        }
+
+        override fun onSingleTapUp(e: MotionEvent): Boolean {
+            if (actionMode != null) {
+                terminal?.clearSelection()
+                actionMode?.finish()
+                return true
+            }
+            val t = terminal ?: return true
+            if (t.mouseTracking()) {
+                val (c, r) = cellAt(e.x, e.y)
+                t.tap(c.toUShort(), r.toUShort())
+            }
+            toggleKeyboard()
+            return true
+        }
+
+        override fun onDoubleTap(e: MotionEvent): Boolean {
+            val (c, r) = cellAt(e.x, e.y)
+            if (terminal?.selectWord(c.toUShort(), r.toUShort()) == true) {
+                performHapticFeedback(HapticFeedbackConstants.TEXT_HANDLE_MOVE)
+                startSelectionMode()
+            }
+            return true
+        }
+
+        override fun onLongPress(e: MotionEvent) {
+            val (c, r) = cellAt(e.x, e.y)
+            if (terminal?.selectWord(c.toUShort(), r.toUShort()) == true) {
+                performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                selecting = true
+                selAnchor = c to r
+                startSelectionMode()
+            }
+        }
+
+        override fun onScroll(e1: MotionEvent?, e2: MotionEvent, dx: Float, dy: Float): Boolean {
+            if (selecting) return true
+            if (!control && abs(dx) > abs(dy) && scale() < 1f || zoom > 1f && abs(dx) > abs(dy)) {
+                pan(dx)
+                return true
+            }
+            scrollBy(dy)
+            return true
+        }
+
+        override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
+            if (selecting) return true
+            lastFlingY = 0
+            scroller.fling(0, 0, 0, vy.toInt(), 0, 0, -100_000, 100_000)
+            postInvalidateOnAnimation()
+            return true
+        }
+    })
+
+    private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+        override fun onScale(d: ScaleGestureDetector): Boolean {
+            if (control) {
+                fontSize *= d.scaleFactor
+            } else {
+                zoom = (zoom * d.scaleFactor).coerceIn(1f, 4f)
+                clampPan()
+                invalidate()
+            }
+            return true
+        }
+
+        override fun onScaleEnd(d: ScaleGestureDetector) {
+            if (control) onFontSizeChanged?.invoke(fontSize)
+        }
+    })
+
+    private fun pan(dx: Float) {
+        panX += dx
+        clampPan()
+        invalidate()
+    }
+
+    private fun clampPan() {
+        val f = frame ?: return
+        val contentW = f.cols.toInt() * cellW * scale() + padding * 2
+        panX = panX.coerceIn(0f, max(0f, contentW - width))
+    }
+
+    private fun scrollBy(dyPx: Float) {
+        val t = terminal ?: return
+        scrollRemainder += dyPx / (cellH * scale())
+        val rows = scrollRemainder.toInt()
+        if (rows == 0) return
+        scrollRemainder -= rows
+        if (t.wantsWheel() || frame?.alternateScreen == true) {
+            val (c, r) = cellAt(width / 2f, height / 2f)
+            t.wheel(c.toUShort(), r.toUShort(), rows.toFloat())
+        } else {
+            t.scroll(rows)
+        }
+    }
+
+    override fun computeScroll() {
+        if (scroller.computeScrollOffset()) {
+            val y = scroller.currY
+            val d = y - lastFlingY
+            lastFlingY = y
+            scrollBy(-d.toFloat())
+            postInvalidateOnAnimation()
+        }
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        scaleDetector.onTouchEvent(event)
+        if (selecting && event.actionMasked == MotionEvent.ACTION_MOVE) {
+            val a = selAnchor
+            if (a != null) {
+                val (c, r) = cellAt(event.x, event.y)
+                terminal?.selectRange(a.first.toUShort(), a.second.toUShort(), c.toUShort(), r.toUShort())
+            }
+            return true
+        }
+        if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+            selecting = false
+        }
+        if (!scaleDetector.isInProgress) gestures.onTouchEvent(event)
+        return true
+    }
+
+    private fun startSelectionMode() {
+        if (actionMode != null) {
+            actionMode?.invalidateContentRect()
+            return
+        }
+        actionMode = startActionMode(object : ActionMode.Callback2() {
+            override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
+                menu.add(0, 1, 0, android.R.string.copy)
+                menu.add(0, 2, 1, android.R.string.paste)
+                menu.add(0, 3, 2, android.R.string.selectAll)
+                return true
+            }
+
+            override fun onPrepareActionMode(mode: ActionMode, menu: Menu) = false
+
+            override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean {
+                when (item.itemId) {
+                    1 -> terminal?.selectionText()?.let { copy(it) }
+                    2 -> pasteClipboard()
+                    3 -> {
+                        val all = terminal?.allText().orEmpty()
+                        if (all.isNotEmpty()) copy(all)
+                    }
+                }
+                terminal?.clearSelection()
+                mode.finish()
+                return true
+            }
+
+            override fun onDestroyActionMode(mode: ActionMode) {
+                actionMode = null
+                terminal?.clearSelection()
+            }
+
+            override fun onGetContentRect(mode: ActionMode, view: View, outRect: android.graphics.Rect) {
+                val a = selAnchor ?: (0 to 0)
+                val s = scale()
+                val y = (insetTop + padding + a.second * cellH * s - offsetY()).toInt()
+                outRect.set(0, y, width, (y + cellH * s).toInt())
+            }
+        }, ActionMode.TYPE_FLOATING)
+    }
+
+    fun copy(s: String) {
+        val cm = context.getSystemService(ClipboardManager::class.java)
+        cm.setPrimaryClip(ClipData.newPlainText("Terminal", s))
+    }
+
+    fun pasteClipboard() {
+        val cm = context.getSystemService(ClipboardManager::class.java)
+        val s = cm.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString() ?: return
+        terminal?.paste(s)
+    }
+
+    // ---- keyboard ---------------------------------------------------------------
+
+    override fun onCheckIsTextEditor() = true
+
+    override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
+        // Visible-password text gives raw characters from most IMEs (no autocorrect,
+        // no composing), which is what a shell wants.
+        outAttrs.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN or EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_ACTION_NONE
+        return object : BaseInputConnection(this, false) {
+            override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
+                typeText(text.toString())
+                return true
+            }
+
+            override fun setComposingText(text: CharSequence, newCursorPosition: Int): Boolean {
+                // Some keyboards compose anyway; commit as they go so nothing is lost.
+                return true
+            }
+
+            override fun finishComposingText(): Boolean = true
+
+            override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
+                repeat(max(1, beforeLength)) { key(Key.Backspace) }
+                return true
+            }
+
+            override fun sendKeyEvent(event: KeyEvent): Boolean {
+                if (event.action == KeyEvent.ACTION_DOWN) handleKey(event.keyCode, event)
+                return true
+            }
+        }
+    }
+
+    private fun typeText(s: String) {
+        val t = terminal ?: return
+        for (part in s.split('\n').withIndex()) {
+            if (part.index > 0) key(Key.Enter)
+            val str = part.value
+            if (str.isEmpty()) continue
+            val (ctrl, alt) = modifiers.consume()
+            if (ctrl || alt) {
+                key(Key.Char(str.substring(0, 1)), ctrl, alt)
+                if (str.length > 1) t.sendText(str.substring(1))
+            } else {
+                t.sendText(str)
+            }
+        }
+    }
+
+    fun key(k: Key, ctrl: Boolean = false, alt: Boolean = false, shift: Boolean = false) {
+        val t = terminal ?: return
+        val (sc, sa) = if (!ctrl && !alt) modifiers.consume() else (false to false)
+        t.sendKey(k, ctrl || sc, alt || sa, shift, false)
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean = handleKey(keyCode, event) || super.onKeyDown(keyCode, event)
+
+    private fun handleKey(keyCode: Int, e: KeyEvent): Boolean {
+        val ctrl = e.isCtrlPressed
+        val alt = e.isAltPressed
+        val shift = e.isShiftPressed
+        val meta = e.isMetaPressed
+        val k: Key? = when (keyCode) {
+            KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> Key.Enter
+            KeyEvent.KEYCODE_TAB -> Key.Tab
+            KeyEvent.KEYCODE_DEL -> Key.Backspace
+            KeyEvent.KEYCODE_FORWARD_DEL -> Key.Delete
+            KeyEvent.KEYCODE_ESCAPE -> Key.Escape
+            KeyEvent.KEYCODE_DPAD_UP -> Key.Up
+            KeyEvent.KEYCODE_DPAD_DOWN -> Key.Down
+            KeyEvent.KEYCODE_DPAD_LEFT -> Key.Left
+            KeyEvent.KEYCODE_DPAD_RIGHT -> Key.Right
+            KeyEvent.KEYCODE_MOVE_HOME -> Key.Home
+            KeyEvent.KEYCODE_MOVE_END -> Key.End
+            KeyEvent.KEYCODE_PAGE_UP -> Key.PageUp
+            KeyEvent.KEYCODE_PAGE_DOWN -> Key.PageDown
+            KeyEvent.KEYCODE_INSERT -> Key.Insert
+            in KeyEvent.KEYCODE_F1..KeyEvent.KEYCODE_F12 -> Key.F((keyCode - KeyEvent.KEYCODE_F1 + 1).toUByte())
+            else -> null
+        }
+        if (k != null) {
+            val (sc, sa) = modifiers.consume()
+            terminal?.sendKey(k, ctrl || sc, alt || sa, shift, meta)
+            return true
+        }
+        // Hardware-keyboard shortcuts that belong to the app, not the shell.
+        if (ctrl && shift && keyCode == KeyEvent.KEYCODE_V) { pasteClipboard(); return true }
+        if (ctrl && shift && keyCode == KeyEvent.KEYCODE_C) { terminal?.selectionText()?.let(::copy); return true }
+        val uc = e.getUnicodeChar(e.metaState and (KeyEvent.META_CTRL_MASK or KeyEvent.META_ALT_MASK).inv())
+        if (uc != 0) {
+            val ch = String(Character.toChars(uc))
+            val (sc, sa) = modifiers.consume()
+            if (ctrl || alt || sc || sa) terminal?.sendKey(Key.Char(ch), ctrl || sc, alt || sa, false, meta)
+            else terminal?.sendText(ch)
+            return true
+        }
+        return false
+    }
+
+    fun showKeyboard() {
+        requestFocus()
+        val imm = context.getSystemService(InputMethodManager::class.java)
+        imm.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
+    }
+
+    fun keyboardVisible(): Boolean =
+        rootWindowInsets?.let { androidx.core.view.WindowInsetsCompat.toWindowInsetsCompat(it, this).isVisible(androidx.core.view.WindowInsetsCompat.Type.ime()) } ?: false
+
+    fun toggleKeyboard() {
+        if (keyboardVisible()) hideKeyboard() else showKeyboard()
+    }
+
+    fun hideKeyboard() {
+        val imm = context.getSystemService(InputMethodManager::class.java)
+        imm.hideSoftInputFromWindow(windowToken, 0)
+    }
+}

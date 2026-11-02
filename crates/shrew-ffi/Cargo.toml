@@ -1,0 +1,25 @@
+[package]
+name = "shrew-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde_json = "1.0.154"
+shrew-core = { version = "0.1.0", path = "../shrew-core" }
+tracing = "0.1.44"
+uniffi = "0.32"
+
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+name = "shrew_ffi"
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+bindgen = ["uniffi/cli"]

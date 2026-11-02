@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Shrew</string>
+    <string name="channel_agents">Agents</string>
+    <string name="channel_agents_desc">When an agent needs you or finishes</string>
+    <string name="channel_programs">Terminal notifications</string>
+    <string name="channel_programs_desc">Bells, exits, and notifications from programs</string>
+</resources>

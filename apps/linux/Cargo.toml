@@ -1,0 +1,23 @@
+[package]
+name = "shrew-gtk"
+description = "Shrew for Linux: a GTK 4 / libadwaita client for Rex servers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "shrew"
+path = "src/main.rs"
+
+[dependencies]
+gtk = { package = "gtk4", version = "0.11", features = ["v4_12"] }
+adw = { package = "libadwaita", version = "0.9", features = ["v1_5"] }
+shrew-core = { path = "../../crates/shrew-core" }
+async-channel = "2"
+tracing = "0.1"
+pangocairo = "0.22"
+
+[dev-dependencies]
+shrew-term = { path = "../../crates/shrew-term" }
