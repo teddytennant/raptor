@@ -1,0 +1,4 @@
+[env]
+# Build libghostty-vt from the pinned submodule (matches libghostty-vt-sys's
+# GHOSTTY_COMMIT) instead of fetching Ghostty over the network at build time.
+GHOSTTY_SOURCE_DIR = { value = "vendor/ghostty", relative = true }

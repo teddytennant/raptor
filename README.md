@@ -43,7 +43,7 @@ makes a good headless backend). Shrew's own multiplexer server is planned for v2
 | --- | --- | --- |
 | `crates/shrew-proto` | Rex wire protocol: control API rev 8, data handshake, in-band messages, snapshot framing | Rust |
 | `crates/shrew-client` | Async client: control WebSocket, resumable data streams, Unix/TCP/TLS endpoints | Rust |
-| `crates/shrew-term` | libghostty-vt wrapper: snapshot restore, VT, frames as style runs, selection, scrollback | Rust + Zig |
+| `crates/shrew-term` | Terminal state on [libghostty-rs](https://github.com/Uzaaft/libghostty-rs): snapshot restore, VT, frames as style runs, selection, scrollback | Rust |
 | `crates/shrew-core` | The app engine every frontend shares: servers, reconnects, live state, agent status, terminals | Rust |
 | `crates/shrew-ffi` | UniFFI bindings for Swift and Kotlin | Rust |
 | `crates/shrew-cli` | Debug tool (`ls`, `dump`, `screen`) | Rust |
@@ -56,7 +56,10 @@ The Rex protocol is documented by every Rex server at `GET /llms.txt`.
 ## Building
 
 You need Rust (via rustup for cross-compiling), Zig 0.17 (to build
-libghostty-vt), and the SDK for each platform.
+libghostty-vt), and the SDK for each platform. libghostty-vt is built from the
+`vendor/ghostty` submodule, pinned to the commit libghostty-rs's bindings were
+generated for; `.cargo/config.toml` points `GHOSTTY_SOURCE_DIR` at it, so builds
+never fetch Ghostty over the network. Set `ZIG` if `zig` on your PATH is older.
 
 ```sh
 git clone --recursive https://github.com/teddytennant/shrew
@@ -98,10 +101,10 @@ anything you'd pass to `rex -S`: `my-box` (port 7878), `100.64.0.2:7878`,
 
 | | Builds | Verified |
 | --- | --- | --- |
-| Rust core | ✅ | 17 unit tests, plus a live end-to-end test against Rex on Linux |
-| Android | ✅ APK | Run on an emulator against a real server: add server, sessions, typing, rendering |
-| Linux | ✅ (built on NixOS) | Run headless (Broadway) against a real server |
-| iOS | Needs Xcode for a device build | ShrewKit compiles on macOS. All iOS code type-checks against UIKit (Mac Catalyst SDK). Renderer and screens verified offscreen against a real server |
+| Rust core | ✅ | 18 unit tests, plus a live end-to-end test against Rex on Linux |
+| Android | ✅ APK | Emulator against a real server: add server, sessions, typing, key bar, themes, panes, windows |
+| iOS | ✅ device + Simulator builds | XCUITest against a real server: typing, ctrl/arrow keys, scrolling, pinch, select → copy → paste. Not yet run on a physical iPhone |
+| Linux | ✅ (built on NixOS) | Headless sway with real input devices: typing, ctrl+c, history, tab, tiled panes, copy/paste |
 
 ## Roadmap
 
@@ -110,7 +113,7 @@ anything you'd pass to `rex -S`: `my-box` (port 7878), `100.64.0.2:7878`,
 
 ## License
 
-MIT. libghostty-vt is MIT-licensed by Mitchell Hashimoto and contributors.
+MIT. libghostty-rs and libghostty-vt are MIT-licensed by Mitchell Hashimoto and contributors.
 JetBrains Mono is under the SIL Open Font License. Rex is a product of
 Superlogical. Shrew is an independent project, not affiliated with or endorsed
 by Superlogical.

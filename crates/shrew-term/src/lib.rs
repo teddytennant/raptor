@@ -1,4 +1,4 @@
-//! Terminal state for Shrew, backed by libghostty-vt.
+//! Terminal state for Shrew, backed by libghostty-vt (via the `libghostty-vt` crate).
 //!
 //! A Rex terminal stream starts with a Ghostty snapshot (`GHOSTSNP...`) and
 //! continues with raw program output. [`Terminal::feed_stream`] frames the
@@ -6,14 +6,14 @@
 //! rest through Ghostty's VT parser. [`Terminal::frame`] turns the viewport into
 //! style runs that any renderer (Core Text, Android Canvas, GTK/Pango) can draw.
 
-#[allow(clippy::all, unsafe_op_in_unsafe_fn)]
-mod sys;
-
-use std::mem::{MaybeUninit, size_of};
-use std::ptr;
+use libghostty_vt as vt;
+use libghostty_vt::render::{CellIterator, CursorVisualStyle, RenderState, RowIterator};
+use libghostty_vt::screen::CellWide;
+use libghostty_vt::selection::{FormatOptions, Selection, SelectLineOptions, SelectWordOptions};
+use libghostty_vt::style::{Palette, RgbColor, StyleColor};
+use libghostty_vt::terminal::{Point, PointCoordinate, ScrollViewport};
 
 pub use shrew_proto::snapshot::{Framed, SnapshotFramer};
-use sys::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub struct Rgb {
@@ -47,9 +47,15 @@ impl Rgb {
     }
 }
 
-impl From<GhosttyColorRgb> for Rgb {
-    fn from(c: GhosttyColorRgb) -> Self {
+impl From<RgbColor> for Rgb {
+    fn from(c: RgbColor) -> Self {
         Self { r: c.r, g: c.g, b: c.b }
+    }
+}
+
+impl From<Rgb> for RgbColor {
+    fn from(c: Rgb) -> Self {
+        RgbColor { r: c.r, g: c.g, b: c.b }
     }
 }
 
@@ -151,85 +157,60 @@ pub enum StreamState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TermError {
-    Ghostty(i32),
+    Ghostty(String),
     Snapshot(String),
 }
 
 impl std::fmt::Display for TermError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Ghostty(c) => write!(f, "libghostty-vt returned {c}"),
+            Self::Ghostty(e) => write!(f, "libghostty-vt: {e}"),
             Self::Snapshot(s) => write!(f, "snapshot could not be restored: {s}"),
         }
     }
 }
 impl std::error::Error for TermError {}
 
-fn check(r: GhosttyResult) -> Result<(), TermError> {
-    if r == GhosttyResult::GHOSTTY_SUCCESS { Ok(()) } else { Err(TermError::Ghostty(r.0)) }
-}
-
-/// Zeroed struct with its leading `size` field set, like `GHOSTTY_INIT_SIZED`.
-unsafe fn sized<T>() -> T {
-    let mut v = MaybeUninit::<T>::zeroed();
-    unsafe {
-        ptr::write(v.as_mut_ptr() as *mut usize, size_of::<T>());
-        v.assume_init()
+impl From<vt::Error> for TermError {
+    fn from(e: vt::Error) -> Self {
+        TermError::Ghostty(e.to_string())
     }
 }
 
 /// One terminal emulator instance.
 pub struct Terminal {
-    raw: GhosttyTerminal,
-    render: GhosttyRenderState,
-    rows_it: GhosttyRenderStateRowIterator,
-    cells: GhosttyRenderStateRowCells,
+    raw: vt::Terminal<'static, 'static>,
+    render: RenderState<'static>,
+    rows_it: RowIterator<'static>,
+    cells_it: CellIterator<'static>,
     framer: Option<SnapshotFramer>,
     scrollback_bytes: usize,
     cell_px: (u32, u32),
 }
 
-// The handles are only touched through &mut self, so moving the whole
-// terminal between threads is fine.
+// libghostty-vt handles aren't thread-safe for concurrent use, but every
+// method here takes `&mut self` or `&self` behind the engine's mutex, so moving
+// the whole terminal between threads is sound.
 unsafe impl Send for Terminal {}
-
-impl Drop for Terminal {
-    fn drop(&mut self) {
-        unsafe {
-            ghostty_render_state_row_cells_free(self.cells);
-            ghostty_render_state_row_iterator_free(self.rows_it);
-            ghostty_render_state_free(self.render);
-            ghostty_terminal_free(self.raw);
-        }
-    }
-}
 
 impl Terminal {
     pub fn new(cols: u16, rows: u16) -> Self {
-        unsafe {
-            let mut raw = ptr::null_mut();
-            check(ghostty_terminal_new(ptr::null(), &mut raw, cols.max(1), rows.max(1))).expect("ghostty_terminal_new");
-            let mut render = ptr::null_mut();
-            check(ghostty_render_state_new(ptr::null(), &mut render)).expect("render state");
-            let mut rows_it = ptr::null_mut();
-            check(ghostty_render_state_row_iterator_new(ptr::null(), &mut rows_it)).expect("row iterator");
-            let mut cells = ptr::null_mut();
-            check(ghostty_render_state_row_cells_new(ptr::null(), &mut cells)).expect("row cells");
-            let mut t = Self { raw, render, rows_it, cells, framer: None, scrollback_bytes: 10 << 20, cell_px: (0, 0) };
-            t.apply_options();
-            t
-        }
+        let raw = vt::Terminal::new(cols.max(1), rows.max(1)).expect("ghostty terminal");
+        let mut t = Self {
+            raw,
+            render: RenderState::new().expect("render state"),
+            rows_it: RowIterator::new().expect("row iterator"),
+            cells_it: CellIterator::new().expect("cell iterator"),
+            framer: None,
+            scrollback_bytes: 10 << 20,
+            cell_px: (0, 0),
+        };
+        t.apply_options();
+        t
     }
 
     fn apply_options(&mut self) {
-        unsafe {
-            let max = self.scrollback_bytes;
-            ghostty_terminal_set(
-                self.raw,
-                GhosttyTerminalOption::GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES,
-                &max as *const usize as *const _,
-            );
-        }
+        let _ = self.raw.set_scrollback_max_bytes(Some(self.scrollback_bytes));
     }
 
     /// Cap scrollback memory (bytes). Phones want this lower than desktops.
@@ -278,18 +259,8 @@ impl Terminal {
 
     /// Replace the whole terminal state with a complete Ghostty snapshot.
     pub fn restore(&mut self, snapshot: &[u8]) -> Result<(), TermError> {
-        unsafe {
-            let mut dec = ptr::null_mut();
-            check(ghostty_snapshot_decoder_new_buf(ptr::null(), &mut dec, snapshot.as_ptr(), snapshot.len()))?;
-            let mut term = ptr::null_mut();
-            let r = ghostty_snapshot_decoder_decode(dec, &mut term);
-            ghostty_snapshot_decoder_free(dec);
-            if r != GhosttyResult::GHOSTTY_SUCCESS {
-                return Err(TermError::Snapshot(format!("decoder returned {}", r.0)));
-            }
-            ghostty_terminal_free(self.raw);
-            self.raw = term;
-        }
+        let decoder = vt::snapshot::Decoder::new_buf(snapshot).map_err(|e| TermError::Snapshot(e.to_string()))?;
+        self.raw = decoder.decode().map_err(|e| TermError::Snapshot(e.to_string()))?;
         self.apply_options();
         if self.cell_px != (0, 0) {
             let (c, r) = self.size();
@@ -298,173 +269,128 @@ impl Terminal {
         Ok(())
     }
 
+    /// Encode the terminal as a Ghostty snapshot (used in tests and handoff).
+    pub fn snapshot(&mut self) -> Result<Vec<u8>, TermError> {
+        let mut out = Vec::new();
+        self.raw.encode_snapshot(&mut out)?;
+        Ok(out)
+    }
+
     /// Write raw VT bytes.
     pub fn write_vt(&mut self, bytes: &[u8]) {
-        unsafe { ghostty_terminal_vt_write(self.raw, bytes.as_ptr(), bytes.len()) }
+        self.raw.vt_write(bytes);
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16, cell_w_px: u32, cell_h_px: u32) {
         self.cell_px = (cell_w_px, cell_h_px);
-        unsafe {
-            ghostty_terminal_resize(self.raw, cols.max(1), rows.max(1), cell_w_px, cell_h_px);
-        }
+        let _ = self.raw.resize(cols.max(1), rows.max(1), cell_w_px, cell_h_px);
     }
 
     pub fn size(&self) -> (u16, u16) {
-        (
-            self.get::<u16>(GhosttyTerminalData::GHOSTTY_TERMINAL_DATA_COLS).unwrap_or(80),
-            self.get::<u16>(GhosttyTerminalData::GHOSTTY_TERMINAL_DATA_ROWS).unwrap_or(24),
-        )
-    }
-
-    fn get<T: Copy>(&self, key: GhosttyTerminalData) -> Option<T> {
-        unsafe {
-            let mut v = MaybeUninit::<T>::zeroed();
-            (ghostty_terminal_get(self.raw, key, v.as_mut_ptr() as *mut _) == GhosttyResult::GHOSTTY_SUCCESS).then(|| v.assume_init())
-        }
-    }
-
-    fn get_string(&self, key: GhosttyTerminalData) -> Option<String> {
-        let s: GhosttyString = self.get(key)?;
-        if s.ptr.is_null() || s.len == 0 {
-            return None;
-        }
-        let bytes = unsafe { std::slice::from_raw_parts(s.ptr, s.len) };
-        Some(String::from_utf8_lossy(bytes).into_owned())
+        (self.raw.cols().unwrap_or(80), self.raw.rows().unwrap_or(24))
     }
 
     pub fn title(&self) -> Option<String> {
-        self.get_string(GhosttyTerminalData::GHOSTTY_TERMINAL_DATA_TITLE)
+        self.raw.title().ok().filter(|t| !t.is_empty()).map(|t| String::from_utf8_lossy(t).into_owned())
     }
 
     pub fn pwd(&self) -> Option<String> {
-        self.get_string(GhosttyTerminalData::GHOSTTY_TERMINAL_DATA_PWD)
+        self.raw.pwd().ok().filter(|t| !t.is_empty()).map(|t| String::from_utf8_lossy(t).into_owned())
     }
 
     pub fn mouse_tracking(&self) -> bool {
-        self.get::<bool>(GhosttyTerminalData::GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING).unwrap_or(false)
+        self.raw.is_mouse_tracking().unwrap_or(false)
     }
 
     pub fn alternate_screen(&self) -> bool {
-        self.get::<GhosttyTerminalScreen>(GhosttyTerminalData::GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN)
-            .is_some_and(|s| s == GhosttyTerminalScreen::GHOSTTY_TERMINAL_SCREEN_ALTERNATE)
+        matches!(self.raw.active_screen(), Ok(vt::screen::Screen::Alternate))
     }
 
     pub fn scrollbar(&self) -> Scrollbar {
-        self.get::<GhosttyTerminalScrollbar>(GhosttyTerminalData::GHOSTTY_TERMINAL_DATA_SCROLLBAR)
-            .map(|s| Scrollbar { total: s.total, offset: s.offset, len: s.len })
-            .unwrap_or_default()
+        self.raw.scrollbar().map(|s| Scrollbar { total: s.total, offset: s.offset, len: s.len }).unwrap_or_default()
     }
 
     /// Scroll the viewport by `delta` rows (negative is up, into history).
     pub fn scroll(&mut self, delta: isize) {
-        self.scroll_raw(GhosttyTerminalScrollViewportTag::GHOSTTY_SCROLL_VIEWPORT_DELTA, GhosttyTerminalScrollViewportValue { delta });
+        self.raw.scroll_viewport(ScrollViewport::Delta(delta));
     }
 
     /// Jump `delta` shell prompts (needs shell integration).
     pub fn scroll_prompts(&mut self, delta: isize) {
-        self.scroll_raw(
-            GhosttyTerminalScrollViewportTag::GHOSTTY_SCROLL_VIEWPORT_DELTA_PROMPT,
-            GhosttyTerminalScrollViewportValue { delta_prompt: delta },
-        );
+        self.raw.scroll_viewport(ScrollViewport::DeltaPrompt(delta));
     }
 
     pub fn scroll_to_bottom(&mut self) {
-        self.scroll_raw(GhosttyTerminalScrollViewportTag::GHOSTTY_SCROLL_VIEWPORT_BOTTOM, GhosttyTerminalScrollViewportValue { row: 0 });
+        self.raw.scroll_viewport(ScrollViewport::Bottom);
     }
 
     pub fn scroll_to_top(&mut self) {
-        self.scroll_raw(GhosttyTerminalScrollViewportTag::GHOSTTY_SCROLL_VIEWPORT_TOP, GhosttyTerminalScrollViewportValue { row: 0 });
+        self.raw.scroll_viewport(ScrollViewport::Top);
     }
 
-    fn scroll_raw(&mut self, tag: GhosttyTerminalScrollViewportTag, value: GhosttyTerminalScrollViewportValue) {
-        unsafe { ghostty_terminal_scroll_viewport(self.raw, GhosttyTerminalScrollViewport { tag, value }) }
-    }
-
-    fn viewport_ref(&self, col: u16, row: u16) -> Option<GhosttyGridRef> {
-        unsafe {
-            let mut r: GhosttyGridRef = sized();
-            let p = GhosttyPoint {
-                tag: GhosttyPointTag::GHOSTTY_POINT_TAG_VIEWPORT,
-                value: GhosttyPointValue { coordinate: GhosttyPointCoordinate { x: col, y: row as u32 } },
-            };
-            (ghostty_terminal_grid_ref(self.raw, p, &mut r) == GhosttyResult::GHOSTTY_SUCCESS).then_some(r)
-        }
+    fn viewport(col: u16, row: u16) -> Point {
+        Point::Viewport(PointCoordinate { x: col, y: row as u32 })
     }
 
     /// Select from one viewport cell to another (inclusive).
     pub fn select(&mut self, from: (u16, u16), to: (u16, u16)) -> bool {
-        let (Some(a), Some(b)) = (self.viewport_ref(from.0, from.1), self.viewport_ref(to.0, to.1)) else {
+        let (Ok(a), Ok(b)) = (self.raw.grid_ref(Self::viewport(from.0, from.1)), self.raw.grid_ref(Self::viewport(to.0, to.1))) else {
             return false;
         };
-        unsafe {
-            let mut sel: GhosttySelection = sized();
-            sel.start = a;
-            sel.end = b;
-            ghostty_terminal_set(self.raw, GhosttyTerminalOption::GHOSTTY_TERMINAL_OPT_SELECTION, &sel as *const _ as *const _)
-                == GhosttyResult::GHOSTTY_SUCCESS
-        }
+        let sel = Selection::new(a, b, false);
+        self.raw.set_selection(Some(&sel)).is_ok()
     }
 
     /// Select the word under a viewport cell (double-tap).
     pub fn select_word(&mut self, col: u16, row: u16) -> bool {
-        let Some(r) = self.viewport_ref(col, row) else { return false };
-        unsafe {
-            let mut opts: GhosttyTerminalSelectWordOptions = sized();
-            opts.ref_ = r;
-            let mut sel: GhosttySelection = sized();
-            if ghostty_terminal_select_word(self.raw, &opts, &mut sel) != GhosttyResult::GHOSTTY_SUCCESS {
-                return false;
-            }
-            ghostty_terminal_set(self.raw, GhosttyTerminalOption::GHOSTTY_TERMINAL_OPT_SELECTION, &sel as *const _ as *const _)
-                == GhosttyResult::GHOSTTY_SUCCESS
+        let Ok(r) = self.raw.grid_ref(Self::viewport(col, row)) else { return false };
+        match self.raw.select_word(SelectWordOptions::new(r)) {
+            Ok(Some(sel)) => self.raw.set_selection(Some(&sel)).is_ok(),
+            _ => false,
         }
     }
 
-    /// Select a whole line (triple-tap).
+    /// Select a whole line (triple-tap), trimmed the way Ghostty does.
     pub fn select_line(&mut self, row: u16) -> bool {
-        let (cols, _) = self.size();
-        self.select((0, row), (cols.saturating_sub(1), row))
+        let Ok(r) = self.raw.grid_ref(Self::viewport(0, row)) else { return false };
+        match self.raw.select_line(SelectLineOptions::new(r)) {
+            Ok(Some(sel)) => self.raw.set_selection(Some(&sel)).is_ok(),
+            _ => false,
+        }
     }
 
     pub fn clear_selection(&mut self) {
-        unsafe {
-            ghostty_terminal_set(self.raw, GhosttyTerminalOption::GHOSTTY_TERMINAL_OPT_SELECTION, ptr::null());
-        }
+        let _ = self.raw.set_selection(None);
     }
 
     pub fn has_selection(&self) -> bool {
-        self.get::<GhosttySelection>(GhosttyTerminalData::GHOSTTY_TERMINAL_DATA_SELECTION).is_some()
+        matches!(self.raw.selection(), Ok(Some(_)))
     }
 
     /// The selected text, unwrapped and trimmed.
     pub fn selection_text(&self) -> Option<String> {
-        unsafe {
-            let mut opts: GhosttyTerminalSelectionFormatOptions = sized();
-            opts.emit = GhosttyFormatterFormat::GHOSTTY_FORMATTER_FORMAT_PLAIN;
-            opts.unwrap = true;
-            opts.trim = true;
-            let mut p = ptr::null_mut();
-            let mut len = 0usize;
-            if ghostty_terminal_selection_format_alloc(self.raw, ptr::null(), opts, &mut p, &mut len) != GhosttyResult::GHOSTTY_SUCCESS
-                || p.is_null()
-            {
-                return None;
+        let opts = || FormatOptions::new().with_emit_format(vt::fmt::Format::Plain).with_unwrap(true).with_trim(true);
+        let mut buf = vec![0u8; 4096];
+        let n = match self.raw.format_selection_buf(opts(), &mut buf) {
+            Ok(Some(n)) => n,
+            Ok(None) => return None,
+            Err(vt::Error::OutOfSpace { required }) => {
+                buf.resize(required, 0);
+                self.raw.format_selection_buf(opts(), &mut buf).ok().flatten()?
             }
-            let s = String::from_utf8_lossy(std::slice::from_raw_parts(p, len)).into_owned();
-            ghostty_free(ptr::null(), p, len);
-            (!s.is_empty()).then_some(s)
-        }
+            Err(_) => return None,
+        };
+        let s = String::from_utf8_lossy(&buf[..n]).into_owned();
+        (!s.is_empty()).then_some(s)
     }
 
     /// Everything in the terminal (scrollback + screen) as plain text.
     pub fn all_text(&mut self) -> String {
-        if !unsafe {
-            let mut sel: GhosttySelection = sized();
-            ghostty_terminal_select_all(self.raw, &mut sel) == GhosttyResult::GHOSTTY_SUCCESS
-                && ghostty_terminal_set(self.raw, GhosttyTerminalOption::GHOSTTY_TERMINAL_OPT_SELECTION, &sel as *const _ as *const _)
-                    == GhosttyResult::GHOSTTY_SUCCESS
-        } {
+        let ok = match self.raw.select_all() {
+            Ok(Some(sel)) => self.raw.set_selection(Some(&sel)).is_ok(),
+            _ => false,
+        };
+        if !ok {
             return String::new();
         }
         let text = self.selection_text().unwrap_or_default();
@@ -474,83 +400,50 @@ impl Terminal {
 
     /// Build a drawable frame of the current viewport.
     pub fn frame(&mut self) -> Frame {
-        unsafe {
-            ghostty_render_state_update(self.render, self.raw);
-            let mut colors: GhosttyRenderStateColors = sized();
-            ghostty_render_state_get(
-                self.render,
-                GhosttyRenderStateData::GHOSTTY_RENDER_STATE_DATA_COLORS,
-                &mut colors as *mut _ as *mut _,
-            );
-            let mut cur: GhosttyRenderStateCursor = sized();
-            ghostty_render_state_get(self.render, GhosttyRenderStateData::GHOSTTY_RENDER_STATE_DATA_CURSOR, &mut cur as *mut _ as *mut _);
-            let mut cols: u16 = 0;
-            let mut rows: u16 = 0;
-            ghostty_render_state_get(self.render, GhosttyRenderStateData::GHOSTTY_RENDER_STATE_DATA_COLS, &mut cols as *mut _ as *mut _);
-            ghostty_render_state_get(self.render, GhosttyRenderStateData::GHOSTTY_RENDER_STATE_DATA_ROWS, &mut rows as *mut _ as *mut _);
+        let scrollbar = self.scrollbar();
+        let alternate_screen = self.alternate_screen();
+        let Ok(snapshot) = self.render.update(&self.raw) else {
+            return Frame {
+                cols: 0,
+                rows: 0,
+                background: Rgb::default(),
+                foreground: Rgb::new(255, 255, 255),
+                cursor_color: None,
+                cursor: None,
+                lines: Vec::new(),
+                scrollbar,
+                alternate_screen,
+            };
+        };
+        let cols = snapshot.cols().unwrap_or(0);
+        let rows = snapshot.rows().unwrap_or(0);
+        let colors = snapshot.colors().ok();
+        let fg_default: Rgb = colors.as_ref().map(|c| c.foreground.into()).unwrap_or(Rgb::new(255, 255, 255));
+        let bg_default: Rgb = colors.as_ref().map(|c| c.background.into()).unwrap_or_default();
+        let palette = |i: u8| -> Rgb { colors.as_ref().map(|c| c.palette[i as usize].into()).unwrap_or_default() };
+        let cur = snapshot.cursor().ok();
 
-            let fg_default: Rgb = colors.foreground.into();
-            let bg_default: Rgb = colors.background.into();
-            let palette = |i: u8| -> Rgb { colors.palette[i as usize].into() };
-
-            let mut lines = Vec::with_capacity(rows as usize);
-            ghostty_render_state_get(
-                self.render,
-                GhosttyRenderStateData::GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR,
-                &mut self.rows_it as *mut _ as *mut _,
-            );
-            while ghostty_render_state_row_iterator_next(self.rows_it) {
-                ghostty_render_state_row_get(
-                    self.rows_it,
-                    GhosttyRenderStateRowData::GHOSTTY_RENDER_STATE_ROW_DATA_CELLS,
-                    &mut self.cells as *mut _ as *mut _,
-                );
+        let mut lines = Vec::with_capacity(rows as usize);
+        if let Ok(mut row_it) = self.rows_it.update(&snapshot) {
+            while let Some(row_iter) = row_it.next() {
                 let mut row = Row::default();
                 let mut col: u16 = 0;
-                let mut cps = [0u32; 32];
-                while ghostty_render_state_row_cells_next(self.cells) {
+                let Ok(mut cell_it) = self.cells_it.update(row_iter) else {
+                    lines.push(row);
+                    continue;
+                };
+                while let Some(cell) = cell_it.next() {
                     let this_col = col;
                     col += 1;
-                    let mut raw: GhosttyCell = 0;
-                    ghostty_render_state_row_cells_get(
-                        self.cells,
-                        GhosttyRenderStateRowCellsData::GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW,
-                        &mut raw as *mut _ as *mut _,
-                    );
-                    let mut wide = GhosttyCellWide::GHOSTTY_CELL_WIDE_NARROW;
-                    ghostty_cell_get(raw, GhosttyCellData::GHOSTTY_CELL_DATA_WIDE, &mut wide as *mut _ as *mut _);
-                    if wide == GhosttyCellWide::GHOSTTY_CELL_WIDE_SPACER_TAIL || wide == GhosttyCellWide::GHOSTTY_CELL_WIDE_SPACER_HEAD {
+                    let wide = cell.raw_cell().and_then(|c| c.wide()).unwrap_or(CellWide::Narrow);
+                    if matches!(wide, CellWide::SpacerTail | CellWide::SpacerHead) {
                         continue; // covered by the wide cell before it
                     }
-                    let width: u8 = if wide == GhosttyCellWide::GHOSTTY_CELL_WIDE_WIDE { 2 } else { 1 };
-
-                    let mut style: GhosttyStyle = sized();
-                    ghostty_render_state_row_cells_get(
-                        self.cells,
-                        GhosttyRenderStateRowCellsData::GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE,
-                        &mut style as *mut _ as *mut _,
-                    );
-                    let mut fg_c = GhosttyColorRgb { r: 0, g: 0, b: 0 };
-                    let has_fg = ghostty_render_state_row_cells_get(
-                        self.cells,
-                        GhosttyRenderStateRowCellsData::GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_FG_COLOR,
-                        &mut fg_c as *mut _ as *mut _,
-                    ) == GhosttyResult::GHOSTTY_SUCCESS;
-                    let mut bg_c = GhosttyColorRgb { r: 0, g: 0, b: 0 };
-                    let has_bg = ghostty_render_state_row_cells_get(
-                        self.cells,
-                        GhosttyRenderStateRowCellsData::GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR,
-                        &mut bg_c as *mut _ as *mut _,
-                    ) == GhosttyResult::GHOSTTY_SUCCESS;
-                    let mut selected = false;
-                    ghostty_render_state_row_cells_get(
-                        self.cells,
-                        GhosttyRenderStateRowCellsData::GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_SELECTED,
-                        &mut selected as *mut _ as *mut _,
-                    );
-
-                    let mut fg: Rgb = if has_fg { fg_c.into() } else { fg_default };
-                    let mut bg: Option<Rgb> = has_bg.then(|| bg_c.into());
+                    let width: u8 = if matches!(wide, CellWide::Wide) { 2 } else { 1 };
+                    let Ok(style) = cell.style() else { continue };
+                    let selected = cell.is_selected().unwrap_or(false);
+                    let mut fg: Rgb = cell.fg_color().ok().flatten().map(Into::into).unwrap_or(fg_default);
+                    let mut bg: Option<Rgb> = cell.bg_color().ok().flatten().map(Into::into);
                     if style.inverse {
                         let new_fg = bg.unwrap_or(bg_default);
                         bg = Some(fg);
@@ -559,44 +452,25 @@ impl Terminal {
                     if style.invisible {
                         fg = bg.unwrap_or(bg_default);
                     }
-
-                    let mut glen: u32 = 0;
-                    ghostty_render_state_row_cells_get(
-                        self.cells,
-                        GhosttyRenderStateRowCellsData::GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN,
-                        &mut glen as *mut _ as *mut _,
-                    );
                     let mut text = String::new();
-                    if glen == 0 {
-                        text.push(' ');
-                    } else if (glen as usize) <= cps.len() {
-                        ghostty_render_state_row_cells_get(
-                            self.cells,
-                            GhosttyRenderStateRowCellsData::GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF,
-                            cps.as_mut_ptr() as *mut _,
-                        );
-                        for &cp in &cps[..glen as usize] {
-                            text.push(char::from_u32(cp).unwrap_or('\u{fffd}'));
-                        }
-                    } else {
-                        text.push('\u{fffd}');
+                    match cell.graphemes() {
+                        Ok(g) if !g.is_empty() => text.extend(g),
+                        _ => text.push(' '),
                     }
-
                     let underline = match style.underline {
-                        0 => Underline::None,
-                        1 => Underline::Single,
-                        2 => Underline::Double,
-                        3 => Underline::Curly,
-                        4 => Underline::Dotted,
-                        5 => Underline::Dashed,
+                        vt::style::Underline::None => Underline::None,
+                        vt::style::Underline::Single => Underline::Single,
+                        vt::style::Underline::Double => Underline::Double,
+                        vt::style::Underline::Curly => Underline::Curly,
+                        vt::style::Underline::Dotted => Underline::Dotted,
+                        vt::style::Underline::Dashed => Underline::Dashed,
                         _ => Underline::Single,
                     };
-                    let underline_color = match style.underline_color.tag {
-                        GhosttyStyleColorTag::GHOSTTY_STYLE_COLOR_RGB => Some(style.underline_color.value.rgb.into()),
-                        GhosttyStyleColorTag::GHOSTTY_STYLE_COLOR_PALETTE => Some(palette(style.underline_color.value.palette)),
+                    let underline_color = match style.underline_color {
+                        StyleColor::Rgb(c) => Some(c.into()),
+                        StyleColor::Palette(i) => Some(palette(i.0)),
                         _ => None,
                     };
-
                     let same = row.runs.last().is_some_and(|r: &Run| {
                         r.col + r.cells == this_col
                             && r.fg == fg
@@ -636,70 +510,63 @@ impl Terminal {
                 }
                 lines.push(row);
             }
-            ghostty_render_state_clean(self.render);
+        }
 
-            let cursor = (cur.visible && cur.viewport_has_value).then_some(Cursor {
-                col: cur.viewport_x,
-                row: cur.viewport_y,
-                style: match cur.visual_style {
-                    GhosttyRenderStateCursorVisualStyle::GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR => CursorStyle::Bar,
-                    GhosttyRenderStateCursorVisualStyle::GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE => CursorStyle::Underline,
-                    GhosttyRenderStateCursorVisualStyle::GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW => CursorStyle::HollowBlock,
+        let cursor = cur.and_then(|c| {
+            let vp = c.viewport?;
+            c.visible.then_some(Cursor {
+                col: vp.x,
+                row: vp.y,
+                style: match c.visual_style {
+                    CursorVisualStyle::Bar => CursorStyle::Bar,
+                    CursorVisualStyle::Underline => CursorStyle::Underline,
+                    CursorVisualStyle::BlockHollow => CursorStyle::HollowBlock,
                     _ => CursorStyle::Block,
                 },
-                blinking: cur.blinking,
-                password: cur.password_input,
-                wide: cur.wide_tail,
-            });
+                blinking: c.blinking,
+                password: c.password_input,
+                wide: vp.at_wide_tail,
+            })
+        });
 
-            Frame {
-                cols,
-                rows,
-                background: bg_default,
-                foreground: fg_default,
-                cursor_color: colors.cursor_has_value.then(|| colors.cursor.into()),
-                cursor,
-                lines,
-                scrollbar: self.scrollbar(),
-                alternate_screen: self.alternate_screen(),
-            }
+        Frame {
+            cols,
+            rows,
+            background: bg_default,
+            foreground: fg_default,
+            cursor_color: colors.as_ref().and_then(|c| c.cursor).map(Into::into),
+            cursor,
+            lines,
+            scrollbar,
+            alternate_screen,
         }
     }
 
     /// The visible screen as plain text lines (for tests and previews).
     pub fn screen_lines(&mut self) -> Vec<String> {
-        self.frame().lines.iter().map(|r| r.runs.iter().map(|run| run.text.as_str()).collect::<String>().trim_end().to_owned()).collect()
+        self.frame()
+            .lines
+            .iter()
+            .map(|r| r.runs.iter().map(|run| run.text.as_str()).collect::<String>().trim_end().to_owned())
+            .collect()
     }
 
     /// Replace the 16 ANSI colors (themes), keeping the 256-color cube; `None` restores the built-in palette.
     pub fn set_ansi_palette(&mut self, ansi: Option<&[Rgb; 16]>) {
-        unsafe {
-            ghostty_terminal_set(self.raw, GhosttyTerminalOption::GHOSTTY_TERMINAL_OPT_COLOR_PALETTE, ptr::null());
-            let Some(ansi) = ansi else { return };
-            let Some(mut pal) = self.get::<[GhosttyColorRgb; 256]>(GhosttyTerminalData::GHOSTTY_TERMINAL_DATA_COLOR_PALETTE_DEFAULT) else { return };
-            for (i, c) in ansi.iter().enumerate() {
-                pal[i] = GhosttyColorRgb { r: c.r, g: c.g, b: c.b };
-            }
-            ghostty_terminal_set(self.raw, GhosttyTerminalOption::GHOSTTY_TERMINAL_OPT_COLOR_PALETTE, &pal as *const _ as *const _);
+        let _ = self.raw.set_default_color_palette(None);
+        let Some(ansi) = ansi else { return };
+        let Ok(Palette(mut pal)) = self.raw.default_color_palette() else { return };
+        for (i, c) in ansi.iter().enumerate() {
+            pal[i] = (*c).into();
         }
+        let _ = self.raw.set_default_color_palette(Some(Palette(pal)));
     }
 
-    /// Set default colors (from the stream's `theme` message).
+    /// Set default colors (from the stream's `theme` message or a chosen theme).
     pub fn set_default_colors(&mut self, fg: Option<Rgb>, bg: Option<Rgb>, cursor: Option<Rgb>) {
-        unsafe {
-            let set = |opt: GhosttyTerminalOption, c: Option<Rgb>| match c {
-                Some(c) => {
-                    let v = GhosttyColorRgb { r: c.r, g: c.g, b: c.b };
-                    ghostty_terminal_set(self.raw, opt, &v as *const _ as *const _);
-                }
-                None => {
-                    ghostty_terminal_set(self.raw, opt, ptr::null());
-                }
-            };
-            set(GhosttyTerminalOption::GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, fg);
-            set(GhosttyTerminalOption::GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, bg);
-            set(GhosttyTerminalOption::GHOSTTY_TERMINAL_OPT_COLOR_CURSOR, cursor);
-        }
+        let _ = self.raw.set_default_fg_color(fg.map(Into::into));
+        let _ = self.raw.set_default_bg_color(bg.map(Into::into));
+        let _ = self.raw.set_default_cursor_color(cursor.map(Into::into));
     }
 }
 
@@ -727,17 +594,9 @@ mod tests {
 
     #[test]
     fn snapshot_roundtrip_through_stream() {
-        // Encode a snapshot with libghostty-vt itself, then feed it as a stream.
         let mut src = Terminal::new(30, 5);
         src.write_vt(b"$ echo restored\r\nrestored\r\n$ ");
-        let snap = unsafe {
-            let mut p = ptr::null_mut();
-            let mut n = 0usize;
-            check(ghostty_snapshot_encode_alloc(src.raw, ptr::null(), &mut p, &mut n)).unwrap();
-            let v = std::slice::from_raw_parts(p, n).to_vec();
-            ghostty_free(ptr::null(), p, n);
-            v
-        };
+        let snap = src.snapshot().unwrap();
         let mut stream = snap.clone();
         stream.extend_from_slice(b"live!");
         let mut dst = Terminal::new(80, 24);
@@ -779,6 +638,8 @@ mod tests {
         t.scroll_to_bottom();
         assert!(t.select_word(1, 0));
         assert_eq!(t.selection_text().as_deref(), Some("line18"));
+        assert!(t.select_line(1));
+        assert_eq!(t.selection_text().as_deref(), Some("line19"));
         assert!(t.all_text().contains("line0\nline1\n"));
     }
 }
