@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -191,5 +193,21 @@ fun SendGlyph(color: Color, size: Dp = 24.dp) {
             lineTo(c.x + r * 0.38f, c.y - r * 0.05f)
         }
         drawPath(path, bg, style = stroke)
+    }
+}
+
+/** The empty detail pane on wide screens, like iOS's "Pick a session". */
+@Composable
+fun PickASession() {
+    androidx.compose.foundation.layout.Column(
+        androidx.compose.ui.Modifier.fillMaxSize().background(Ink.bg),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Default.Terminal, null, tint = Ink.tertiary, modifier = Modifier.size(44.dp))
+        androidx.compose.foundation.layout.Spacer(Modifier.size(14.dp))
+        Text("Pick a session", color = Ink.text, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        androidx.compose.foundation.layout.Spacer(Modifier.size(6.dp))
+        Text("Your sessions keep running on the server.", color = Ink.secondary, fontSize = 15.sp)
     }
 }

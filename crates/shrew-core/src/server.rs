@@ -573,7 +573,7 @@ impl ServerEntry {
         {
             let mut m = self.model.lock();
             let meta = m.meta.entry(block_id.clone()).or_default();
-            let label_for = |meta: &BlockMeta| if meta.title.is_empty() { meta.process.clone() } else { meta.title.clone() };
+            let label_for = |meta: &BlockMeta| notification_name(&meta.title, &meta.process);
             match event {
                 TerminalEvent::TitleChanged { title } => meta.title = title,
                 TerminalEvent::PwdChanged { pwd } => meta.pwd = pwd,
@@ -716,5 +716,42 @@ pub(crate) fn short_version(v: &str) -> String {
     match v.rsplit_once("-g") {
         Some((base, commit)) if base.starts_with("0.0.") => format!("build {commit}"),
         _ => v.to_owned(),
+    }
+}
+
+/// A short name for a terminal in a notification title. Shells like fish title
+/// the terminal with the whole command line plus the directory
+/// (`printf '\e]7501;…' ~`); a person wants just the command (`printf`).
+fn notification_name(title: &str, process: &str) -> String {
+    let t = title.trim();
+    if t.is_empty() || t.chars().any(char::is_control) {
+        return if process.is_empty() { "Terminal".into() } else { process.to_owned() };
+    }
+    let mut words: Vec<&str> = t.split_whitespace().collect();
+    // Drop a trailing directory, which fish and zsh themes append.
+    if words.len() > 1 && words.last().is_some_and(|w| w.starts_with('~') || w.starts_with('/')) {
+        words.pop();
+    }
+    let rest = words.join(" ");
+    // A command line (quotes, escapes, pipes, flags) names its program first.
+    let commandish = rest.contains(['\'', '"', '\\', '|', ';', '$']) || rest.split_whitespace().skip(1).any(|w| w.starts_with('-'));
+    let name = if commandish { words.first().copied().unwrap_or(t).to_owned() } else { rest };
+    let name: String = name.chars().take(40).collect();
+    if name.is_empty() { process.to_owned() } else { name }
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::notification_name as n;
+
+    #[test]
+    fn names_for_notifications() {
+        assert_eq!(n("printf '\\e]7501;stat ~", "fish"), "printf");
+        assert_eq!(n("exit ~", "fish"), "exit");
+        assert_eq!(n("✳ Claude Code", "node"), "✳ Claude Code");
+        assert_eq!(n("vim notes.md ~/src", "vim"), "vim notes.md");
+        assert_eq!(n("cargo test -p core /home/me/x", "cargo"), "cargo");
+        assert_eq!(n("", "htop"), "htop");
+        assert_eq!(n("bad\u{7}bell", "zsh"), "zsh");
     }
 }

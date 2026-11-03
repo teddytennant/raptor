@@ -1,5 +1,10 @@
 package dev.shrew.app
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.unit.dp
 import android.Manifest
 import android.content.Intent
 import android.os.Build
@@ -69,10 +74,44 @@ class MainActivity : ComponentActivity() {
                         return@LaunchedEffect
                     }
                 }
-                LaunchedEffect(pending) {
+                // Tablets, unfolded foldables and wide landscape get the iPad layout:
+                // sessions on the left, the open terminal beside them.
+                val wide = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 720
+                var detail by remember { mutableStateOf<Focus?>(null) }
+                LaunchedEffect(pending, wide) {
                     val p = pending ?: return@LaunchedEffect
                     app.pendingOpen.value = null
-                    nav.navigate("t/${p.serverId}/${p.sessionId}?block=${p.blockId.orEmpty()}") { launchSingleTop = true }
+                    if (wide) detail = p
+                    else nav.navigate("t/${p.serverId}/${p.sessionId}?block=${p.blockId.orEmpty()}") { launchSingleTop = true }
+                }
+                val addServer = {
+                    editing = null
+                    sheet = true
+                    maybeAskNotifications()
+                }
+                if (wide) {
+                    androidx.compose.foundation.layout.Row(androidx.compose.ui.Modifier.fillMaxSize().background(dev.shrew.app.ui.Ink.bg)) {
+                        androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.width(360.dp).fillMaxHeight()) {
+                            HomeScreen(
+                                onOpenSession = { s, ses, b -> detail = Focus(s, ses, b) },
+                                onAddServer = addServer,
+                                onEditServer = { editing = it; sheet = true },
+                            )
+                        }
+                        androidx.compose.material3.VerticalDivider(color = dev.shrew.app.ui.Ink.hairline)
+                        androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.weight(1f).fillMaxHeight()) {
+                            val d = detail
+                            if (d != null) {
+                                androidx.compose.runtime.key(d) {
+                                    TerminalScreen(serverId = d.serverId, sessionId = d.sessionId, initialBlockId = d.blockId, onBack = { detail = null })
+                                }
+                            } else {
+                                dev.shrew.app.ui.PickASession()
+                            }
+                        }
+                    }
+                    if (sheet) AddServerSheet(editing) { sheet = false }
+                    return@ShrewTheme
                 }
                 NavHost(
                     nav,
@@ -85,11 +124,7 @@ class MainActivity : ComponentActivity() {
                     composable("home") {
                         HomeScreen(
                             onOpenSession = { s, ses, b -> nav.navigate("t/$s/$ses?block=${b.orEmpty()}") },
-                            onAddServer = {
-                                editing = null
-                                sheet = true
-                                maybeAskNotifications()
-                            },
+                            onAddServer = addServer,
                             onEditServer = {
                                 editing = it
                                 sheet = true
