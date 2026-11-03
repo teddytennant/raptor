@@ -85,6 +85,8 @@ public struct ThemeSpec: Identifiable, Equatable, Sendable {
 
 public enum Themes {
     public static let all: [ThemeSpec] = [
+        ThemeSpec(id: "tokyo-night", name: "Tokyo Night", background: 0x1A1B26, foreground: 0xC0CAF5, cursor: 0xC0CAF5, accent: 0x7AA2F7,
+                  ansi: [0x15161E, 0xF7768E, 0x9ECE6A, 0xE0AF68, 0x7AA2F7, 0xBB9AF7, 0x7DCFFF, 0xA9B1D6, 0x414868, 0xFF899D, 0xAFD67A, 0xE9C582, 0x8DB0FF, 0xC7A9FF, 0x97D8F8, 0xC0CAF5]),
         ThemeSpec(id: "shrew", name: "Shrew", background: 0x0D1117, foreground: 0xE6EDF3, cursor: 0x5EE0A8, accent: 0x5EE0A8,
                   ansi: [0x484F58, 0xFF7B72, 0x3FB950, 0xD29922, 0x58A6FF, 0xBC8CFF, 0x39C5CF, 0xB1BAC4, 0x6E7681, 0xFFA198, 0x56D364, 0xE3B341, 0x79C0FF, 0xD2A8FF, 0x56D4DD, 0xFFFFFF]),
         ThemeSpec(id: "midnight", name: "Midnight", background: 0x0F1626, foreground: 0xD8DEE9, cursor: 0x88C0D0, accent: 0x8AB4F8,

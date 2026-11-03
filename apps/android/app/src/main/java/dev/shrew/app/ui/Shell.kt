@@ -205,7 +205,7 @@ fun SettingsScreen(onClose: () -> Unit, onAddServer: () -> Unit, onEditServer: (
                                 contentAlignment = Alignment.Center,
                             ) { Box(Modifier.size(12.dp).clip(CircleShape).background(Color(th.accent))) }
                             Spacer(Modifier.height(6.dp))
-                            Text(when (th.id) { "mocha" -> "Mocha"; "solarized-light" -> "Solarized"; "server" -> "Server"; else -> th.name }, color = if (on) Ink.text else Ink.secondary, fontSize = 11.sp, maxLines = 1)
+                            Text(when (th.id) { "tokyo-night" -> "Tokyo"; "mocha" -> "Mocha"; "solarized-light" -> "Solarized"; "server" -> "Server"; else -> th.name }, color = if (on) Ink.text else Ink.secondary, fontSize = 11.sp, maxLines = 1)
                         }
                     }
                 }

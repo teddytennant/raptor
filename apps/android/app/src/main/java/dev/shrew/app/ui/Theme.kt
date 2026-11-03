@@ -42,6 +42,10 @@ data class ThemeSpec(
 
 val Themes = listOf(
     ThemeSpec(
+        "tokyo-night", "Tokyo Night", 0xFF1A1B26, 0xFFC0CAF5, 0xFFC0CAF5, 0xFF7AA2F7,
+        listOf(0xFF15161E, 0xFFF7768E, 0xFF9ECE6A, 0xFFE0AF68, 0xFF7AA2F7, 0xFFBB9AF7, 0xFF7DCFFF, 0xFFA9B1D6, 0xFF414868, 0xFFFF899D, 0xFFAFD67A, 0xFFE9C582, 0xFF8DB0FF, 0xFFC7A9FF, 0xFF97D8F8, 0xFFC0CAF5),
+    ),
+    ThemeSpec(
         "shrew", "Shrew", 0xFF0D1117, 0xFFE6EDF3, 0xFF5EE0A8, 0xFF5EE0A8,
         listOf(0xFF484F58, 0xFFFF7B72, 0xFF3FB950, 0xFFD29922, 0xFF58A6FF, 0xFFBC8CFF, 0xFF39C5CF, 0xFFB1BAC4, 0xFF6E7681, 0xFFFFA198, 0xFF56D364, 0xFFE3B341, 0xFF79C0FF, 0xFFD2A8FF, 0xFF56D4DD, 0xFFFFFFFF),
     ),
@@ -64,7 +68,7 @@ val Themes = listOf(
     ThemeSpec("server", "Server colors", 0xFF0D1117, 0xFFE6EDF3, 0xFF5EE0A8, 0xFF5EE0A8, null),
 )
 
-fun themeById(id: String?): ThemeSpec = Themes.firstOrNull { it.id == id } ?: Themes.first()
+fun themeById(id: String?): ThemeSpec = Themes.firstOrNull { it.id == id } ?: Themes.first()  // Tokyo Night by default
 
 /**
  * Every chrome color, derived from a terminal's background and foreground so the

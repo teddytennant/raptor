@@ -54,8 +54,19 @@ public struct TerminalScreen: View {
                 ProgressView().tint(c.accent).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
+            // The top bar sits over the terminal like glass: live rows start
+            // below it, and scrollback moving up behind it shows through blurred.
             header(c, server: server, session: session, window: window, block: block)
-                .background(GeometryReader { g in Color.clear.preference(key: TopInsetKey.self, value: g.frame(in: .global).maxY + 6) })
+                .padding(.bottom, 8)
+                .background {
+                    Rectangle()
+                        .fill(.ultraThinMaterial)
+                        .overlay(c.bg.opacity(0.45))
+                        .overlay(alignment: .bottom) { Rectangle().fill(c.hairline).frame(height: 0.5) }
+                        .environment(\.colorScheme, c.scheme)
+                        .ignoresSafeArea(edges: .top)
+                }
+                .background(GeometryReader { g in Color.clear.preference(key: TopInsetKey.self, value: g.frame(in: .global).maxY) })
 
             VStack {
                 Spacer()
@@ -86,7 +97,7 @@ public struct TerminalScreen: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboard = false }
         #endif
         .onAppear { pick(session) }
-        .onChange(of: session?.activeWindowId) { pick(model.session(serverId, sessionId)) }
+        .onChange(of: session) { pick(model.session(serverId, sessionId)) }
         .onChange(of: sessionId) { blockId = nil; windowId = nil; pick(model.session(serverId, sessionId)) }
         .onChange(of: blockId) { model.focus = Focus(serverId: serverId, sessionId: sessionId, blockId: blockId) }
         .onDisappear { model.focus = nil }
@@ -128,7 +139,7 @@ public struct TerminalScreen: View {
         if let b = bid {
             add("split-right", "Split Right", "rectangle.split.2x1") { Task { _ = try? await core.split(serverId: srv, sessionId: sid, blockId: b, vertical: false) } }
             add("split-down", "Split Down", "rectangle.split.1x2") { Task { _ = try? await core.split(serverId: srv, sessionId: sid, blockId: b, vertical: true) } }
-            add("close-pane", "Close Pane", "xmark.square") { Task { try? await core.closeBlock(serverId: srv, sessionId: sid, blockId: b) } }
+            add("close-pane", "Close Pane", "xmark.square") { closePane(b, session: session) }
         }
         if let ctl = controller {
             add("fit", ctl.hasControl ? "Use Desktop Size" : "Fit to This Screen", "arrow.up.left.and.arrow.down.right", keywords: "resize size") { ctl.toggleControl() }
@@ -149,11 +160,33 @@ public struct TerminalScreen: View {
         return items
     }
 
+    /// Keep a live pane on screen. If the current one is gone (closed here or
+    /// elsewhere), prefer another pane in the same window, then the session's
+    /// focused pane; a window's focus can still name the pane that just closed.
     private func pick(_ session: Session?) {
         guard let session else { return }
         if let b = blockId, session.windows.contains(where: { $0.blocks.contains { $0.id == b } }) { return }
-        windowId = session.activeWindow?.id
-        blockId = session.focusedBlock?.id
+        let all = panes(session)
+        let next = all.first { $0.window == windowId }
+            ?? session.activeWindow.flatMap { w in w.blocks.first { $0.id == w.focusedBlockId }.map { (w.id, $0.id) } }
+            ?? all.first
+        windowId = next?.0
+        blockId = next?.1
+    }
+
+    /// Close a pane: move to its neighbour first so the screen never shows the
+    /// closed terminal, then ask the server.
+    private func closePane(_ id: String, session: Session?) {
+        if id == blockId {
+            let all = panes(session).filter { $0.block != id }
+            if let next = all.first(where: { $0.window == windowId }) ?? all.first {
+                withAnimation(.snappy(duration: 0.25)) {
+                    windowId = next.window
+                    blockId = next.block
+                }
+            }
+        }
+        Task { try? await model.core.closeBlock(serverId: serverId, sessionId: sessionId, blockId: id) }
     }
 
     private func switchTo(_ id: String) {
@@ -200,7 +233,7 @@ public struct TerminalScreen: View {
                 .frame(width: 54, height: 38)
             }
 
-            MoreMenu(serverId: serverId, sessionId: sessionId, blockId: blockId, controller: controller) { showPalette = true }
+            MoreMenu(serverId: serverId, sessionId: sessionId, blockId: blockId, controller: controller, onClosePane: { closePane($0, session: session) }) { showPalette = true }
         }
         .padding(.horizontal, 12)
         .padding(.top, 4)
@@ -290,6 +323,7 @@ private struct MoreMenu: View {
     let sessionId: String
     let blockId: String?
     let controller: TerminalController?
+    var onClosePane: (String) -> Void
     var onPalette: () -> Void
 
     var body: some View {
@@ -323,9 +357,7 @@ private struct MoreMenu: View {
             .pickerStyle(.menu)
             if let b = blockId {
                 Divider()
-                Button("Close Pane", systemImage: "xmark", role: .destructive) {
-                    Task { try? await model.core.closeBlock(serverId: serverId, sessionId: sessionId, blockId: b) }
-                }
+                Button("Close Pane", systemImage: "xmark", role: .destructive) { onClosePane(b) }
             }
         } label: {
             Image(systemName: "ellipsis").font(.system(size: 16, weight: .semibold)).foregroundStyle(c.text).frame(width: 40, height: 40)

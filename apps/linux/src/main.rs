@@ -144,7 +144,7 @@ fn build(app: &adw::Application) {
     let window =
         adw::ApplicationWindow::builder().application(app).title("Shrew").default_width(1200).default_height(780).content(&split).build();
 
-    let theme_id = core.setting("theme").and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_else(|| "shrew".into());
+    let theme_id = core.setting("theme").and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_else(|| "tokyo-night".into());
     let theme_css = gtk::CssProvider::new();
     gtk::style_context_add_provider_for_display(&gdk::Display::default().unwrap(), &theme_css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
     let font_size = core.setting("font_size").and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or(v.as_f64())).unwrap_or(12.0);

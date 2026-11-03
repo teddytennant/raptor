@@ -117,6 +117,7 @@ public struct SettingsView: View {
 
     private func shortName(_ t: ThemeSpec) -> String {
         switch t.id {
+        case "tokyo-night": "Tokyo"
         case "mocha": "Mocha"
         case "solarized-light": "Solarized"
         case "server": "Server"

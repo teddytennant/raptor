@@ -141,14 +141,17 @@ fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?,
     var blockId by remember { mutableStateOf(initialBlockId) }
     val scope = rememberCoroutineScope()
 
-    LaunchedEffect(session?.id, session?.activeWindowId, blockId) {
+    // Re-run on any change to the session, so a pane that disappears (closed
+    // here or elsewhere) is replaced by a live one instead of a dead screen.
+    LaunchedEffect(session, blockId) {
         val s = session ?: return@LaunchedEffect
         val win = s.windows.firstOrNull { w -> w.blocks.any { it.id == blockId } }
             ?: s.windows.firstOrNull { it.id == (windowId ?: s.activeWindowId) }
             ?: s.windows.firstOrNull()
         windowId = win?.id
         if (blockId == null || win?.blocks?.none { it.id == blockId } == true) {
-            blockId = win?.focusedBlockId ?: win?.blocks?.firstOrNull()?.id
+            // The window's focus can still name the pane that just closed.
+            blockId = win?.focusedBlockId?.takeIf { f -> win.blocks.any { it.id == f } } ?: win?.blocks?.firstOrNull()?.id
         }
     }
     val window = session?.windows?.firstOrNull { it.id == windowId }
@@ -181,6 +184,19 @@ fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?,
             windowId = next.first
             blockId = next.second
             scope.launch { runCatching { app.core.focusBlock(serverId, sid, next.second) } }
+        }
+        // Close a pane: move to its neighbour first (same window if possible), so
+        // the screen never shows the closed terminal, then ask the server.
+        fun closePane(id: String) {
+            if (id == blockId) {
+                val sameWindow = panes.filter { it.first == windowId && it.second != id }
+                val next = sameWindow.firstOrNull() ?: panes.firstOrNull { it.second != id }
+                if (next != null) {
+                    windowId = next.first
+                    blockId = next.second
+                }
+            }
+            scope.launch { runCatching { app.core.closeBlock(serverId, sid, id) } }
         }
         // The terminal view outlives recompositions; always call the latest swipe.
         val swipeNow = rememberUpdatedState(::swipe)
@@ -216,9 +232,11 @@ fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?,
             Row(
                 Modifier
                     .fillMaxWidth()
+                    // The bar's full height, status bar included: the terminal's
+                    // live rows start exactly below it and never hide under it.
+                    .onSizeChanged { topH = it.height }
                     .statusBarsPadding()
-                    .padding(horizontal = 10.dp, vertical = 6.dp)
-                    .onSizeChanged { topH = it.height + with(density) { 30.dp.roundToPx() } },
+                    .padding(start = 10.dp, end = 10.dp, top = 4.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 GlassCircle(onClick = onSessions) { Icon(Icons.AutoMirrored.Filled.List, "Sessions", tint = Ink.text, modifier = Modifier.size(22.dp)) }
@@ -234,7 +252,7 @@ fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?,
                     }
                     Spacer(Modifier.width(8.dp))
                 }
-                MoreMenu(serverId, sid, blockId, handle.value) { showPalette = true }
+                MoreMenu(serverId, sid, blockId, handle.value, onClosePane = ::closePane) { showPalette = true }
             }
 
             // ---- bottom: window dock, or the key bar while typing ----
@@ -260,7 +278,7 @@ fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?,
                 blockId?.let { bid ->
                     add(PaletteItem("split-right", "Split Right", glyph = "▥") { scope.launch { runCatching { app.core.split(serverId, sid, bid, false) } } })
                     add(PaletteItem("split-down", "Split Down", glyph = "▤") { scope.launch { runCatching { app.core.split(serverId, sid, bid, true) } } })
-                    add(PaletteItem("close-pane", "Close Pane", glyph = "×") { scope.launch { runCatching { app.core.closeBlock(serverId, sid, bid) } } })
+                    add(PaletteItem("close-pane", "Close Pane", glyph = "×") { closePane(bid) })
                 }
                 if (h != null) {
                     val control = h.control.value
@@ -485,7 +503,7 @@ private fun LiveTerminal(
 }
 
 @Composable
-private fun MoreMenu(serverId: String, sessionId: String, blockId: String?, h: TermHandle?, onPalette: () -> Unit) {
+private fun MoreMenu(serverId: String, sessionId: String, blockId: String?, h: TermHandle?, onClosePane: (String) -> Unit, onPalette: () -> Unit) {
     val app = ShrewApplication.instance
     val scope = rememberCoroutineScope()
     var menu by remember { mutableStateOf(false) }
@@ -522,7 +540,7 @@ private fun MoreMenu(serverId: String, sessionId: String, blockId: String?, h: T
                 HorizontalDivider(color = Ink.hairline)
                 ShrewMenuItem("Close Pane", Icons.Default.Close, color = LocalStatus.current.error) {
                     menu = false
-                    scope.launch { runCatching { app.core.closeBlock(serverId, sessionId, blockId) } }
+                    onClosePane(blockId)
                 }
             }
         }

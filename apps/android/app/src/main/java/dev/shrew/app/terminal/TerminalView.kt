@@ -232,7 +232,43 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
 
     // ---- drawing ----------------------------------------------------------------
 
+    // The top bar sits over the terminal like glass: live rows start below it,
+    // and scrollback that moves up behind it shows through blurred.
+    private val contentNode = if (android.os.Build.VERSION.SDK_INT >= 31) android.graphics.RenderNode("terminal") else null
+    private val blurNode = if (android.os.Build.VERSION.SDK_INT >= 31) android.graphics.RenderNode("bar") else null
+    private val barPaint = Paint()
+
     override fun onDraw(canvas: Canvas) {
+        val bg = frame?.background?.toInt() ?: 0xFF0D1117.toInt()
+        val fg = frame?.foreground?.toInt() ?: 0xFFFFFFFF.toInt()
+        val bar = insetTop
+        if (bar <= 0f) { drawContent(canvas); return }
+        val node = contentNode
+        val blur = blurNode
+        if (node != null && blur != null && canvas.isHardwareAccelerated && android.os.Build.VERSION.SDK_INT >= 31) {
+            node.setPosition(0, 0, width, height)
+            drawContent(node.beginRecording())
+            node.endRecording()
+            canvas.drawRenderNode(node)
+            blur.setPosition(0, 0, width, kotlin.math.ceil(bar).toInt())
+            val r = 22f * density
+            blur.setRenderEffect(android.graphics.RenderEffect.createBlurEffect(r, r, android.graphics.Shader.TileMode.CLAMP))
+            blur.beginRecording().drawRenderNode(node)
+            blur.endRecording()
+            canvas.drawRenderNode(blur)
+            barPaint.color = withAlpha(bg, 0.55f)
+        } else {
+            drawContent(canvas)
+            barPaint.color = withAlpha(bg, 0.94f)
+        }
+        canvas.drawRect(0f, 0f, width.toFloat(), bar, barPaint)
+        barPaint.color = withAlpha(fg, 0.10f)
+        canvas.drawRect(0f, bar - density * 0.7f, width.toFloat(), bar, barPaint)
+    }
+
+    private fun withAlpha(c: Int, a: Float): Int = (c and 0x00FFFFFF) or ((a * 255).toInt() shl 24)
+
+    private fun drawContent(canvas: Canvas) {
         val f = frame
         val bg = f?.background?.toInt() ?: 0xFF0D1117.toInt()
         // Compose hosts don't clip children; stay inside our own bounds.

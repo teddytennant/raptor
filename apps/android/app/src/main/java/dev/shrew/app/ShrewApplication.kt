@@ -39,7 +39,7 @@ class ShrewApplication : Application() {
     @Volatile var inForeground = true
 
     /** The color theme id (see ui.Themes); persisted in the engine's settings. */
-    val themeId = MutableStateFlow("shrew")
+    val themeId = MutableStateFlow("tokyo-night")
 
     fun setTheme(id: String) {
         themeId.value = id

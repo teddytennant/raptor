@@ -22,7 +22,7 @@ public final class ShrewModel {
     public let core: ShrewApp
     public var focus: Focus?
     /// The chosen color theme (see `Themes`); persisted in the engine's settings.
-    public private(set) var themeId: String = "shrew"
+    public private(set) var themeId: String = "tokyo-night"
     public var theme: ThemeSpec { Themes.byId(themeId) }
 
     public func setTheme(_ id: String) {

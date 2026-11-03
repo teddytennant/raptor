@@ -16,6 +16,17 @@ pub struct Theme {
 
 pub const THEMES: &[Theme] = &[
     Theme {
+        id: "tokyo-night",
+        name: "Tokyo Night",
+        bg: 0x1A1B26,
+        fg: 0xC0CAF5,
+        cursor: 0xC0CAF5,
+        accent: 0x7AA2F7,
+        ansi: Some([
+            0x15161E, 0xF7768E, 0x9ECE6A, 0xE0AF68, 0x7AA2F7, 0xBB9AF7, 0x7DCFFF, 0xA9B1D6, 0x414868, 0xFF899D, 0xAFD67A, 0xE9C582, 0x8DB0FF, 0xC7A9FF, 0x97D8F8, 0xC0CAF5,
+        ]),
+    },
+    Theme {
         id: "shrew",
         name: "Shrew",
         bg: 0x0D1117,
@@ -153,7 +164,7 @@ mod tests {
 
     #[test]
     fn themes_resolve_and_build_css() {
-        assert_eq!(by_id("nope").id, "shrew");
+        assert_eq!(by_id("nope").id, "tokyo-night");
         assert!(by_id("solarized-light").is_light());
         assert!(!by_id("mocha").is_light());
         assert!(by_id("server").color_theme().is_none());
