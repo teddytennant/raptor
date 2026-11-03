@@ -613,6 +613,21 @@ impl ShrewApp {
         Ok(self.core.send_text(&server_id, &session_id, &block_id, &text).await?)
     }
 
+    /// The server's palette actions (titled config-file and block actions).
+    pub async fn palette_actions(&self, server_id: String) -> Result<Vec<PaletteAction>> {
+        Ok(self
+            .core
+            .palette_actions(&server_id)
+            .await?
+            .into_iter()
+            .map(|a| PaletteAction { name: a.name, title: a.title, description: a.description, category: a.category, keywords: a.keywords })
+            .collect())
+    }
+
+    pub async fn run_action(&self, server_id: String, session_id: String, block_id: Option<String>, action: String) -> Result<()> {
+        Ok(self.core.run_action(&server_id, &session_id, block_id.as_deref(), &action).await?)
+    }
+
     pub fn open_terminal(
         &self,
         server_id: String,
@@ -623,6 +638,15 @@ impl ShrewApp {
         let t = self.core.open_terminal(&server_id, &session_id, &block_id, Arc::new(TermBridge(listener)))?;
         Ok(Arc::new(Terminal { inner: t }))
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct PaletteAction {
+    pub name: String,
+    pub title: String,
+    pub description: String,
+    pub category: String,
+    pub keywords: String,
 }
 
 // ---- terminal -----------------------------------------------------------------

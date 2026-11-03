@@ -81,4 +81,35 @@ final class TerminalUITests: XCTestCase {
         sleep(2)
         shot("pasted")
     }
+
+    func testSwipeBetweenPanesAndCommandPalette() throws {
+        let terminal = app.textViews["Terminal"]
+        XCTAssertTrue(terminal.waitForExistence(timeout: 15))
+        sleep(3)
+        app.typeText("echo pane-one\n")
+        sleep(1)
+
+        // Swipe left: the next pane (the split's second block) takes the keyboard.
+        terminal.swipeLeft()
+        sleep(2)
+        shot("swiped")
+        app.typeText("echo pane-two\n")
+        sleep(2)
+
+        // Command palette from the ••• menu: search, then run a server action.
+        app.buttons["More"].tap()
+        let open = app.descendants(matching: .any).matching(identifier: "Command Palette").firstMatch
+        XCTAssertTrue(open.waitForExistence(timeout: 3))
+        open.tap()
+        let search = app.searchFields.firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 3))
+        search.tap()
+        search.typeText("clear")
+        let clear = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Clear Terminal'")).firstMatch
+        XCTAssertTrue(clear.waitForExistence(timeout: 6), "server action missing from palette")
+        shot("palette")
+        clear.tap()
+        sleep(2)
+        shot("cleared")
+    }
 }

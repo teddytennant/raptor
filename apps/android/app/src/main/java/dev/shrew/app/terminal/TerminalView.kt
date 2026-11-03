@@ -87,6 +87,10 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
         }
     var onFontSizeChanged: ((Float) -> Unit)? = null
     var onRequestKeyboard: (() -> Unit)? = null
+    /** Horizontal swipe / Ctrl+Tab: +1 next pane, -1 previous. */
+    var onSwipePane: ((Int) -> Unit)? = null
+    /** Ctrl+Shift+P on a hardware keyboard. */
+    var onPalette: (() -> Unit)? = null
     var control = false
         set(value) {
             field = value
@@ -517,9 +521,10 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
 
         override fun onScroll(e1: MotionEvent?, e2: MotionEvent, dx: Float, dy: Float): Boolean {
             if (selecting) return true
-            if (!control && abs(dx) > abs(dy) && scale() < 1f || zoom > 1f && abs(dx) > abs(dy)) {
-                pan(dx)
-                return true
+            val canPan = (!control && scale() < 1f) || zoom > 1f
+            if (abs(dx) > abs(dy)) {
+                if (canPan) pan(dx)
+                return true // horizontal drags are pane swipes, decided on fling
             }
             scrollBy(dy)
             return true
@@ -527,6 +532,13 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
 
         override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
             if (selecting) return true
+            // A horizontal fling switches panes (unless we're panning a zoomed/mirrored grid).
+            val canPan = (!control && scale() < 1f) || zoom > 1f
+            if (!canPan && abs(vx) > abs(vy) * 1.3f && abs(vx) > 900f) {
+                performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                onSwipePane?.invoke(if (vx < 0) 1 else -1)
+                return true
+            }
             lastFlingY = 0
             scroller.fling(0, 0, 0, vy.toInt(), 0, 0, -100_000, 100_000)
             postInvalidateOnAnimation()
@@ -747,6 +759,8 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
         }
         // Hardware-keyboard shortcuts that belong to the app, not the shell.
         if (ctrl && shift && keyCode == KeyEvent.KEYCODE_V) { pasteClipboard(); return true }
+        if (ctrl && shift && keyCode == KeyEvent.KEYCODE_P) { onPalette?.invoke(); return true }
+        if (ctrl && keyCode == KeyEvent.KEYCODE_TAB) { onSwipePane?.invoke(if (shift) -1 else 1); return true }
         if (ctrl && shift && keyCode == KeyEvent.KEYCODE_C) { terminal?.selectionText()?.let(::copy); return true }
         val uc = e.getUnicodeChar(e.metaState and (KeyEvent.META_CTRL_MASK or KeyEvent.META_ALT_MASK).inv())
         if (uc != 0) {

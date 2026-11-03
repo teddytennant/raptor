@@ -92,6 +92,13 @@ fn full_round_trip() {
     term.send_text("echo after-ctrl-c\r");
     assert!(wait(10, || screen(&term).contains("after-ctrl-c\n")), "ctrl-c failed:\n{}", screen(&term));
 
+    // Palette: the server's titled actions, and running one on this block.
+    let actions = shrew.block_on(shrew.palette_actions(&id)).unwrap();
+    eprintln!("palette: {:?}", actions.iter().map(|a| &a.title).collect::<Vec<_>>());
+    let clear = actions.iter().find(|a| a.name == "com.superlogical.terminal.clear").expect("clear action");
+    shrew.block_on(shrew.run_action(&id, &sid, Some(&bid), &clear.name)).unwrap();
+    assert!(wait(5, || !screen(&term).contains("after-ctrl-c")), "clear didn't clear:\n{}", screen(&term));
+
     term.close();
     drop(_cleanup);
     assert!(wait(5, || !shrew.state().server(&id).unwrap().sessions.iter().any(|s| s.id == sid)));

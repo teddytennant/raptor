@@ -444,6 +444,50 @@ impl Shrew {
         self.run(server_id, move |c| Box::pin(async move { c.write(&s, &b, &t).await })).await
     }
 
+    /// Actions the server offers a command palette: titled actions from its
+    /// configuration file (`rex.action`) and from block creators.
+    pub async fn palette_actions(&self, server_id: &str) -> Result<Vec<PaletteAction>, CoreError> {
+        self.run(server_id, move |c| {
+            Box::pin(async move {
+                let v = c.call("client.keymap", json!({"server_actions": "all"})).await?;
+                let mut out: Vec<PaletteAction> = v
+                    .get("actions")
+                    .and_then(|a| a.as_array())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|a| {
+                        let kind = a.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+                        let title = a.get("title").and_then(|t| t.as_str())?.to_owned();
+                        // Client-kind actions are ours to implement; the app lists its own.
+                        if kind == "client" || title.is_empty() {
+                            return None;
+                        }
+                        let s = |k: &str| a.get(k).and_then(|x| x.as_str()).unwrap_or("").to_owned();
+                        Some(PaletteAction { name: s("name"), title, description: s("description"), category: s("category"), keywords: s("keywords") })
+                    })
+                    .collect();
+                out.sort_by(|a, b| a.category.cmp(&b.category).then(a.title.cmp(&b.title)));
+                Ok(out)
+            })
+        })
+        .await
+    }
+
+    /// Run a palette action against a session's focused (or given) block.
+    pub async fn run_action(&self, server_id: &str, session_id: &str, block_id: Option<&str>, action: &str) -> Result<(), CoreError> {
+        let (s, b, a) = (session_id.to_owned(), block_id.map(str::to_owned), action.to_owned());
+        self.run(server_id, move |c| {
+            Box::pin(async move {
+                let mut p = json!({"action": a, "session_id": s, "origin": "palette"});
+                if let Some(b) = b {
+                    p["block_id"] = json!(b);
+                }
+                c.call("client.action", p).await.map(drop)
+            })
+        })
+        .await
+    }
+
     // ---- terminals -------------------------------------------------------------
 
     pub fn open_terminal(
@@ -473,6 +517,16 @@ impl Drop for Shrew {
             }
         }
     }
+}
+
+/// An action a server offers for a command palette.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaletteAction {
+    pub name: String,
+    pub title: String,
+    pub description: String,
+    pub category: String,
+    pub keywords: String,
 }
 
 fn default_name(ep: &Endpoint) -> String {

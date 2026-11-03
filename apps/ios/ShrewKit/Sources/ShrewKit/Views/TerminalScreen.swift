@@ -13,6 +13,8 @@ public struct TerminalScreen: View {
     @State private var topInset: CGFloat = 0
     @State private var bottomInset: CGFloat = 0
     @State private var keyboard = false
+    @State private var showPalette = false
+    @State private var slideEdge: Edge = .trailing
 
     public init(serverId: String, sessionId: String, blockId: String?) {
         self.serverId = serverId
@@ -37,8 +39,10 @@ public struct TerminalScreen: View {
             c.bg.ignoresSafeArea()
             if let b = blockId {
                 LiveTerminal(serverId: serverId, sessionId: sessionId, blockId: b, theme: model.theme, chrome: c,
-                             insetTop: topInset, insetBottom: bottomInset, controller: $controller) { termColors = ($0, $1) }
+                             insetTop: topInset, insetBottom: bottomInset, controller: $controller,
+                             onSwipe: { swipe($0, session: session) }, onPalette: { showPalette = true }) { termColors = ($0, $1) }
                     .id(b)
+                    .transition(.asymmetric(insertion: .move(edge: slideEdge), removal: .move(edge: slideEdge == .trailing ? .leading : .trailing)))
                     .ignoresSafeArea(.container, edges: [.top, .bottom])
             } else {
                 ProgressView().tint(c.accent).frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -80,6 +84,63 @@ public struct TerminalScreen: View {
         .onChange(of: sessionId) { blockId = nil; windowId = nil; pick(model.session(serverId, sessionId)) }
         .onChange(of: blockId) { model.focus = Focus(serverId: serverId, sessionId: sessionId, blockId: blockId) }
         .onDisappear { model.focus = nil }
+        .sheet(isPresented: $showPalette) {
+            CommandPalette(serverId: serverId, local: localCommands(session: session), sessionId: sessionId, blockId: blockId)
+                .environment(\.chrome, c)
+        }
+    }
+
+    /// Every pane in the session, in window order then layout order.
+    private func panes(_ s: Session?) -> [(window: String, block: String)] {
+        (s?.windows ?? []).flatMap { w in w.blocks.map { (w.id, $0.id) } }
+    }
+
+    /// Swipe to the next (+1) or previous (-1) pane, crossing into other windows.
+    private func swipe(_ dir: Int, session: Session?) {
+        let all = panes(session)
+        guard all.count > 1, let i = all.firstIndex(where: { $0.block == blockId }) else { return }
+        let next = all[(i + dir + all.count) % all.count]
+        slideEdge = dir > 0 ? .trailing : .leading
+        Haptics.select()
+        withAnimation(.snappy(duration: 0.28)) {
+            windowId = next.window
+            blockId = next.block
+        }
+        Task { try? await model.core.focusBlock(serverId: serverId, sessionId: sessionId, blockId: next.block) }
+    }
+
+    private func localCommands(session: Session?) -> [PaletteItem] {
+        var items: [PaletteItem] = []
+        let srv = serverId, sid = sessionId, bid = blockId
+        let core = model.core
+        func add(_ id: String, _ title: String, _ symbol: String, _ cat: String = "Shrew", subtitle: String = "", keywords: String = "", _ run: @escaping () -> Void) {
+            items.append(PaletteItem(id: id, title: title, subtitle: subtitle, category: cat, keywords: keywords, symbol: symbol, run: run))
+        }
+        add("next-pane", "Next Pane", "arrow.right.square", keywords: "switch") { swipe(1, session: session) }
+        add("prev-pane", "Previous Pane", "arrow.left.square", keywords: "switch") { swipe(-1, session: session) }
+        add("new-window", "New Window", "plus.square.on.square") { Task { try? await core.newWindow(serverId: srv, sessionId: sid) } }
+        if let b = bid {
+            add("split-right", "Split Right", "rectangle.split.2x1") { Task { _ = try? await core.split(serverId: srv, sessionId: sid, blockId: b, vertical: false) } }
+            add("split-down", "Split Down", "rectangle.split.1x2") { Task { _ = try? await core.split(serverId: srv, sessionId: sid, blockId: b, vertical: true) } }
+            add("close-pane", "Close Pane", "xmark.square") { Task { try? await core.closeBlock(serverId: srv, sessionId: sid, blockId: b) } }
+        }
+        if let ctl = controller {
+            add("fit", ctl.hasControl ? "Use Desktop Size" : "Fit to This Screen", "arrow.up.left.and.arrow.down.right", keywords: "resize size") { ctl.toggleControl() }
+            #if os(iOS)
+            add("copy-all", "Copy All Text", "doc.on.doc") { UIPasteboard.general.string = ctl.terminal?.allText() }
+            add("paste", "Paste", "doc.on.clipboard") { if let s = UIPasteboard.general.string { ctl.terminal?.paste(text: s) } }
+            #endif
+        }
+        add("new-session", "New Session", "plus.rectangle.on.rectangle", "Sessions") {
+            Task { if let id = try? await core.createSession(serverId: srv, label: nil) { sessionId = id } }
+        }
+        for s in model.server(srv)?.sessions ?? [] where s.id != sid {
+            add("session-\(s.id)", "Go to \(s.label)", "rectangle.stack", "Sessions", subtitle: detail(s.focusedBlock)) { sessionId = s.id }
+        }
+        for t in Themes.all {
+            add("theme-\(t.id)", t.name, t.id == model.themeId ? "checkmark.circle.fill" : "paintpalette", "Themes", keywords: "theme color") { model.setTheme(t.id) }
+        }
+        return items
     }
 
     private func pick(_ session: Session?) {
@@ -139,7 +200,7 @@ public struct TerminalScreen: View {
                 .frame(width: 54, height: 38)
             }
 
-            MoreMenu(serverId: serverId, sessionId: sessionId, blockId: blockId, controller: controller)
+            MoreMenu(serverId: serverId, sessionId: sessionId, blockId: blockId, controller: controller) { showPalette = true }
         }
         .padding(.horizontal, 12)
         .padding(.top, 4)
@@ -229,9 +290,12 @@ private struct MoreMenu: View {
     let sessionId: String
     let blockId: String?
     let controller: TerminalController?
+    var onPalette: () -> Void
 
     var body: some View {
         Menu {
+            Button("Command Palette", systemImage: "command", action: onPalette)
+            Divider()
             if let ctl = controller {
                 Button(ctl.hasControl ? "Use Desktop Size" : "Fit to This Screen",
                        systemImage: ctl.hasControl ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") { ctl.toggleControl() }
@@ -282,13 +346,16 @@ struct LiveTerminal: View {
     let insetTop: CGFloat
     let insetBottom: CGFloat
     @Binding var controller: TerminalController?
+    var onSwipe: (Int) -> Void
+    var onPalette: () -> Void
     var onColors: (UInt32, UInt32) -> Void
     @State private var own: TerminalController?
 
     var body: some View {
         ZStack {
             if let ctl = own {
-                TerminalSurface(controller: ctl, fontSize: fontSize, chrome: chrome, insetTop: insetTop, insetBottom: insetBottom, onColors: onColors) {
+                TerminalSurface(controller: ctl, fontSize: fontSize, chrome: chrome, insetTop: insetTop, insetBottom: insetBottom,
+                                onColors: onColors, onSwipe: onSwipe, onPalette: onPalette) {
                     model.core.setSetting(key: "font_size", value: String(Double($0)))
                 }
                 if let text = ctl.status.banner {
@@ -331,6 +398,8 @@ struct TerminalSurface: UIViewRepresentable {
     let insetTop: CGFloat
     let insetBottom: CGFloat
     var onColors: (UInt32, UInt32) -> Void
+    var onSwipe: (Int) -> Void
+    var onPalette: () -> Void
     var onFontSize: (CGFloat) -> Void
 
     func makeUIView(context: Context) -> TerminalUIView {
@@ -345,6 +414,8 @@ struct TerminalSurface: UIViewRepresentable {
         v.insetTop = insetTop
         v.insetBottom = insetBottom
         v.onColors = onColors
+        v.onSwipePane = onSwipe
+        v.onPalette = onPalette
     }
 }
 #else
@@ -356,6 +427,8 @@ struct TerminalSurface: NSViewRepresentable {
     let insetTop: CGFloat
     let insetBottom: CGFloat
     var onColors: (UInt32, UInt32) -> Void
+    var onSwipe: (Int) -> Void
+    var onPalette: () -> Void
     var onFontSize: (CGFloat) -> Void
 
     final class View: NSView {

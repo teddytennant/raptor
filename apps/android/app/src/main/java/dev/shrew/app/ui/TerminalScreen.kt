@@ -1,5 +1,10 @@
 package dev.shrew.app.ui
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import android.view.Choreographer
 import android.view.HapticFeedbackConstants
 import androidx.compose.animation.AnimatedVisibility
@@ -48,6 +53,7 @@ import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -155,16 +161,39 @@ fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?,
         var topH by remember { mutableIntStateOf(0) }
         var bottomH by remember { mutableIntStateOf(0) }
         val handle = remember { mutableStateOf<TermHandle?>(null) }
+        var showPalette by remember { mutableStateOf(false) }
+        var slideDir by remember { mutableIntStateOf(1) }
+        val panes = session?.windows.orEmpty().flatMap { w -> w.blocks.map { w.id to it.id } }
+        fun swipe(dir: Int) {
+            val i = panes.indexOfFirst { it.second == blockId }
+            if (panes.size < 2 || i < 0) return
+            val next = panes[(i + dir + panes.size) % panes.size]
+            slideDir = dir
+            windowId = next.first
+            blockId = next.second
+            scope.launch { runCatching { app.core.focusBlock(serverId, sid, next.second) } }
+        }
+        // The terminal view outlives recompositions; always call the latest swipe.
+        val swipeNow = rememberUpdatedState(::swipe)
 
         Box(Modifier.fillMaxSize().background(Ink.terminal).imePadding()) {
             val b = blockId
             if (b != null) {
-                androidx.compose.runtime.key(b) {
+                AnimatedContent(
+                    b,
+                    transitionSpec = {
+                        val d = slideDir
+                        (slideInHorizontally(tween(240)) { w -> w * d } togetherWith slideOutHorizontally(tween(240)) { w -> -w * d })
+                    },
+                    label = "pane",
+                ) { pane ->
                     LiveTerminal(
-                        serverId, sid, b, theme, handle,
+                        serverId, sid, pane, theme, handle,
                         insetTop = topH.toFloat(),
                         insetBottom = bottomH.toFloat(),
                         onColors = { bg, fg -> termColors = bg to fg },
+                        onSwipe = { swipeNow.value(it) },
+                        onPalette = { showPalette = true },
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
@@ -200,7 +229,7 @@ fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?,
                     }
                     Spacer(Modifier.width(8.dp))
                 }
-                MoreMenu(serverId, sid, blockId, handle.value)
+                MoreMenu(serverId, sid, blockId, handle.value) { showPalette = true }
             }
 
             // ---- bottom: window dock, or the key bar while typing ----
@@ -215,6 +244,39 @@ fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?,
                     }
                 }
             }
+        }
+
+        if (showPalette) {
+            val h = handle.value
+            val local = buildList {
+                add(PaletteItem("next-pane", "Next Pane", glyph = "→", keywords = "switch swipe") { swipe(1) })
+                add(PaletteItem("prev-pane", "Previous Pane", glyph = "←", keywords = "switch swipe") { swipe(-1) })
+                add(PaletteItem("new-window", "New Window", glyph = "+") { scope.launch { runCatching { app.core.newWindow(serverId, sid) } } })
+                blockId?.let { bid ->
+                    add(PaletteItem("split-right", "Split Right", glyph = "▥") { scope.launch { runCatching { app.core.split(serverId, sid, bid, false) } } })
+                    add(PaletteItem("split-down", "Split Down", glyph = "▤") { scope.launch { runCatching { app.core.split(serverId, sid, bid, true) } } })
+                    add(PaletteItem("close-pane", "Close Pane", glyph = "×") { scope.launch { runCatching { app.core.closeBlock(serverId, sid, bid) } } })
+                }
+                if (h != null) {
+                    val control = h.control.value
+                    add(PaletteItem("fit", if (control) "Use Desktop Size" else "Fit to This Screen", glyph = "⤢", keywords = "resize size") {
+                        val t = h.view.terminal ?: return@PaletteItem
+                        if (control) t.releaseControl() else t.takeControl()
+                        h.control.value = !control
+                        h.view.control = !control
+                    })
+                    add(PaletteItem("paste", "Paste", glyph = "⎘") { h.view.pasteClipboard() })
+                    add(PaletteItem("copy-all", "Copy All Text", glyph = "⧉") { h.view.terminal?.allText()?.let(h.view::copy) })
+                }
+                add(PaletteItem("new-session", "New Session", category = "Sessions", glyph = "+") {
+                    scope.launch { runCatching { app.core.createSession(serverId, null) }.getOrNull()?.let { sid = it; blockId = null; windowId = null } }
+                })
+                for (o in server?.sessions.orEmpty()) if (o.id != sid) {
+                    add(PaletteItem("session-${o.id}", "Go to ${o.label}", category = "Sessions", glyph = "▸") { sid = o.id; blockId = null; windowId = null })
+                }
+                for (t in Themes) add(PaletteItem("theme-${t.id}", t.name, category = "Themes", glyph = if (t.id == themeId) "●" else "○", keywords = "theme color") { app.setTheme(t.id) })
+            }
+            CommandPalette(serverId, sid, blockId, local) { showPalette = false }
         }
     }
 }
@@ -336,6 +398,8 @@ private fun LiveTerminal(
     insetTop: Float,
     insetBottom: Float,
     onColors: (Int, Int) -> Unit,
+    onSwipe: (Int) -> Unit,
+    onPalette: () -> Unit,
     modifier: Modifier,
 ) {
     val app = ShrewApplication.instance
@@ -354,6 +418,8 @@ private fun LiveTerminal(
     }
     view.onRequestKeyboard = { view.showKeyboard() }
     view.onColors = onColors
+    view.onSwipePane = onSwipe
+    view.onPalette = onPalette
     if (view.insetTop != insetTop) view.insetTop = insetTop
     if (view.insetBottom != insetBottom) view.insetBottom = insetBottom
 
@@ -428,7 +494,7 @@ private fun LiveTerminal(
 }
 
 @Composable
-private fun MoreMenu(serverId: String, sessionId: String, blockId: String?, h: TermHandle?) {
+private fun MoreMenu(serverId: String, sessionId: String, blockId: String?, h: TermHandle?, onPalette: () -> Unit) {
     val app = ShrewApplication.instance
     val scope = rememberCoroutineScope()
     var menu by remember { mutableStateOf(false) }
@@ -436,6 +502,8 @@ private fun MoreMenu(serverId: String, sessionId: String, blockId: String?, h: T
     Box {
         GlassCircle(onClick = { menu = true }) { Icon(Icons.Default.MoreHoriz, "More", tint = Ink.text, modifier = Modifier.size(20.dp)) }
         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = Ink.raised) {
+            MenuRow("Command palette") { menu = false; onPalette() }
+            HorizontalDivider(color = Ink.hairline)
             if (h != null) {
                 val control = h.control.value
                 MenuRow(if (control) "Use desktop size" else "Fit to this screen") {

@@ -8,6 +8,10 @@ public final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGest
     public let controller: TerminalController
     public let renderer: TerminalRenderer
     public var onFontSizeChanged: ((CGFloat) -> Void)?
+    /// Horizontal swipe: +1 next pane, -1 previous.
+    public var onSwipePane: ((Int) -> Void)?
+    /// ⌘K / ⌘⇧P on a hardware keyboard.
+    public var onPalette: (() -> Void)?
 
     private var frameCache: Frame?
     private let padding: CGFloat = 6
@@ -239,6 +243,10 @@ public final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGest
         selecting = false
     }
 
+    private enum PanAxis { case undecided, vertical, horizontal }
+    private var panAxis = PanAxis.undecided
+    private var panTotalX: CGFloat = 0
+
     @objc private func onPan(_ g: UIPanGestureRecognizer) {
         if selecting { return }
         let d = g.translation(in: self)
@@ -248,15 +256,29 @@ public final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGest
         case .began:
             link?.invalidate()
             link = nil
+            panAxis = .undecided
+            panTotalX = 0
         case .changed:
-            if canPan, abs(d.x) > abs(d.y) {
-                panBy(-d.x)
-            } else {
-                scroll(by: -d.y)
+            if panAxis == .undecided, abs(d.x) + abs(d.y) > 2 {
+                panAxis = abs(d.x) > abs(d.y) * 1.3 ? .horizontal : .vertical
+            }
+            switch panAxis {
+            case .horizontal where canPan: panBy(-d.x)
+            case .horizontal: panTotalX += d.x // a pane swipe, decided on release
+            default: scroll(by: -d.y)
             }
         case .ended, .cancelled:
-            velocity = -g.velocity(in: self).y
-            if abs(velocity) > 200 { startMomentum() }
+            if panAxis == .horizontal, !canPan {
+                let vx = g.velocity(in: self).x
+                if abs(panTotalX) > 60 || abs(vx) > 600 {
+                    // Swipe left for the next pane, right for the previous one.
+                    onSwipePane?((panTotalX + vx * 0.1) < 0 ? 1 : -1)
+                }
+            } else if panAxis != .horizontal {
+                velocity = -g.velocity(in: self).y
+                if abs(velocity) > 200 { startMomentum() }
+            }
+            panAxis = .undecided
         default: break
         }
     }
@@ -384,11 +406,19 @@ public final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGest
     public override var keyCommands: [UIKeyCommand]? {
         [
             UIKeyCommand(title: "Paste", action: #selector(paste(_:)), input: "v", modifierFlags: .command),
+            UIKeyCommand(title: "Command Palette", action: #selector(palette), input: "k", modifierFlags: .command),
+            UIKeyCommand(title: "Command Palette", action: #selector(palette), input: "p", modifierFlags: [.command, .shift]),
+            UIKeyCommand(title: "Next Pane", action: #selector(nextPane), input: "]", modifierFlags: .command),
+            UIKeyCommand(title: "Previous Pane", action: #selector(prevPane), input: "[", modifierFlags: .command),
             UIKeyCommand(title: "Copy", action: #selector(copy(_:)), input: "c", modifierFlags: .command),
             UIKeyCommand(title: "Bigger Text", action: #selector(bigger), input: "=", modifierFlags: .command),
             UIKeyCommand(title: "Smaller Text", action: #selector(smaller), input: "-", modifierFlags: .command),
         ]
     }
+
+    @objc private func palette() { onPalette?() }
+    @objc private func nextPane() { onSwipePane?(1) }
+    @objc private func prevPane() { onSwipePane?(-1) }
 
     @objc private func bigger() { renderer.setFontSize(renderer.fontSize + 1); pushGrid(); setNeedsDisplay(); onFontSizeChanged?(renderer.fontSize) }
     @objc private func smaller() { renderer.setFontSize(renderer.fontSize - 1); pushGrid(); setNeedsDisplay(); onFontSizeChanged?(renderer.fontSize) }
