@@ -74,13 +74,7 @@ public struct HomeList: View {
                 }
             }
             ForEach(state.servers, id: \.id) { srv in
-                ServerHeader(server: srv, onEdit: { onEdit(srv) }, onCreated: { onOpen(srv.id, $0, nil) })
-                if srv.sessions.isEmpty, srv.connectivity.isOnline {
-                    Text("No sessions").font(.subheadline).foregroundStyle(c.tertiary).padding(.horizontal, 20).padding(.vertical, 12)
-                }
-                ForEach(srv.sessions, id: \.id) { s in
-                    SessionRow(server: srv, session: s, selected: current?.serverId == srv.id && current?.sessionId == s.id) { onOpen(srv.id, s.id, nil) }
-                }
+                ServerSection(server: srv, current: current, onEdit: { onEdit(srv) }, onOpen: { onOpen(srv.id, $0, nil) })
             }
         }
         .environment(\.chrome, c)
@@ -117,60 +111,78 @@ private struct EmptyHome: View {
     }
 }
 
-private struct ServerHeader: View {
+/// What to call a server: its machine name when known, else what the user typed.
+func serverTitle(_ srv: Server) -> String {
+    let looksDefault = srv.name.contains("@") || (srv.name.first?.isNumber ?? false)
+    if looksDefault, let h = srv.hostName, !h.isEmpty { return h }
+    return srv.name
+}
+
+/// One server: a quiet heading (press and hold for its options), then its
+/// sessions in a single rounded group ending with "New session".
+private struct ServerSection: View {
     @Environment(ShrewModel.self) private var model
     @Environment(\.chrome) private var c
     var server: Server
+    var current: Focus?
     var onEdit: () -> Void
-    var onCreated: (String) -> Void
+    var onOpen: (String) -> Void
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Circle().fill(Palette.connectivity(server.connectivity)).frame(width: 6, height: 6)
-                Text(server.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(c.secondary).lineLimit(1).truncationMode(.middle)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(serverTitle(server).uppercased())
+                    .font(.system(size: 12, weight: .semibold)).tracking(0.6).foregroundStyle(c.secondary).lineLimit(1)
                 Spacer()
-                Text(status).font(.mono(11)).foregroundStyle(c.tertiary)
-                if server.connectivity.isOnline {
-                    Button {
-                        Task { if let id = try? await model.core.createSession(serverId: server.id, label: nil) { onCreated(id) } }
-                    } label: {
-                        Image(systemName: "plus").font(.system(size: 14, weight: .semibold)).foregroundStyle(c.secondary).frame(width: 32, height: 32)
-                    }
-                    .accessibilityLabel("New session")
-                }
-                Menu {
-                    Button("Edit…", systemImage: "pencil", action: onEdit)
-                    Button("Reconnect", systemImage: "arrow.clockwise") { model.core.reconnect(serverId: server.id) }
-                    Divider()
-                    Button("Remove", systemImage: "trash", role: .destructive) { model.core.removeServer(serverId: server.id) }
-                } label: {
-                    Image(systemName: "ellipsis").font(.system(size: 14, weight: .semibold)).foregroundStyle(c.tertiary).frame(width: 32, height: 32)
+                switch server.connectivity {
+                case .online: if let ms = server.latencyMs { Text("\(ms) ms").font(.mono(12)).foregroundStyle(c.tertiary) }
+                case .connecting: Text("connecting").font(.system(size: 12)).foregroundStyle(Palette.connectivity(server.connectivity))
+                case .offline: Text("offline").font(.system(size: 12)).foregroundStyle(Palette.error)
+                case .idle: EmptyView()
                 }
             }
-            .padding(.leading, 20)
-            .padding(.trailing, 8)
-            .padding(.top, 14)
-            if case .offline(let error, _) = server.connectivity {
-                HStack {
-                    Text(error).font(.footnote).foregroundStyle(c.secondary)
-                    Spacer()
-                    Button("Retry") { model.core.reconnect(serverId: server.id) }.font(.footnote.weight(.semibold))
-                }
-                .padding(.horizontal, 20)
-                .padding(.bottom, 6)
+            .padding(.horizontal, 32)
+            .contentShape(Rectangle())
+            .contextMenu {
+                Button("Edit…", systemImage: "pencil", action: onEdit)
+                Button("Reconnect", systemImage: "arrow.clockwise") { model.core.reconnect(serverId: server.id) }
+                Divider()
+                Button("Remove", systemImage: "trash", role: .destructive) { model.core.removeServer(serverId: server.id) }
             }
-            Rectangle().fill(c.hairline).frame(height: 1)
-        }
-    }
 
-    private var status: String {
-        switch server.connectivity {
-        case .online: return server.latencyMs.map { "\($0) ms" } ?? ""
-        case .connecting: return "connecting"
-        case .offline: return "offline"
-        case .idle: return ""
+            VStack(spacing: 0) {
+                if case .offline(let error, _) = server.connectivity {
+                    HStack {
+                        Text(error).font(.subheadline).foregroundStyle(c.secondary).lineLimit(2)
+                        Spacer()
+                        Button("Retry") { model.core.reconnect(serverId: server.id) }.font(.subheadline.weight(.semibold))
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 12)
+                } else {
+                    ForEach(server.sessions, id: \.id) { s in
+                        SessionRow(server: server, session: s, selected: current?.serverId == server.id && current?.sessionId == s.id) { onOpen(s.id) }
+                        Rectangle().fill(c.hairline).frame(height: 0.5).padding(.leading, 16)
+                    }
+                    if server.connectivity.isOnline {
+                        Button {
+                            Task { if let id = try? await model.core.createSession(serverId: server.id, label: nil) { onOpen(id) } }
+                        } label: {
+                            Label("New session", systemImage: "plus").font(.system(size: 15)).foregroundStyle(c.accent)
+                                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.vertical, 13)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(RowStyle())
+                    } else {
+                        Text("Connecting…").font(.subheadline).foregroundStyle(c.tertiary)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(16)
+                    }
+                }
+            }
+            .background(c.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .padding(.horizontal, 16)
         }
+        .padding(.top, 18)
     }
 }
 
@@ -213,11 +225,10 @@ private struct SessionRow: View {
                         Image(systemName: "checkmark").font(.system(size: 15, weight: .semibold)).foregroundStyle(c.accent)
                     }
                 }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 12)
-                Rectangle().fill(c.hairline).frame(height: 1).padding(.leading, 20)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 11)
             }
-            .background(selected ? c.surface : .clear)
+            .background(selected ? c.raised : .clear)
             .contentShape(Rectangle())
         }
         .buttonStyle(RowStyle())

@@ -13,6 +13,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -228,44 +230,47 @@ fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?,
                 }
             }
 
-            // ---- floating header ----
-            Row(
+            // ---- top bar: title row, then window tabs when there's more than one ----
+            Column(
                 Modifier
                     .fillMaxWidth()
                     // The bar's full height, status bar included: the terminal's
                     // live rows start exactly below it and never hide under it.
                     .onSizeChanged { topH = it.height }
                     .statusBarsPadding()
-                    .padding(start = 10.dp, end = 10.dp, top = 4.dp, bottom = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                    .padding(top = 4.dp, bottom = 8.dp),
             ) {
-                GlassCircle(onClick = onSessions) { Icon(Icons.AutoMirrored.Filled.List, "Sessions", tint = Ink.text, modifier = Modifier.size(22.dp)) }
-                Spacer(Modifier.width(10.dp))
-                Tile(glyph(block), Modifier.size(32.dp))
-                Spacer(Modifier.width(10.dp))
-                TitleBlock(block, session, Modifier.weight(1f), onClick = onSessions)
-                Spacer(Modifier.width(8.dp))
-                if (window != null && window.blocks.size > 1) {
-                    PaneMap(window, blockId, Modifier.size(width = 54.dp, height = 38.dp)) { picked ->
-                        blockId = picked
-                        scope.launch { runCatching { app.core.focusBlock(serverId, sid, picked) } }
-                    }
+                Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    GlassCircle(onClick = onSessions) { Icon(Icons.AutoMirrored.Filled.List, "Sessions", tint = Ink.text, modifier = Modifier.size(22.dp)) }
+                    Spacer(Modifier.width(10.dp))
+                    Tile(glyph(block), Modifier.size(32.dp))
+                    Spacer(Modifier.width(10.dp))
+                    TitleBlock(block, session, Modifier.weight(1f), onClick = onSessions)
                     Spacer(Modifier.width(8.dp))
+                    if (window != null && window.blocks.size > 1) {
+                        PaneMap(window, blockId, Modifier.size(width = 54.dp, height = 38.dp)) { picked ->
+                            blockId = picked
+                            scope.launch { runCatching { app.core.focusBlock(serverId, sid, picked) } }
+                        }
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    MoreMenu(serverId, sid, blockId, handle.value, onClosePane = ::closePane) { showPalette = true }
                 }
-                MoreMenu(serverId, sid, blockId, handle.value, onClosePane = ::closePane) { showPalette = true }
-            }
-
-            // ---- bottom: window dock, or the key bar while typing ----
-            Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().onSizeChanged { bottomH = it.height }) {
-                if (ime) {
-                    if (dev.shrew.app.ui.Prefs.flag(dev.shrew.app.ui.Prefs.KEY_BAR)) activeKeyBar.value?.invoke()
-                } else if (session != null) {
-                    WindowDock(serverId, session, windowId, Modifier.align(Alignment.Center).navigationBarsPadding().padding(bottom = 10.dp)) { w ->
+                if (session != null && session.windows.size > 1) {
+                    Spacer(Modifier.height(8.dp))
+                    WindowTabs(serverId, session, windowId) { w ->
+                        slideDir = if (session.windows.indexOf(w) > session.windows.indexOfFirst { it.id == windowId }) 1 else -1
                         windowId = w.id
-                        blockId = w.focusedBlockId ?: w.blocks.firstOrNull()?.id
+                        blockId = w.focusedBlockId?.takeIf { f -> w.blocks.any { it.id == f } } ?: w.blocks.firstOrNull()?.id
                         scope.launch { runCatching { app.core.focusWindow(serverId, sid, w.id) } }
                     }
                 }
+            }
+
+            // ---- bottom: the key bar while typing; otherwise the terminal runs to the edge ----
+            Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().onSizeChanged { bottomH = it.height }) {
+                if (ime && dev.shrew.app.ui.Prefs.flag(dev.shrew.app.ui.Prefs.KEY_BAR)) activeKeyBar.value?.invoke()
+                else Spacer(Modifier.fillMaxWidth().navigationBarsPadding())
             }
         }
 
@@ -370,30 +375,49 @@ private fun PaneMap(window: Window, selected: String?, modifier: Modifier, onPic
     }
 }
 
+/** The session's windows as slim tabs in the top bar; always reachable, even while typing. */
 @Composable
-private fun WindowDock(serverId: String, session: Session, current: String?, modifier: Modifier, onPick: (Window) -> Unit) {
+private fun WindowTabs(serverId: String, session: Session, current: String?, onPick: (Window) -> Unit) {
     val app = ShrewApplication.instance
     val scope = rememberCoroutineScope()
     val st = LocalStatus.current
-    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
-        Row(Modifier.glass(RoundedCornerShape(50)).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            for (w in session.windows) {
-                val focused = w.blocks.firstOrNull { it.id == w.focusedBlockId } ?: w.blocks.firstOrNull()
-                val sel = w.id == current
-                val urgent = w.blocks.any { it.agent?.state == AgentState.BLOCKED }
-                Box(
-                    Modifier.size(width = 42.dp, height = 32.dp).clip(RoundedCornerShape(50)).background(if (sel) Ink.key else Color.Transparent).clickable { onPick(w) },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(glyph(focused), color = if (sel) Ink.text else Ink.secondary, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    if (urgent) Box(Modifier.align(Alignment.TopEnd).padding(top = 5.dp, end = 8.dp).size(6.dp).clip(CircleShape).background(st.blocked))
+    val view = LocalView.current
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        for (w in session.windows) {
+            val focused = w.blocks.firstOrNull { it.id == w.focusedBlockId } ?: w.blocks.firstOrNull()
+            val sel = w.id == current
+            val urgent = w.blocks.any { it.agent?.state == AgentState.BLOCKED }
+            val label = w.label.takeIf { it.isNotBlank() && !it.startsWith("Window ") } ?: focused?.let { runningName(it) } ?: "shell"
+            Row(
+                Modifier.height(30.dp).clip(RoundedCornerShape(9.dp))
+                    .background(if (sel) Ink.raised else Color.Transparent)
+                    .border(1.dp, if (sel) Ink.glassStroke else Color.Transparent, RoundedCornerShape(9.dp))
+                    .clickable {
+                        if (!sel) view.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
+                        onPick(w)
+                    }
+                    .padding(horizontal = 11.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (urgent) {
+                    Box(Modifier.size(6.dp).clip(CircleShape).background(st.blocked))
+                    Spacer(Modifier.width(6.dp))
+                }
+                Text(label, color = if (sel) Ink.text else Ink.secondary, fontSize = 13.sp, fontWeight = if (sel) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1)
+                if (w.blocks.size > 1) {
+                    Spacer(Modifier.width(6.dp))
+                    Text("${w.blocks.size}", color = Ink.tertiary, fontSize = 11.sp, fontFamily = Mono)
                 }
             }
         }
-        Spacer(Modifier.width(8.dp))
-        GlassCircle(onClick = { scope.launch { runCatching { app.core.newWindow(serverId, session.id) } } }) {
-            Icon(Icons.Default.Add, "New window", tint = Ink.text, modifier = Modifier.size(20.dp))
-        }
+        Box(
+            Modifier.size(30.dp).clip(RoundedCornerShape(9.dp)).clickable { scope.launch { runCatching { app.core.newWindow(serverId, session.id) } } },
+            contentAlignment = Alignment.Center,
+        ) { Icon(Icons.Default.Add, "New window", tint = Ink.secondary, modifier = Modifier.size(18.dp)) }
     }
 }
 
@@ -468,7 +492,7 @@ private fun LiveTerminal(
         if (Prefs.flag(Prefs.FIT_ON_OPEN)) term?.takeControl()
         control = term != null && Prefs.flag(Prefs.FIT_ON_OPEN)
         view.control = control
-        view.post { view.showKeyboard() }
+        // Don't pop the keyboard on open: look first, tap the terminal to type.
         onDispose {
             choreographer.removeFrameCallback(frameCb)
             view.terminal = null
@@ -478,6 +502,18 @@ private fun LiveTerminal(
     }
 
     // Apply the chosen theme to the terminal itself.
+    // Font, size, spacing and cursor from Settings, live.
+    val appearance by app.appearance.collectAsState()
+    LaunchedEffect(appearance) {
+        view.applyAppearance(
+            Prefs.string(Prefs.FONT),
+            Prefs.string(Prefs.LINE_HEIGHT)?.toFloatOrNull() ?: 1.08f,
+            Prefs.string(Prefs.CURSOR),
+            Prefs.flag(Prefs.BLINK),
+        )
+        app.core.setting("font_size")?.toFloatOrNull()?.let { if (it != view.fontSize) view.fontSize = it }
+    }
+
     LaunchedEffect(theme.id, view.terminal) {
         val t = view.terminal ?: return@LaunchedEffect
         val ansi = theme.ansi
@@ -512,6 +548,7 @@ private fun MoreMenu(serverId: String, sessionId: String, blockId: String?, h: T
         GlassCircle(onClick = { menu = true }) { Icon(Icons.Default.MoreHoriz, "More", tint = Ink.text, modifier = Modifier.size(20.dp)) }
         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = Ink.raised, shape = RoundedCornerShape(14.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Ink.glassStroke), shadowElevation = 12.dp) {
             ShrewMenuItem("Command Palette", Icons.Default.KeyboardCommandKey) { menu = false; onPalette() }
+            ShrewMenuItem("New Window", Icons.Default.Add) { menu = false; scope.launch { runCatching { app.core.newWindow(serverId, sessionId) } } }
             HorizontalDivider(color = Ink.hairline)
             if (h != null) {
                 val control = h.control.value

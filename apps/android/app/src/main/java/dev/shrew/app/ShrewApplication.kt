@@ -40,6 +40,8 @@ class ShrewApplication : Application() {
 
     /** The color theme id (see ui.Themes); persisted in the engine's settings. */
     val themeId = MutableStateFlow("tokyo-night")
+    /** Bumped when terminal appearance settings change, so open terminals re-read them. */
+    val appearance = MutableStateFlow(0)
 
     fun setTheme(id: String) {
         themeId.value = id

@@ -24,6 +24,8 @@ public final class ShrewModel {
     /// The chosen color theme (see `Themes`); persisted in the engine's settings.
     public private(set) var themeId: String = "tokyo-night"
     public var theme: ThemeSpec { Themes.byId(themeId) }
+    /// Bumped when terminal appearance settings change, so open terminals re-read them.
+    public var appearanceVersion = 0
 
     public func setTheme(_ id: String) {
         themeId = id

@@ -101,12 +101,11 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
 
     private var frame: Frame? = null
     private val density = resources.displayMetrics.density
-    private val typefaces = arrayOf(
-        ResourcesCompat.getFont(context, R.font.jetbrains_mono_regular) ?: Typeface.MONOSPACE,
-        ResourcesCompat.getFont(context, R.font.jetbrains_mono_bold) ?: Typeface.MONOSPACE,
-        ResourcesCompat.getFont(context, R.font.jetbrains_mono_italic) ?: Typeface.MONOSPACE,
-        ResourcesCompat.getFont(context, R.font.jetbrains_mono_bold_italic) ?: Typeface.MONOSPACE,
-    )
+    private var typefaces = TermFonts.byId(null).typefaces(context)
+    private var lineHeight = 1.08f
+    /** Forced cursor shape from Settings, or null to follow the program. */
+    private var cursorOverride: CursorShape? = null
+    private var blinkAllowed = true
     private val text = Paint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply { isLinearText = true }
     private val fill = Paint()
     private val line = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -151,8 +150,25 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
         text.typeface = typefaces[0]
         cellW = text.measureText("M")
         val fm = text.fontMetrics
-        cellH = (fm.descent - fm.ascent + fm.leading).let { floor(it * 1.08f) }
+        cellH = (fm.descent - fm.ascent + fm.leading).let { floor(it * lineHeight) }
         baseline = -fm.ascent + (cellH - (fm.descent - fm.ascent)) / 2f
+    }
+
+    /** Font, line spacing and cursor from Settings; applies to the open terminal. */
+    fun applyAppearance(fontId: String?, lineHeight: Float, cursor: String?, blink: Boolean) {
+        typefaces = TermFonts.byId(fontId).typefaces(context)
+        this.lineHeight = lineHeight.coerceIn(1.0f, 1.6f)
+        cursorOverride = when (cursor) {
+            "block" -> CursorShape.BLOCK
+            "bar" -> CursorShape.BAR
+            "underline" -> CursorShape.UNDERLINE
+            else -> null
+        }
+        blinkAllowed = blink
+        updateMetrics()
+        pushDeviceGrid()
+        requestLayout()
+        invalidate()
     }
 
     /**
@@ -330,20 +346,21 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
 
         f.cursor?.let { c ->
             if (f.scrollOffset + f.scrollLen < f.scrollTotal) return@let // scrolled into history
-            if (c.blinking && !blinkOn && hasFocus()) return@let
+            if (blinkAllowed && c.blinking && !blinkOn && hasFocus()) return@let
+            val shape = cursorOverride ?: c.shape
             val cx = c.col.toInt() * cellW
             val cy = c.row.toInt() * cellH
             val w = if (c.wide) cellW * 2 else cellW
             fill.color = f.cursorColor?.toInt() ?: fgDefault
             when {
                 c.password -> drawLock(canvas, cx, cy)
-                !hasFocus() || c.shape == CursorShape.HOLLOW_BLOCK -> {
+                !hasFocus() || shape == CursorShape.HOLLOW_BLOCK -> {
                     fill.style = Paint.Style.STROKE; fill.strokeWidth = density
                     canvas.drawRect(cx + 0.5f, cy + 0.5f, cx + w - 0.5f, cy + cellH - 0.5f, fill)
                     fill.style = Paint.Style.FILL
                 }
-                c.shape == CursorShape.BAR -> canvas.drawRect(cx, cy, cx + 2 * density, cy + cellH, fill)
-                c.shape == CursorShape.UNDERLINE -> canvas.drawRect(cx, cy + cellH - 2 * density, cx + w, cy + cellH, fill)
+                shape == CursorShape.BAR -> canvas.drawRect(cx, cy, cx + 2 * density, cy + cellH, fill)
+                shape == CursorShape.UNDERLINE -> canvas.drawRect(cx, cy + cellH - 2 * density, cx + w, cy + cellH, fill)
                 else -> {
                     canvas.drawRect(cx, cy, cx + w, cy + cellH, fill)
                     // Redraw the glyph under the block in the background color.

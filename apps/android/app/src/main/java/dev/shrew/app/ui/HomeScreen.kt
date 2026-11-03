@@ -1,6 +1,7 @@
 package dev.shrew.app.ui
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -104,15 +105,7 @@ fun SessionList(
             items(needs, key = { "n" + it.serverId + it.block.id }) { NeedsRow(it) { onOpenSession(it.serverId, it.sessionId, it.block.id) } }
         }
         for (srv in state.servers) {
-            item(key = "s" + srv.id) { ServerHeader(srv, onEditServer) { sid -> onOpenSession(srv.id, sid, null) } }
-            if (srv.connectivity is Connectivity.Online && srv.sessions.isEmpty()) {
-                item(key = "e" + srv.id) {
-                    Text("No sessions", color = Ink.tertiary, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
-                }
-            }
-            items(srv.sessions, key = { srv.id + it.id }) { s ->
-                SessionRow(srv, s, selected = current?.serverId == srv.id && current.sessionId == s.id) { onOpenSession(srv.id, s.id, null) }
-            }
+            item(key = "s" + srv.id) { ServerSection(srv, current, onEditServer) { sid -> onOpenSession(srv.id, sid, null) } }
         }
     }
 }
@@ -166,7 +159,7 @@ private fun SessionRow(srv: Server, s: Session, selected: Boolean, onOpen: () ->
         Row(
             Modifier
                 .fillMaxWidth()
-                .background(if (pressed) Ink.raised else if (selected) Ink.surface else Color.Transparent)
+                .background(if (pressed || selected) Ink.raised else Color.Transparent)
                 .combinedClickable(
                     interactionSource = interaction,
                     indication = null,
@@ -177,7 +170,7 @@ private fun SessionRow(srv: Server, s: Session, selected: Boolean, onOpen: () ->
                         menu = true
                     },
                 )
-                .padding(horizontal = 20.dp, vertical = 12.dp),
+                .padding(horizontal = 16.dp, vertical = 11.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1f)) {
@@ -222,7 +215,6 @@ private fun SessionRow(srv: Server, s: Session, selected: Boolean, onOpen: () ->
             }
         }
     }
-    HorizontalDivider(Modifier.padding(start = 20.dp), color = Ink.hairline)
     if (renaming) RenameDialog(s.label, onDismiss = { renaming = false }) { name ->
         renaming = false
         scope.launch { runCatching { app.core.renameSession(srv.id, s.id, name) } }
@@ -242,46 +234,75 @@ private fun RenameDialog(current: String, onDismiss: () -> Unit, onDone: (String
     )
 }
 
+/** What to call a server: its machine name when we know it, else what the user typed. */
+internal fun serverTitle(srv: Server): String {
+    val looksDefault = srv.name.contains('@') || srv.name.firstOrNull()?.isDigit() == true
+    return if (looksDefault) srv.hostName?.takeIf { it.isNotBlank() } ?: srv.name else srv.name
+}
+
+/**
+ * One server: a quiet heading (long-press for its options), then its sessions
+ * in a single rounded group ending with "New session".
+ */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ServerHeader(srv: Server, onEdit: (Server) -> Unit, onCreated: (String) -> Unit) {
+private fun ServerSection(srv: Server, current: dev.shrew.app.Focus?, onEdit: (Server) -> Unit, onOpen: (String) -> Unit) {
     val app = ShrewApplication.instance
     val scope = rememberCoroutineScope()
+    val view = LocalView.current
     var menu by remember { mutableStateOf(false) }
     val st = LocalStatus.current
-    val (dot, status) = when (val c = srv.connectivity) {
-        is Connectivity.Online -> st.online to (srv.latencyMs?.let { "${it} ms" } ?: "")
-        is Connectivity.Connecting -> st.connecting to "connecting"
-        is Connectivity.Offline -> st.error to "offline"
-        is Connectivity.Idle -> st.offline to ""
-    }
-    Column {
-        Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 4.dp, top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(6.dp).clip(CircleShape).background(dot))
-            Spacer(Modifier.width(8.dp))
-            Text(srv.name, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Ink.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-            Text(status, style = MonoSmall.copy(fontSize = 11.sp), color = Ink.tertiary)
-            if (srv.connectivity is Connectivity.Online) {
-                IconButton(onClick = { scope.launch { runCatching { app.core.createSession(srv.id, null) }.onSuccess(onCreated) } }) {
-                    Icon(Icons.Default.Add, "New session", tint = Ink.secondary, modifier = Modifier.size(20.dp))
+    val online = srv.connectivity is Connectivity.Online
+    Column(Modifier.padding(top = 18.dp)) {
+        Box {
+            Row(
+                Modifier.fillMaxWidth().combinedClickable(onClick = {}, onLongClick = {
+                    view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                    menu = true
+                }).padding(start = 32.dp, end = 32.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(serverTitle(srv).uppercase(), color = Ink.secondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.6.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                when (val c = srv.connectivity) {
+                    is Connectivity.Online -> srv.latencyMs?.let { Text("${it} ms", color = Ink.tertiary, fontSize = 12.sp, fontFamily = Mono) }
+                    is Connectivity.Connecting -> Text("connecting", color = st.connecting, fontSize = 12.sp)
+                    is Connectivity.Offline -> Text("offline", color = st.error, fontSize = 12.sp)
+                    is Connectivity.Idle -> Unit
                 }
             }
-            Box {
-                IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreHoriz, "Server options", tint = Ink.tertiary, modifier = Modifier.size(20.dp)) }
-                ShrewMenu(menu, { menu = false }) {
-                    ShrewMenuItem("Edit…", Icons.Default.Edit) { menu = false; onEdit(srv) }
-                    ShrewMenuItem("Reconnect", Icons.Default.Refresh) { menu = false; app.core.reconnect(srv.id) }
-                    HorizontalDivider(color = Ink.hairline)
-                    ShrewMenuItem("Remove", Icons.Default.Delete, color = LocalStatus.current.error) { menu = false; app.core.removeServer(srv.id) }
+            ShrewMenu(menu, { menu = false }) {
+                ShrewMenuItem("Edit…", Icons.Default.Edit) { menu = false; onEdit(srv) }
+                ShrewMenuItem("Reconnect", Icons.Default.Refresh) { menu = false; app.core.reconnect(srv.id) }
+                HorizontalDivider(color = Ink.hairline)
+                ShrewMenuItem("Remove", Icons.Default.Delete, color = st.error) { menu = false; app.core.removeServer(srv.id) }
+            }
+        }
+        Column(Modifier.padding(horizontal = 16.dp).fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Ink.surface)) {
+            val offline = srv.connectivity as? Connectivity.Offline
+            if (offline != null) {
+                Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 6.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(offline.error, color = Ink.secondary, fontSize = 14.sp, maxLines = 2, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { app.core.reconnect(srv.id) }) { Text("Retry", color = Ink.accent, fontWeight = FontWeight.SemiBold) }
+                }
+            } else {
+                for (s in srv.sessions) {
+                    SessionRow(srv, s, selected = current?.serverId == srv.id && current.sessionId == s.id) { onOpen(s.id) }
+                    HorizontalDivider(Modifier.padding(start = 16.dp), color = Ink.hairline)
+                }
+                if (online) {
+                    Row(
+                        Modifier.fillMaxWidth().clickable { scope.launch { runCatching { app.core.createSession(srv.id, null) }.onSuccess(onOpen) } }.padding(horizontal = 16.dp, vertical = 13.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(Icons.Default.Add, null, tint = Ink.accent, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(10.dp))
+                        Text("New session", color = Ink.accent, fontSize = 15.sp)
+                    }
+                } else {
+                    Text("Connecting…", color = Ink.tertiary, fontSize = 14.sp, modifier = Modifier.padding(16.dp))
                 }
             }
         }
-        if (srv.connectivity is Connectivity.Offline) {
-            Row(Modifier.padding(start = 34.dp, end = 20.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text((srv.connectivity as Connectivity.Offline).error, color = Ink.secondary, fontSize = 13.sp, modifier = Modifier.weight(1f))
-                TextButton(onClick = { app.core.reconnect(srv.id) }) { Text("Retry") }
-            }
-        }
-        HorizontalDivider(color = Ink.hairline)
     }
 }
 

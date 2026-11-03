@@ -8,6 +8,10 @@ public enum Prefs {
     public static let notifyDone = "notify_done"
     public static let notifyExit = "notify_exit"
     public static let notifyProgram = "notify_program"
+    public static let font = "font"
+    public static let lineHeight = "line_height"
+    public static let cursor = "cursor_style"
+    public static let blink = "cursor_blink"
 
     public static func flag(_ model: ShrewModel, _ key: String, default d: Bool = true) -> Bool {
         model.core.setting(key: key).map { $0 == "true" } ?? d
@@ -25,6 +29,9 @@ public struct SettingsView: View {
     var onAddServer: () -> Void
     var onEditServer: (Server) -> Void
     @State private var fontSize: Double = 13
+    @State private var fontId = "jetbrains-mono"
+    @State private var spacing: Double = 1.06
+    @State private var cursor = "program"
 
     public init(onAddServer: @escaping () -> Void, onEditServer: @escaping (Server) -> Void) {
         self.onAddServer = onAddServer
@@ -59,12 +66,40 @@ public struct SettingsView: View {
                     HStack {
                         Text("Text size")
                         Slider(value: $fontSize, in: 9...22, step: 1) { editing in
-                            if !editing { model.core.setSetting(key: "font_size", value: String(fontSize)) }
+                            if !editing { model.core.setSetting(key: "font_size", value: String(fontSize)); model.appearanceVersion += 1 }
                         }
                         Text("\(Int(fontSize))").font(.mono(14)).foregroundStyle(c.secondary).frame(width: 28)
                     }
+                    HStack {
+                        Text("Spacing")
+                        Slider(value: $spacing, in: 1.0...1.6, step: 0.05) { editing in
+                            if !editing { set(Prefs.lineHeight, String(spacing)) }
+                        }
+                        Text(String(format: "%.2f", spacing)).font(.mono(14)).foregroundStyle(c.secondary).frame(width: 40)
+                    }
+                }
+                Section("Font") {
+                    ForEach(Fonts.all) { f in
+                        Button { fontId = f.id; set(Prefs.font, f.id); Haptics.select() } label: {
+                            HStack {
+                                Text(f.name).font(.custom(f.faces[0], size: 16)).foregroundStyle(c.text)
+                                Spacer()
+                                Text("{a}=>0").font(.custom(f.faces[0], size: 14)).foregroundStyle(c.tertiary)
+                                Image(systemName: "checkmark").font(.body.weight(.semibold)).foregroundStyle(c.accent)
+                                    .opacity(f.id == fontId ? 1 : 0).frame(width: 24)
+                            }
+                        }
+                    }
                 }
                 Section {
+                    Picker("Cursor", selection: Binding(get: { cursor }, set: { cursor = $0; set(Prefs.cursor, $0) })) {
+                        Text("Program").tag("program")
+                        Text("Block").tag("block")
+                        Text("Bar").tag("bar")
+                        Text("Underline").tag("underline")
+                    }
+                    .pickerStyle(.segmented)
+                    Toggle("Blinking cursor", isOn: Binding(get: { Prefs.flag(model, Prefs.blink) }, set: { Prefs.set(model, Prefs.blink, $0); model.appearanceVersion += 1 }))
                     toggle("Fit to this screen when opening", Prefs.fitOnOpen)
                     toggle("Key bar above the keyboard", Prefs.keyBar)
                 } header: {
@@ -112,7 +147,17 @@ public struct SettingsView: View {
         }
         .tint(c.accent)
         .preferredColorScheme(c.scheme)
-        .onAppear { fontSize = min(max(Double(model.core.setting(key: "font_size") ?? "") ?? 13, 9), 22) }
+        .onAppear {
+            fontSize = min(max(Double(model.core.setting(key: "font_size") ?? "") ?? 13, 9), 22)
+            fontId = model.core.setting(key: Prefs.font).flatMap { $0.isEmpty ? nil : $0 } ?? "jetbrains-mono"
+            spacing = Double(model.core.setting(key: Prefs.lineHeight) ?? "") ?? 1.06
+            cursor = model.core.setting(key: Prefs.cursor).flatMap { $0.isEmpty ? nil : $0 } ?? "program"
+        }
+    }
+
+    private func set(_ key: String, _ value: String) {
+        model.core.setSetting(key: key, value: value)
+        model.appearanceVersion += 1
     }
 
     private func shortName(_ t: ThemeSpec) -> String {
@@ -136,7 +181,8 @@ public struct SettingsView: View {
         let line1 = Text("me@box").foregroundColor(ansi(2)) + Text(":").foregroundColor(fg) + Text("~/src").foregroundColor(ansi(4)) + Text("$ cargo test").foregroundColor(fg)
         let line2 = Text("test result: ").foregroundColor(fg) + Text("ok").foregroundColor(ansi(2)) + Text(". 11 passed; ").foregroundColor(fg) + Text("0 failed").foregroundColor(ansi(1))
         return VStack(alignment: .leading, spacing: 3) { line1; line2 }
-            .font(.mono(fontSize))
+            .font(.custom(Fonts.byId(fontId).faces[0], size: fontSize))
+            .lineSpacing(fontSize * (spacing - 1))
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(14)
             .background(Color(hex: t.background), in: RoundedRectangle(cornerRadius: 10, style: .continuous))

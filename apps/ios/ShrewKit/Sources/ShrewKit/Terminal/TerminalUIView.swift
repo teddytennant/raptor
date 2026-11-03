@@ -28,6 +28,19 @@ public final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGest
     private let keyBar: KeyBar
     let modifiers = StickyModifiers()
 
+    /// Settings: forced cursor shape (nil follows the program) and blinking.
+    public var cursorShape: CursorShape?
+    public var cursorBlinks = true
+
+    /// Apply font, spacing and cursor from Settings to this open terminal.
+    public func applyAppearance(fontId: String?, lineHeight: CGFloat, cursor: String?, blink: Bool) {
+        renderer.setAppearance(fontId: fontId, lineHeight: lineHeight)
+        cursorShape = switch cursor { case "block": .block; case "bar": .bar; case "underline": .underline; default: nil }
+        cursorBlinks = blink
+        pushGrid()
+        setNeedsDisplay()
+    }
+
     public init(controller: TerminalController, fontSize: CGFloat) {
         self.controller = controller
         self.renderer = TerminalRenderer(fontSize: fontSize)
@@ -133,7 +146,8 @@ public final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGest
         o.scale = scale
         o.panX = panX
         o.focused = isFirstResponder
-        o.cursorVisible = blinkOn || !isFirstResponder
+        o.cursorVisible = blinkOn || !isFirstResponder || !cursorBlinks
+        o.cursorShape = cursorShape
         renderer.draw(f, in: ctx, size: bounds.size, options: o)
     }
 

@@ -16,9 +16,9 @@ public struct CellMetrics: Equatable, Sendable {
     public var ascent: CGFloat
     public var descent: CGFloat
 
-    public init(fontSize: CGFloat) {
+    public init(fontSize: CGFloat, font: String = "JetBrainsMono-Regular", lineHeight: CGFloat = 1.06) {
         Fonts.register()
-        let f = CTFontCreateWithName("JetBrainsMono-Regular" as CFString, fontSize, nil)
+        let f = CTFontCreateWithName(font as CFString, fontSize, nil)
         var glyph = CGGlyph()
         var ch = UniChar(UInt8(ascii: "M"))
         CTFontGetGlyphsForCharacters(f, &ch, &glyph, 1)
@@ -27,7 +27,7 @@ public struct CellMetrics: Equatable, Sendable {
         width = adv.width
         ascent = CTFontGetAscent(f)
         descent = CTFontGetDescent(f)
-        height = ceil((ascent + descent + CTFontGetLeading(f)) * 1.06)
+        height = ceil((ascent + descent + CTFontGetLeading(f)) * lineHeight)
     }
 }
 
@@ -39,9 +39,20 @@ public final class TerminalRenderer {
     private var fonts: [CTFont] = []
     private var lineCache: [String: CTLine] = [:]
 
+    public private(set) var font: TermFont = Fonts.byId(nil)
+    public private(set) var lineHeight: CGFloat = 1.06
+
     public init(fontSize: CGFloat) {
         self.fontSize = fontSize
         self.metrics = CellMetrics(fontSize: fontSize)
+        loadFonts()
+    }
+
+    /// Font family and line spacing from Settings.
+    public func setAppearance(fontId: String?, lineHeight: CGFloat) {
+        font = Fonts.byId(fontId)
+        self.lineHeight = min(max(lineHeight, 1.0), 1.6)
+        metrics = CellMetrics(fontSize: fontSize, font: font.faces[0], lineHeight: self.lineHeight)
         loadFonts()
     }
 
@@ -49,12 +60,12 @@ public final class TerminalRenderer {
         let s = min(max(s, 7), 30)
         guard s != fontSize else { return }
         fontSize = s
-        metrics = CellMetrics(fontSize: s)
+        metrics = CellMetrics(fontSize: s, font: font.faces[0], lineHeight: lineHeight)
         loadFonts()
     }
 
     private func loadFonts() {
-        fonts = Fonts.names.map { CTFontCreateWithName($0 as CFString, fontSize, nil) }
+        fonts = font.faces.map { CTFontCreateWithName($0 as CFString, fontSize, nil) }
         lineCache.removeAll(keepingCapacity: true)
     }
 
@@ -71,6 +82,8 @@ public final class TerminalRenderer {
         public var panX: CGFloat = 0
         public var focused = true
         public var cursorVisible = true
+        /// Forced cursor shape from Settings; nil follows the program.
+        public var cursorShape: CursorShape?
         public init() {}
     }
 
@@ -104,7 +117,7 @@ public final class TerminalRenderer {
         }
 
         if let c = frame.cursor, o.cursorVisible, frame.scrollOffset + frame.scrollLen >= frame.scrollTotal {
-            drawCursor(c, frame: frame, in: ctx, focused: o.focused)
+            drawCursor(c, frame: frame, in: ctx, focused: o.focused, shape: o.cursorShape ?? c.shape)
         }
         ctx.restoreGState()
 
@@ -273,7 +286,7 @@ public final class TerminalRenderer {
         return true
     }
 
-    private func drawCursor(_ c: Cursor, frame: Frame, in ctx: CGContext, focused: Bool) {
+    private func drawCursor(_ c: Cursor, frame: Frame, in ctx: CGContext, focused: Bool, shape: CursorShape) {
         let m = metrics
         let rect = CGRect(x: CGFloat(c.col) * m.width, y: CGFloat(c.row) * m.height, width: m.width * (c.wide ? 2 : 1), height: m.height)
         let color = cg(frame.cursorColor ?? frame.foreground)
@@ -289,12 +302,12 @@ public final class TerminalRenderer {
             ctx.strokePath()
             return
         }
-        if !focused || c.shape == .hollowBlock {
+        if !focused || shape == .hollowBlock {
             ctx.setLineWidth(1)
             ctx.stroke(rect.insetBy(dx: 0.5, dy: 0.5))
             return
         }
-        switch c.shape {
+        switch shape {
         case .bar: ctx.fill(CGRect(x: rect.minX, y: rect.minY, width: 2, height: rect.height))
         case .underline: ctx.fill(CGRect(x: rect.minX, y: rect.maxY - 2, width: rect.width, height: 2))
         default:

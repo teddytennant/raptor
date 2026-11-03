@@ -27,6 +27,8 @@ final class TerminalUITests: XCTestCase {
         XCTAssertTrue(terminal.waitForExistence(timeout: 15), "terminal never appeared")
         sleep(3)
         shot("opened")
+        terminal.tap() // the keyboard no longer opens by itself
+        sleep(1)
 
         // Soft keyboard typing goes through UIKeyInput.insertText.
         app.typeText("printf 'ui-%s\\n' 42\n")
@@ -85,6 +87,7 @@ final class TerminalUITests: XCTestCase {
     func testSwipeBetweenPanesAndCommandPalette() throws {
         let terminal = app.textViews["Terminal"]
         XCTAssertTrue(terminal.waitForExistence(timeout: 15))
+        terminal.tap() // the keyboard no longer opens by itself
         sleep(3)
         app.typeText("echo pane-one\n")
         sleep(1)

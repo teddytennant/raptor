@@ -56,7 +56,23 @@ public struct TerminalScreen: View {
 
             // The top bar sits over the terminal like glass: live rows start
             // below it, and scrollback moving up behind it shows through blurred.
-            header(c, server: server, session: session, window: window, block: block)
+            VStack(spacing: 8) {
+                header(c, server: server, session: session, window: window, block: block)
+                // Windows as slim tabs in the top bar: always reachable, even while typing.
+                if let session, session.windows.count > 1 {
+                    WindowTabs(session: session, current: window?.id) { w in
+                        slideEdge = (session.windows.firstIndex { $0.id == w.id } ?? 0) > (session.windows.firstIndex { $0.id == window?.id } ?? 0) ? .trailing : .leading
+                        withAnimation(.snappy(duration: 0.25)) {
+                            windowId = w.id
+                            blockId = w.blocks.first { $0.id == w.focusedBlockId }?.id ?? w.blocks.first?.id
+                        }
+                        Haptics.select()
+                        Task { try? await model.core.focusWindow(serverId: serverId, sessionId: sessionId, windowId: w.id) }
+                    } onNew: {
+                        Task { try? await model.core.newWindow(serverId: serverId, sessionId: sessionId) }
+                    }
+                }
+            }
                 .padding(.bottom, 8)
                 .background {
                     Rectangle()
@@ -68,22 +84,6 @@ public struct TerminalScreen: View {
                 }
                 .background(GeometryReader { g in Color.clear.preference(key: TopInsetKey.self, value: g.frame(in: .global).maxY) })
 
-            VStack {
-                Spacer()
-                if !keyboard, let session {
-                    WindowDock(session: session, current: window?.id) { w in
-                        windowId = w.id
-                        blockId = w.focusedBlockId ?? w.blocks.first?.id
-                        Haptics.select()
-                        Task { try? await model.core.focusWindow(serverId: serverId, sessionId: sessionId, windowId: w.id) }
-                    } onNew: {
-                        Task { try? await model.core.newWindow(serverId: serverId, sessionId: sessionId) }
-                    }
-                    .padding(.bottom, 6)
-                    .background(GeometryReader { g in Color.clear.preference(key: BottomInsetKey.self, value: g.size.height + 34) })
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-            }
         }
         .environment(\.chrome, c)
         .preferredColorScheme(c.scheme)
@@ -276,7 +276,8 @@ private struct PaneMap: View {
     }
 }
 
-private struct WindowDock: View {
+/// The session's windows as slim tabs in the top bar.
+private struct WindowTabs: View {
     var session: Session
     var current: String?
     var onPick: (Window) -> Void
@@ -284,34 +285,35 @@ private struct WindowDock: View {
     @Environment(\.chrome) private var c
 
     var body: some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 2) {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
                 ForEach(session.windows, id: \.id) { w in
                     let focused = w.blocks.first { $0.id == w.focusedBlockId } ?? w.blocks.first
                     let sel = w.id == current
+                    let label = (!w.label.isEmpty && !w.label.hasPrefix("Window ")) ? w.label : (focused.flatMap(runningName) ?? "shell")
                     Button { onPick(w) } label: {
-                        Text(glyph(focused))
-                            .font(.mono(13, weight: .bold))
-                            .foregroundStyle(sel ? c.text : c.secondary)
-                            .frame(width: 42, height: 32)
-                            .background(sel ? c.key : .clear, in: Capsule())
-                            .overlay(alignment: .topTrailing) {
-                                if w.blocks.contains(where: { $0.agent?.state == .blocked }) {
-                                    Circle().fill(Palette.blocked).frame(width: 6, height: 6).padding(.top, 5).padding(.trailing, 8)
-                                }
+                        HStack(spacing: 6) {
+                            if w.blocks.contains(where: { $0.agent?.state == .blocked }) {
+                                Circle().fill(Palette.blocked).frame(width: 6, height: 6)
                             }
+                            Text(label).font(.system(size: 13, weight: sel ? .semibold : .regular)).foregroundStyle(sel ? c.text : c.secondary).lineLimit(1)
+                            if w.blocks.count > 1 {
+                                Text("\(w.blocks.count)").font(.mono(11)).foregroundStyle(c.tertiary)
+                            }
+                        }
+                        .padding(.horizontal, 11)
+                        .frame(height: 30)
+                        .background(sel ? c.raised : .clear, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(sel ? c.glassStroke : .clear, lineWidth: 1))
                     }
                     .buttonStyle(.plain)
                 }
+                Button(action: onNew) {
+                    Image(systemName: "plus").font(.system(size: 14, weight: .semibold)).foregroundStyle(c.secondary).frame(width: 30, height: 30)
+                }
+                .accessibilityLabel("New window")
             }
-            .padding(4)
-            .glass(Capsule(), c)
-
-            Button(action: onNew) {
-                Image(systemName: "plus").font(.system(size: 16, weight: .semibold)).foregroundStyle(c.text).frame(width: 40, height: 40)
-            }
-            .glass(Circle(), c)
-            .accessibilityLabel("New window")
+            .padding(.horizontal, 10)
         }
     }
 }
@@ -329,6 +331,9 @@ private struct MoreMenu: View {
     var body: some View {
         Menu {
             Button("Command Palette", systemImage: "command", action: onPalette)
+            Button("New Window", systemImage: "plus.square.on.square") {
+                Task { try? await model.core.newWindow(serverId: serverId, sessionId: sessionId) }
+            }
             Divider()
             if let ctl = controller {
                 Button(ctl.hasControl ? "Use Desktop Size" : "Fit to This Screen",
@@ -387,7 +392,7 @@ struct LiveTerminal: View {
         ZStack {
             if let ctl = own {
                 TerminalSurface(controller: ctl, fontSize: fontSize, chrome: chrome, insetTop: insetTop, insetBottom: insetBottom,
-                                onColors: onColors, onSwipe: onSwipe, onPalette: onPalette) {
+                                appearance: TerminalAppearance(model), onColors: onColors, onSwipe: onSwipe, onPalette: onPalette) {
                     model.core.setSetting(key: "font_size", value: String(Double($0)))
                 }
                 if let text = ctl.status.banner {
@@ -429,20 +434,28 @@ struct TerminalSurface: UIViewRepresentable {
     let chrome: Chrome
     let insetTop: CGFloat
     let insetBottom: CGFloat
+    let appearance: TerminalAppearance
     var onColors: (UInt32, UInt32) -> Void
     var onSwipe: (Int) -> Void
     var onPalette: () -> Void
     var onFontSize: (CGFloat) -> Void
 
+    final class Coordinator { var applied: TerminalAppearance? }
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
     func makeUIView(context: Context) -> TerminalUIView {
         let v = TerminalUIView(controller: controller, fontSize: fontSize)
         v.showsKeyBar = controller.showsKeyBar
         v.onFontSizeChanged = onFontSize
-        DispatchQueue.main.async { _ = v.becomeFirstResponder() }
+        // Don't pop the keyboard on open: look first, tap the terminal to type.
         return v
     }
 
     func updateUIView(_ v: TerminalUIView, context: Context) {
+        if context.coordinator.applied != appearance {
+            context.coordinator.applied = appearance
+            v.applyAppearance(fontId: appearance.font, lineHeight: appearance.lineHeight, cursor: appearance.cursor, blink: appearance.blink)
+        }
         v.chrome = chrome
         v.insetTop = insetTop
         v.insetBottom = insetBottom
@@ -459,6 +472,7 @@ struct TerminalSurface: NSViewRepresentable {
     let chrome: Chrome
     let insetTop: CGFloat
     let insetBottom: CGFloat
+    let appearance: TerminalAppearance
     var onColors: (UInt32, UInt32) -> Void
     var onSwipe: (Int) -> Void
     var onPalette: () -> Void
@@ -489,3 +503,19 @@ struct TerminalSurface: NSViewRepresentable {
     func updateNSView(_ v: View, context: Context) {}
 }
 #endif
+
+/// The terminal settings a surface draws with; a change re-applies them live.
+struct TerminalAppearance: Equatable {
+    var font: String?
+    var lineHeight: CGFloat
+    var cursor: String?
+    var blink: Bool
+
+    @MainActor init(_ model: ShrewModel) {
+        _ = model.appearanceVersion // observe: Settings bumps it
+        font = model.core.setting(key: Prefs.font)
+        lineHeight = CGFloat(Double(model.core.setting(key: Prefs.lineHeight) ?? "") ?? 1.06)
+        cursor = model.core.setting(key: Prefs.cursor)
+        blink = Prefs.flag(model, Prefs.blink)
+    }
+}

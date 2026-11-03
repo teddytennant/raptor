@@ -73,6 +73,16 @@ object Prefs {
     const val NOTIFY_DONE = "notify_done"
     const val NOTIFY_EXIT = "notify_exit"
     const val NOTIFY_PROGRAM = "notify_program"
+    const val FONT = "font"
+    const val LINE_HEIGHT = "line_height"
+    const val CURSOR = "cursor_style"
+    const val BLINK = "cursor_blink"
+
+    fun string(key: String): String? = ShrewApplication.instance.core.setting(key)?.takeIf { it.isNotEmpty() }
+    fun setString(key: String, v: String) {
+        ShrewApplication.instance.core.setSetting(key, v)
+        ShrewApplication.instance.appearance.value++
+    }
 
     fun flag(key: String, default: Boolean = true): Boolean =
         ShrewApplication.instance.core.setting(key)?.let { it == "true" } ?: default
@@ -181,18 +191,22 @@ fun SettingsScreen(onClose: () -> Unit, onAddServer: () -> Unit, onEditServer: (
             Text("Settings", color = Ink.text, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.align(Alignment.Center))
         }
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(bottom = 32.dp)) {
+            var fontId by remember { mutableStateOf(Prefs.string(Prefs.FONT) ?: "jetbrains-mono") }
+            var spacing by remember { mutableFloatStateOf(Prefs.string(Prefs.LINE_HEIGHT)?.toFloatOrNull() ?: 1.08f) }
+            var cursor by remember { mutableStateOf(Prefs.string(Prefs.CURSOR) ?: "program") }
+            val font = dev.shrew.app.terminal.TermFonts.byId(fontId)
             Section("Appearance") {
-                // Live sample of the chosen theme and size.
+                // Live sample of the chosen theme, font, size and spacing.
                 val t = themeById(themeId)
                 Column(Modifier.fillMaxWidth().padding(16.dp).clip(RoundedCornerShape(10.dp)).background(Color(t.background)).padding(14.dp)) {
                     Text(
                         buildSample(t),
-                        fontFamily = Mono,
+                        fontFamily = font.family,
                         fontSize = fontSize.sp,
-                        lineHeight = (fontSize * 1.35f).sp,
+                        lineHeight = (fontSize * spacing * 1.2f).sp,
                     )
                 }
-                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     for (th in Themes) {
                         val on = th.id == themeId
                         Column(
@@ -200,31 +214,59 @@ fun SettingsScreen(onClose: () -> Unit, onAddServer: () -> Unit, onEditServer: (
                             horizontalAlignment = Alignment.CenterHorizontally,
                         ) {
                             Box(
-                                Modifier.size(36.dp).clip(CircleShape).background(Color(th.background))
+                                Modifier.size(34.dp).clip(CircleShape).background(Color(th.background))
                                     .border(if (on) 2.5.dp else 1.dp, if (on) Ink.accent else Ink.glassStroke, CircleShape),
                                 contentAlignment = Alignment.Center,
-                            ) { Box(Modifier.size(12.dp).clip(CircleShape).background(Color(th.accent))) }
+                            ) { Box(Modifier.size(11.dp).clip(CircleShape).background(Color(th.accent))) }
                             Spacer(Modifier.height(6.dp))
                             Text(when (th.id) { "tokyo-night" -> "Tokyo"; "mocha" -> "Mocha"; "solarized-light" -> "Solarized"; "server" -> "Server"; else -> th.name }, color = if (on) Ink.text else Ink.secondary, fontSize = 11.sp, maxLines = 1)
                         }
                     }
                 }
                 Divider()
-                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Text size", color = Ink.text, fontSize = 16.sp, modifier = Modifier.width(88.dp))
-                    Slider(
-                        value = fontSize,
-                        onValueChange = { fontSize = Math.round(it).toFloat() },
-                        onValueChangeFinished = { app.core.setSetting("font_size", fontSize.toString()) },
-                        valueRange = 9f..22f,
-                        steps = 12,
-                        colors = SliderDefaults.colors(thumbColor = Ink.accent, activeTrackColor = Ink.accent, inactiveTrackColor = Ink.raised, activeTickColor = Color.Transparent, inactiveTickColor = Color.Transparent),
-                        modifier = Modifier.weight(1f),
-                    )
-                    Text("${fontSize.toInt()}", color = Ink.secondary, fontFamily = Mono, fontSize = 14.sp, modifier = Modifier.width(32.dp).padding(start = 8.dp))
+                SliderRow("Text size", fontSize, 9f..22f, 12, "${fontSize.toInt()}", { fontSize = Math.round(it).toFloat() }) {
+                    app.core.setSetting("font_size", fontSize.toString())
+                    app.appearance.value++
+                }
+                Divider()
+                SliderRow("Spacing", spacing, 1.0f..1.6f, 11, "%.2f".format(spacing), { spacing = (Math.round(it * 20) / 20f) }) {
+                    Prefs.setString(Prefs.LINE_HEIGHT, spacing.toString())
+                }
+            }
+            Section("Font") {
+                for ((i, f) in dev.shrew.app.terminal.TermFonts.all.withIndex()) {
+                    if (i > 0) Divider()
+                    Row(
+                        Modifier.fillMaxWidth().clickable { fontId = f.id; Prefs.setString(Prefs.FONT, f.id) }.padding(horizontal = 16.dp, vertical = 13.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(f.name, color = Ink.text, fontFamily = f.family, fontSize = 16.sp, modifier = Modifier.weight(1f))
+                        Text("{a}=>0", color = Ink.tertiary, fontFamily = f.family, fontSize = 14.sp)
+                        Spacer(Modifier.width(14.dp))
+                        Box(Modifier.size(20.dp), contentAlignment = Alignment.Center) {
+                            if (f.id == fontId) Icon(Icons.Default.Check, "Selected", tint = Ink.accent, modifier = Modifier.size(20.dp))
+                        }
+                    }
                 }
             }
             Section("Terminal", footer = "Fitting resizes the session to your phone while you use it, so text is readable and the keyboard never covers the prompt. Desktop clients see the phone's size until you leave.") {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+                    Text("Cursor", color = Ink.text, fontSize = 16.sp)
+                    Spacer(Modifier.height(10.dp))
+                    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Ink.raised).padding(3.dp)) {
+                        for ((id, label) in listOf("program" to "Program", "block" to "Block", "bar" to "Bar", "underline" to "Underline")) {
+                            val on = cursor == id
+                            Box(
+                                Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).background(if (on) Ink.surface else Color.Transparent)
+                                    .clickable { cursor = id; Prefs.setString(Prefs.CURSOR, id) }.padding(vertical = 8.dp),
+                                contentAlignment = Alignment.Center,
+                            ) { Text(label, color = if (on) Ink.text else Ink.secondary, fontSize = 13.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal) }
+                        }
+                    }
+                }
+                Divider()
+                Toggle("Blinking cursor", Prefs.BLINK) { ShrewApplication.instance.appearance.value++ }
+                Divider()
                 Toggle("Fit to this screen when opening", Prefs.FIT_ON_OPEN)
                 Divider()
                 Toggle("Key bar above the keyboard", Prefs.KEY_BAR)
@@ -312,19 +354,36 @@ private fun Section(title: String, footer: String? = null, content: @Composable 
 }
 
 @Composable
+private fun SliderRow(label: String, value: Float, range: ClosedFloatingPointRange<Float>, steps: Int, shown: String, onChange: (Float) -> Unit, onDone: () -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, color = Ink.text, fontSize = 16.sp, modifier = Modifier.width(88.dp))
+        Slider(
+            value = value,
+            onValueChange = onChange,
+            onValueChangeFinished = onDone,
+            valueRange = range,
+            steps = steps,
+            colors = SliderDefaults.colors(thumbColor = Ink.accent, activeTrackColor = Ink.accent, inactiveTrackColor = Ink.raised, activeTickColor = Color.Transparent, inactiveTickColor = Color.Transparent),
+            modifier = Modifier.weight(1f),
+        )
+        Text(shown, color = Ink.secondary, fontFamily = Mono, fontSize = 14.sp, modifier = Modifier.width(44.dp).padding(start = 8.dp))
+    }
+}
+
+@Composable
 private fun Divider() = HorizontalDivider(Modifier.padding(start = 16.dp), color = Ink.hairline)
 
 @Composable
-private fun Toggle(label: String, key: String, default: Boolean = true) {
+private fun Toggle(label: String, key: String, default: Boolean = true, onChange: () -> Unit = {}) {
     var on by remember { mutableStateOf(Prefs.flag(key, default)) }
     Row(
-        Modifier.fillMaxWidth().clickable { on = !on; Prefs.set(key, on) }.padding(horizontal = 16.dp, vertical = 8.dp),
+        Modifier.fillMaxWidth().clickable { on = !on; Prefs.set(key, on); onChange() }.padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(label, color = Ink.text, fontSize = 16.sp, modifier = Modifier.weight(1f))
         Switch(
             checked = on,
-            onCheckedChange = { on = it; Prefs.set(key, it) },
+            onCheckedChange = { on = it; Prefs.set(key, it); onChange() },
             colors = SwitchDefaults.colors(checkedTrackColor = Ink.accent, checkedThumbColor = Color(0xFF0B0D10), uncheckedTrackColor = Ink.raised, uncheckedBorderColor = Ink.glassStroke, uncheckedThumbColor = Ink.secondary),
         )
     }

@@ -1,17 +1,35 @@
 import CoreText
 import SwiftUI
 
-enum Fonts {
-    static let names = ["JetBrainsMono-Regular", "JetBrainsMono-Bold", "JetBrainsMono-Italic", "JetBrainsMono-BoldItalic"]
+/// A terminal font: PostScript names of its regular, bold, italic and bold
+/// italic faces (same ids as the Android app).
+public struct TermFont: Identifiable, Sendable {
+    public let id: String
+    public let name: String
+    public let faces: [String]
+}
+
+public enum Fonts {
+    public static let all: [TermFont] = [
+        TermFont(id: "jetbrains-mono", name: "JetBrains Mono", faces: ["JetBrainsMono-Regular", "JetBrainsMono-Bold", "JetBrainsMono-Italic", "JetBrainsMono-BoldItalic"]),
+        TermFont(id: "iosevka", name: "Iosevka", faces: ["Iosevka-Term", "Iosevka-Term-Bold", "Iosevka-Term-Italic", "Iosevka-Term-Bold-Italic"]),
+        TermFont(id: "fira-code", name: "Fira Code", faces: ["FiraCode-Regular", "FiraCode-Bold", "FiraCode-Regular", "FiraCode-Bold"]),
+        TermFont(id: "cascadia-code", name: "Cascadia Code", faces: ["CascadiaCode-Regular", "CascadiaCode-Bold", "CascadiaCode-Italic", "CascadiaCode-BoldItalic"]),
+        TermFont(id: "ibm-plex-mono", name: "IBM Plex Mono", faces: ["IBMPlexMono", "IBMPlexMono-Bold", "IBMPlexMono-Italic", "IBMPlexMono-BoldItalic"]),
+        TermFont(id: "source-code-pro", name: "Source Code Pro", faces: ["SourceCodePro-Regular", "SourceCodePro-Bold", "SourceCodePro-It", "SourceCodePro-BoldIt"]),
+        TermFont(id: "system", name: "System Mono", faces: ["Menlo-Regular", "Menlo-Bold", "Menlo-Italic", "Menlo-BoldItalic"]),
+    ]
+
+    public static func byId(_ id: String?) -> TermFont { all.first { $0.id == id } ?? all[0] }
+
+    /// Back-compat: the default font's faces.
+    static var names: [String] { all[0].faces }
 
     static func register() {
         struct Once { static let done: Void = {
-            for n in Fonts.names {
-                if let url = Bundle.module.url(forResource: n, withExtension: "ttf", subdirectory: "Fonts")
-                    ?? Bundle.module.url(forResource: n, withExtension: "ttf") {
-                    CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
-                }
-            }
+            let urls = (Bundle.module.urls(forResourcesWithExtension: "ttf", subdirectory: "Fonts") ?? [])
+                + (Bundle.module.urls(forResourcesWithExtension: "ttf", subdirectory: nil) ?? [])
+            for url in urls { CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil) }
         }() }
         _ = Once.done
     }
