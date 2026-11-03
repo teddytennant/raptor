@@ -178,7 +178,19 @@ fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?,
         var showPalette by remember { mutableStateOf(false) }
         var slideDir by remember { mutableIntStateOf(1) }
         val panes = session?.windows.orEmpty().flatMap { w -> w.blocks.map { w.id to it.id } }
+        // Swipe left/right moves between tabs (windows), landing on each tab's
+        // focused pane. With a single tab, it cycles that tab's panes instead.
         fun swipe(dir: Int) {
+            val wins = session?.windows.orEmpty()
+            if (wins.size > 1) {
+                val i = wins.indexOfFirst { it.id == windowId }.coerceAtLeast(0)
+                val w = wins[(i + dir + wins.size) % wins.size]
+                slideDir = dir
+                windowId = w.id
+                blockId = w.focusedBlockId?.takeIf { f -> w.blocks.any { it.id == f } } ?: w.blocks.firstOrNull()?.id
+                scope.launch { runCatching { app.core.focusWindow(serverId, sid, w.id) } }
+                return
+            }
             val i = panes.indexOfFirst { it.second == blockId }
             if (panes.size < 2 || i < 0) return
             val next = panes[(i + dir + panes.size) % panes.size]
@@ -277,8 +289,8 @@ fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?,
         if (showPalette) {
             val h = handle.value
             val local = buildList {
-                add(PaletteItem("next-pane", "Next Pane", glyph = "→", keywords = "switch swipe") { swipe(1) })
-                add(PaletteItem("prev-pane", "Previous Pane", glyph = "←", keywords = "switch swipe") { swipe(-1) })
+                add(PaletteItem("next-pane", "Next Tab", glyph = "→", keywords = "switch swipe window pane") { swipe(1) })
+                add(PaletteItem("prev-pane", "Previous Tab", glyph = "←", keywords = "switch swipe window pane") { swipe(-1) })
                 add(PaletteItem("new-window", "New Window", glyph = "+") { scope.launch { runCatching { app.core.newWindow(serverId, sid) } } })
                 blockId?.let { bid ->
                     add(PaletteItem("split-right", "Split Right", glyph = "▥") { scope.launch { runCatching { app.core.split(serverId, sid, bid, false) } } })

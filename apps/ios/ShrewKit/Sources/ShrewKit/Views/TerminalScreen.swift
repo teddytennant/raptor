@@ -113,7 +113,21 @@ public struct TerminalScreen: View {
     }
 
     /// Swipe to the next (+1) or previous (-1) pane, crossing into other windows.
+    /// Swipe left/right moves between tabs (windows), landing on each tab's
+    /// focused pane. With a single tab, it cycles that tab's panes instead.
     private func swipe(_ dir: Int, session: Session?) {
+        if let wins = session?.windows, wins.count > 1 {
+            let i = wins.firstIndex { $0.id == windowId } ?? 0
+            let w = wins[(i + dir + wins.count) % wins.count]
+            slideEdge = dir > 0 ? .trailing : .leading
+            Haptics.select()
+            withAnimation(.snappy(duration: 0.28)) {
+                windowId = w.id
+                blockId = w.blocks.first { $0.id == w.focusedBlockId }?.id ?? w.blocks.first?.id
+            }
+            Task { try? await model.core.focusWindow(serverId: serverId, sessionId: sessionId, windowId: w.id) }
+            return
+        }
         let all = panes(session)
         guard all.count > 1, let i = all.firstIndex(where: { $0.block == blockId }) else { return }
         let next = all[(i + dir + all.count) % all.count]
@@ -133,8 +147,8 @@ public struct TerminalScreen: View {
         func add(_ id: String, _ title: String, _ symbol: String, _ cat: String = "Shrew", subtitle: String = "", keywords: String = "", _ run: @escaping () -> Void) {
             items.append(PaletteItem(id: id, title: title, subtitle: subtitle, category: cat, keywords: keywords, symbol: symbol, run: run))
         }
-        add("next-pane", "Next Pane", "arrow.right.square", keywords: "switch") { swipe(1, session: session) }
-        add("prev-pane", "Previous Pane", "arrow.left.square", keywords: "switch") { swipe(-1, session: session) }
+        add("next-pane", "Next Tab", "arrow.right.square", keywords: "switch window pane") { swipe(1, session: session) }
+        add("prev-pane", "Previous Tab", "arrow.left.square", keywords: "switch window pane") { swipe(-1, session: session) }
         add("new-window", "New Window", "plus.square.on.square") { Task { try? await core.newWindow(serverId: srv, sessionId: sid) } }
         if let b = bid {
             add("split-right", "Split Right", "rectangle.split.2x1") { Task { _ = try? await core.split(serverId: srv, sessionId: sid, blockId: b, vertical: false) } }
