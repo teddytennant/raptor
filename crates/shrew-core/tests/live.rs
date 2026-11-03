@@ -99,6 +99,14 @@ fn full_round_trip() {
     shrew.block_on(shrew.run_action(&id, &sid, Some(&bid), &clear.name)).unwrap();
     assert!(wait(5, || !screen(&term).contains("after-ctrl-c")), "clear didn't clear:\n{}", screen(&term));
 
+    // A request with no usable live connection (dropped, or dead after the app
+    // was frozen in the background) goes over a short-lived connection instead.
+    shrew.set_foreground(false);
+    shrew.disconnect_for_test(&id);
+    shrew.block_on(shrew.send_text(&id, &sid, &bid, "echo bg-reply\r")).expect("reply without a live connection");
+    shrew.set_foreground(true);
+    assert!(wait(15, || screen(&term).contains("bg-reply")), "background reply missing:\n{}", screen(&term));
+
     term.close();
     drop(_cleanup);
     assert!(wait(5, || !shrew.state().server(&id).unwrap().sessions.iter().any(|s| s.id == sid)));

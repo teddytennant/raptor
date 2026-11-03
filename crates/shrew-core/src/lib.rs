@@ -321,6 +321,16 @@ impl Shrew {
         }
     }
 
+    /// Forget a server's live connection without closing it, as if its socket
+    /// had died while the app was frozen. Tests use this; the supervisor will
+    /// reconnect on its own.
+    #[doc(hidden)]
+    pub fn disconnect_for_test(&self, server_id: &str) {
+        if let Ok(e) = self.entry(server_id) {
+            e.forget_connection();
+        }
+    }
+
     /// Add this machine's local server if one is running and none is saved.
     pub fn add_local_server_if_present(&self) -> Option<String> {
         let ep = Endpoint::local_default()?;
@@ -362,8 +372,28 @@ impl Shrew {
         server_id: &str,
         f: impl FnOnce(Connection) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, ClientError>> + Send>> + Send + 'static,
     ) -> Result<T, CoreError> {
-        let c = self.conn(server_id)?;
-        Ok(self.rt.spawn(async move { f(c).await }).await.map_err(|e| CoreError::Server(e.to_string()))??)
+        let entry = self.entry(server_id)?;
+        // The normal path: the supervisor's live connection. If there is none, or
+        // it has gone quiet (the app was frozen in the background and its socket
+        // died without closing), use a short-lived connection for this request so
+        // that e.g. a reply from a notification still gets through.
+        if let Some(c) = entry.connection().filter(Connection::is_fresh) {
+            return Ok(self.rt.spawn(async move { f(c).await }).await.map_err(|e| CoreError::Server(e.to_string()))??);
+        }
+        let ep = Endpoint::parse(&entry.profile.lock().address).map_err(|e| CoreError::InvalidAddress(e.to_string()))?;
+        let opts = self.inner.client_options();
+        Ok(self
+            .rt
+            .spawn(async move {
+                let (c, _ev) = Connection::connect(&ep, opts).await?;
+                // Session-scoped methods need the connection attached first.
+                c.call("session.attach_all", json!({"event_scope": "session"})).await?;
+                let r = f(c.clone()).await;
+                c.close();
+                r
+            })
+            .await
+            .map_err(|e| CoreError::Server(e.to_string()))??)
     }
 
     pub async fn destroy_session(&self, server_id: &str, session_id: &str) -> Result<(), CoreError> {

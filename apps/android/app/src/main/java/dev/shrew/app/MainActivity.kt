@@ -56,6 +56,19 @@ class MainActivity : ComponentActivity() {
                 var sheet by remember { mutableStateOf(false) }
                 var editing by remember { mutableStateOf<Server?>(null) }
                 val pending by app.pendingOpen.collectAsState()
+                // shrew://open?session=…&server=…: resolve labels or ids once sessions load.
+                val link by app.pendingLink.collectAsState()
+                val appState by app.state.collectAsState()
+                LaunchedEffect(link, appState) {
+                    val (want, srvWant) = link ?: return@LaunchedEffect
+                    for (srv in appState.servers) {
+                        if (srvWant != null && srv.id != srvWant && srv.name != srvWant) continue
+                        val s = srv.sessions.firstOrNull { it.id == want || it.label == want } ?: continue
+                        app.pendingLink.value = null
+                        app.pendingOpen.value = Focus(srv.id, s.id, null)
+                        return@LaunchedEffect
+                    }
+                }
                 LaunchedEffect(pending) {
                     val p = pending ?: return@LaunchedEffect
                     app.pendingOpen.value = null
@@ -107,6 +120,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIntent(intent: Intent?) {
+        val uri = intent?.data
+        if (uri != null && uri.scheme == "shrew" && uri.host == "open") {
+            val session = uri.getQueryParameter("session") ?: return
+            ShrewApplication.instance.pendingLink.value = session to uri.getQueryParameter("server")
+            return
+        }
         val server = intent?.getStringExtra(ShrewApplication.EXTRA_SERVER) ?: return
         val session = intent.getStringExtra(ShrewApplication.EXTRA_SESSION) ?: return
         ShrewApplication.instance.pendingOpen.value = Focus(server, session, intent.getStringExtra(ShrewApplication.EXTRA_BLOCK))

@@ -98,6 +98,10 @@ impl ServerEntry {
         self.profile.lock().id.clone()
     }
 
+    pub(crate) fn forget_connection(&self) {
+        self.conn.lock().take();
+    }
+
     pub fn connection(&self) -> Option<Connection> {
         self.conn.lock().clone().filter(|c| !c.is_closed())
     }

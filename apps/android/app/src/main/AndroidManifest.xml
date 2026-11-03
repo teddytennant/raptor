@@ -27,6 +27,14 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- shrew://open?session=<label or id>[&server=<name or id>] -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="shrew" android:host="open" />
+            </intent-filter>
         </activity>
+        <receiver android:name=".ReplyReceiver" android:exported="false" />
     </application>
 </manifest>

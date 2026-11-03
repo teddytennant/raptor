@@ -48,6 +48,8 @@ class ShrewApplication : Application() {
 
     /** Deep link requested by tapping a notification. */
     val pendingOpen = MutableStateFlow<Focus?>(null)
+    /** A shrew://open link waiting for its server's sessions to load: (session, server?). */
+    val pendingLink = MutableStateFlow<Pair<String, String?>?>(null)
 
     override fun onCreate() {
         super.onCreate()
@@ -126,6 +128,26 @@ class ShrewApplication : Application() {
             .setContentIntent(pi)
             .setAutoCancel(true)
             .setGroup("shrew")
+            .apply {
+                if (!agent) return@apply
+                // Reply from the notification (like iOS), or open the pane.
+                val replyIntent = Intent(this@ShrewApplication, ReplyReceiver::class.java).apply {
+                    putExtra(EXTRA_SERVER, n.serverId)
+                    putExtra(EXTRA_SESSION, n.sessionId)
+                    putExtra(EXTRA_BLOCK, n.blockId)
+                    putExtra(ReplyReceiver.EXTRA_ID, id)
+                }
+                val replyPi = PendingIntent.getBroadcast(this@ShrewApplication, id, replyIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE)
+                val input = androidx.core.app.RemoteInput.Builder(ReplyReceiver.KEY_REPLY).setLabel("Type a reply").build()
+                addAction(
+                    NotificationCompat.Action.Builder(R.drawable.ic_foreground, "Reply", replyPi)
+                        .addRemoteInput(input)
+                        .setAllowGeneratedReplies(false)
+                        .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_REPLY)
+                        .build(),
+                )
+                addAction(NotificationCompat.Action.Builder(R.drawable.ic_foreground, "Open", pi).build())
+            }
             .build()
         NotificationManagerCompat.from(this).notify(id, notif)
     }

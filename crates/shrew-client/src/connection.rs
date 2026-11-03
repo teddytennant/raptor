@@ -55,6 +55,9 @@ struct Inner {
     pending: Mutex<HashMap<String, oneshot::Sender<Response>>>,
     next_id: AtomicU64,
     closed: AtomicBool,
+    /// When the server was last heard from, as ms since `born`.
+    heard_ms: AtomicU64,
+    born: Instant,
     welcome: Welcome,
     endpoint: Endpoint,
     timeout: Duration,
@@ -112,6 +115,8 @@ impl Connection {
             pending: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
             closed: AtomicBool::new(false),
+            heard_ms: AtomicU64::new(0),
+            born: Instant::now(),
             welcome,
             endpoint: endpoint.clone(),
             timeout: opts.timeout,
@@ -127,6 +132,7 @@ impl Connection {
                 tokio::select! {
                     msg = stream.next() => {
                         last_heard = Instant::now();
+                        reader_inner.heard_ms.store(reader_inner.born.elapsed().as_millis() as u64, Ordering::Relaxed);
                         match msg {
                             Some(Ok(Message::Text(t))) => match ServerMessage::parse(&t) {
                                 Ok(ServerMessage::Response(r)) => {
@@ -185,6 +191,19 @@ impl Connection {
 
     pub fn is_closed(&self) -> bool {
         self.inner.closed.load(Ordering::SeqCst)
+    }
+
+    /// How long since anything arrived from the server. Pongs arrive every
+    /// [`PING_EVERY`], so much more than that means the socket is probably dead
+    /// (e.g. the app was frozen in the background) even if it isn't closed yet.
+    pub fn silent_for(&self) -> Duration {
+        let heard = Duration::from_millis(self.inner.heard_ms.load(Ordering::Relaxed));
+        self.inner.born.elapsed().saturating_sub(heard)
+    }
+
+    /// True when the connection is open and has heard from the server recently.
+    pub fn is_fresh(&self) -> bool {
+        !self.is_closed() && self.silent_for() < PING_EVERY + Duration::from_secs(5)
     }
 
     /// Close politely (with a close frame, which ends the client on the server).
