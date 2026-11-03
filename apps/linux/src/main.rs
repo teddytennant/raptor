@@ -2,6 +2,7 @@
 
 mod render;
 mod terminal;
+mod themes;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -53,6 +54,8 @@ struct Ui {
     terms: HashMap<String, TermView>,
     last_layout: Vec<(String, [f64; 4])>,
     font_size: f64,
+    theme_id: String,
+    theme_css: gtk::CssProvider,
 }
 
 type Shared = Rc<RefCell<Ui>>;
@@ -109,10 +112,13 @@ fn build(app: &adw::Application) {
     let split_h = gtk::Button::from_icon_name("view-dual-symbolic");
     split_h.set_tooltip_text(Some("Split right"));
     let menu_btn = gtk::MenuButton::builder().icon_name("view-more-symbolic").build();
+    let palette_btn = gtk::Button::from_icon_name("system-search-symbolic");
+    palette_btn.set_tooltip_text(Some("Command palette (Ctrl+Shift+P)"));
     let content_header = adw::HeaderBar::new();
     content_header.set_title_widget(Some(&content_title));
     content_header.pack_start(&tabs);
     content_header.pack_end(&menu_btn);
+    content_header.pack_end(&palette_btn);
     content_header.pack_end(&split_h);
     content_header.pack_end(&new_win);
 
@@ -138,6 +144,9 @@ fn build(app: &adw::Application) {
     let window =
         adw::ApplicationWindow::builder().application(app).title("Shrew").default_width(1200).default_height(780).content(&split).build();
 
+    let theme_id = core.setting("theme").and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_else(|| "shrew".into());
+    let theme_css = gtk::CssProvider::new();
+    gtk::style_context_add_provider_for_display(&gdk::Display::default().unwrap(), &theme_css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
     let font_size = core.setting("font_size").and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or(v.as_f64())).unwrap_or(12.0);
     let ui: Shared = Rc::new(RefCell::new(Ui {
         core: core.clone(),
@@ -152,7 +161,10 @@ fn build(app: &adw::Application) {
         terms: HashMap::new(),
         last_layout: Vec::new(),
         font_size,
+        theme_id: theme_id.clone(),
+        theme_css,
     }));
+    apply_theme(&ui, &theme_id);
 
     // Re-place panes whenever the content area changes size.
     let u = ui.clone();
@@ -191,6 +203,30 @@ fn build(app: &adw::Application) {
     split_h.connect_clicked(move |_| split_focused(&u, false));
     menu_btn.set_menu_model(Some(&session_menu()));
     install_actions(app, &ui);
+    let u = ui.clone();
+    palette_btn.connect_clicked(move |_| open_palette(&u));
+
+    // Window-level shortcuts, caught before the terminal sees the key.
+    let keys = gtk::EventControllerKey::new();
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let u = ui.clone();
+    keys.connect_key_pressed(move |_, key, _, mods| {
+        let ctrl = mods.contains(gdk::ModifierType::CONTROL_MASK);
+        let shift = mods.contains(gdk::ModifierType::SHIFT_MASK);
+        if !ctrl {
+            return glib::Propagation::Proceed;
+        }
+        match key {
+            k if shift && k.to_lower() == gdk::Key::p => open_palette(&u),
+            gdk::Key::Tab => cycle_pane(&u, 1),
+            gdk::Key::ISO_Left_Tab => cycle_pane(&u, -1),
+            gdk::Key::Page_Down => cycle_window(&u, 1),
+            gdk::Key::Page_Up => cycle_window(&u, -1),
+            _ => return glib::Propagation::Proceed,
+        }
+        glib::Propagation::Stop
+    });
+    window.add_controller(keys);
 
     // Engine events → UI.
     let u = ui.clone();
@@ -214,9 +250,7 @@ fn load_css() {
     let css = gtk::CssProvider::new();
     css.load_from_string(
         r#"
-        .shrew-terminal { background: #0d1117; }
-        .shrew-panes { background: #30363d; }
-        .shrew-pill { background: alpha(#161b22, 0.92); color: #e6edf3; border-radius: 999px; padding: 5px 12px; font-size: 0.9em; }
+        .shrew-pill { border-radius: 999px; padding: 5px 12px; font-size: 0.9em; }
         .shrew-dot { min-width: 8px; min-height: 8px; border-radius: 99px; }
         .dot-online, .dot-done { background: #34d399; }
         .dot-connecting { background: #fbbf24; }
@@ -233,7 +267,6 @@ fn load_css() {
         "#,
     );
     gtk::style_context_add_provider_for_display(&gdk::Display::default().unwrap(), &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
-    adw::StyleManager::default().set_color_scheme(adw::ColorScheme::PreferDark);
 }
 
 fn dot(class: &str) -> gtk::Box {
@@ -488,6 +521,20 @@ fn update_content(ui: &Shared, state: &AppState) {
     for (b, _) in &blocks {
         if !u.terms.contains_key(&b.id) {
             let t = TermView::new(&u.core, &sel.server, &sel.session, &b.id, b.owner.is_none() || b.owned_by_me, u.font_size);
+            t.set_theme(themes::by_id(&u.theme_id).color_theme());
+            let (core, srv, ses, bid) = (u.core.clone(), sel.server.clone(), sel.session.clone(), b.id.clone());
+            t.connect_focus(move || {
+                // Clicking or cycling into a pane focuses it on the server too.
+                let focused = core.state().server(&srv).and_then(|s| s.sessions.iter().find(|x| x.id == ses).cloned()).is_some_and(|s| {
+                    s.windows.iter().any(|w| w.focused_block_id.as_deref() == Some(bid.as_str()))
+                });
+                if !focused {
+                    let (core, srv, ses, bid) = (core.clone(), srv.clone(), ses.clone(), bid.clone());
+                    glib::spawn_future_local(async move {
+                        let _ = core.focus_block(&srv, &ses, &bid).await;
+                    });
+                }
+            });
             u.panes.put(&t.root, 0.0, 0.0);
             if single || focused.is_some_and(|f| f.id == b.id) {
                 let t2 = t.clone();
@@ -533,7 +580,14 @@ fn split_focused(ui: &Shared, vertical: bool) {
 
 fn session_menu() -> gio::Menu {
     let m = gio::Menu::new();
+    m.append(Some("Command Palette"), Some("app.palette"));
     m.append(Some("Split Down"), Some("app.split-down"));
+    m.append(Some("Close Pane"), Some("app.close-pane"));
+    let th = gio::Menu::new();
+    for t in themes::THEMES {
+        th.append(Some(t.name), Some(&format!("app.theme::{}", t.id)));
+    }
+    m.append_submenu(Some("Theme"), &th);
     m.append(Some("Rename Session…"), Some("app.rename-session"));
     m.append(Some("Bigger Text"), Some("app.font-bigger"));
     m.append(Some("Smaller Text"), Some("app.font-smaller"));
@@ -566,6 +620,20 @@ fn install_actions(app: &adw::Application, ui: &Shared) {
         }),
     );
     add("rename-session", Box::new(rename_dialog));
+    add("palette", Box::new(open_palette));
+    add("close-pane", Box::new(close_focused));
+    let current = ui.borrow().theme_id.clone();
+    let theme = gio::SimpleAction::new_stateful("theme", Some(glib::VariantTy::STRING), &current.to_variant());
+    let u = ui.clone();
+    theme.connect_activate(move |a, v| {
+        if let Some(id) = v.and_then(|v| v.get::<String>()) {
+            a.set_state(&id.to_variant());
+            apply_theme(&u, &id);
+        }
+    });
+    app.add_action(&theme);
+    app.set_accels_for_action("app.split-down", &["<Control><Shift>d"]);
+    app.set_accels_for_action("app.close-pane", &["<Control><Shift>w"]);
     app.set_accels_for_action("app.font-bigger", &["<Control>equal", "<Control>plus"]);
     app.set_accels_for_action("app.font-smaller", &["<Control>minus"]);
 }
@@ -729,5 +797,357 @@ fn screenshot_mode(ui: &Shared) {
             }
             win.application().unwrap().quit();
         });
+    });
+}
+
+// ---- themes, pane focus, palette -----------------------------------------------
+
+fn apply_theme(ui: &Shared, id: &str) {
+    let mut u = ui.borrow_mut();
+    let t = themes::by_id(id);
+    u.theme_id = t.id.to_owned();
+    u.theme_css.load_from_string(&t.css());
+    adw::StyleManager::default().set_color_scheme(if t.is_light() { adw::ColorScheme::ForceLight } else { adw::ColorScheme::ForceDark });
+    u.core.set_setting("theme", t.id.into());
+    for v in u.terms.values() {
+        v.set_theme(t.color_theme());
+    }
+}
+
+/// The selected session's visible window and the block to act on: the pane with
+/// keyboard focus, else the window's focused block.
+fn current_target(ui: &Shared) -> Option<(Selection, Option<shrew_core::WindowState>, Option<String>)> {
+    let u = ui.borrow();
+    let sel = u.selected.clone()?;
+    let state = u.core.state();
+    let s = state.server(&sel.server)?.sessions.iter().find(|x| x.id == sel.session)?.clone();
+    let w = s
+        .windows
+        .iter()
+        .find(|w| Some(&w.id) == sel.window.as_ref().or(s.active_window_id.as_ref()))
+        .or(s.windows.first())
+        .cloned();
+    let typing = u.terms.iter().find(|(_, t)| t.has_focus()).map(|(id, _)| id.clone());
+    let block = typing.or_else(|| w.as_ref().and_then(|w| w.focused_block_id.clone().or(w.blocks.first().map(|b| b.id.clone()))));
+    Some((sel, w, block))
+}
+
+fn cycle_pane(ui: &Shared, dir: i32) {
+    let Some((_, _, block)) = current_target(ui) else { return };
+    let u = ui.borrow();
+    let ids: Vec<&String> = u.last_layout.iter().map(|(id, _)| id).collect();
+    if ids.len() < 2 {
+        return;
+    }
+    let i = block.and_then(|b| ids.iter().position(|x| **x == b)).unwrap_or(0) as i32;
+    let next = ids[((i + dir).rem_euclid(ids.len() as i32)) as usize];
+    if let Some(t) = u.terms.get(next) {
+        t.grab_focus();
+    }
+}
+
+fn cycle_window(ui: &Shared, dir: i32) {
+    let Some((sel, w, _)) = current_target(ui) else { return };
+    let state = ui.borrow().core.state();
+    let Some(s) = state.server(&sel.server).and_then(|s| s.sessions.iter().find(|x| x.id == sel.session)) else { return };
+    if s.windows.len() < 2 {
+        return;
+    }
+    let i = w.and_then(|w| s.windows.iter().position(|x| x.id == w.id)).unwrap_or(0) as i32;
+    let next = s.windows[((i + dir).rem_euclid(s.windows.len() as i32)) as usize].id.clone();
+    if let Some(sel) = ui.borrow_mut().selected.as_mut() {
+        sel.window = Some(next);
+    }
+    refresh(ui);
+}
+
+fn close_focused(ui: &Shared) {
+    let Some((sel, _, Some(block))) = current_target(ui) else { return };
+    let core = ui.borrow().core.clone();
+    glib::spawn_future_local(async move {
+        let _ = core.close_block(&sel.server, &sel.session, &block).await;
+    });
+}
+
+struct Item {
+    category: String,
+    glyph: &'static str,
+    title: String,
+    subtitle: String,
+    keywords: String,
+    run: Rc<dyn Fn()>,
+}
+
+fn item(category: &str, glyph: &'static str, title: &str, run: impl Fn() + 'static) -> Item {
+    Item { category: category.into(), glyph, title: title.into(), subtitle: String::new(), keywords: String::new(), run: Rc::new(run) }
+}
+
+fn local_items(ui: &Shared) -> Vec<Item> {
+    let mut v = Vec::new();
+    let Some((sel, _, block)) = current_target(ui) else { return v };
+    let core = ui.borrow().core.clone();
+    let act = |name: &'static str| {
+        let u = ui.clone();
+        move || {
+            let w = u.borrow().window.clone();
+            let _ = WidgetExt::activate_action(&w, &format!("app.{name}"), None);
+        }
+    };
+    let u = ui.clone();
+    v.push(item("Panes", "→", "Next Pane", move || cycle_pane(&u, 1)));
+    let u = ui.clone();
+    v.push(item("Panes", "←", "Previous Pane", move || cycle_pane(&u, -1)));
+    let u = ui.clone();
+    v.push(item("Panes", "▥", "Split Right", move || split_focused(&u, false)));
+    let u = ui.clone();
+    v.push(item("Panes", "▤", "Split Down", move || split_focused(&u, true)));
+    let u = ui.clone();
+    v.push(item("Panes", "×", "Close Pane", move || close_focused(&u)));
+    if block.is_some() {
+        let u = ui.clone();
+        v.push(item("Panes", "⧉", "Copy All Text", move || {
+            let (Some((_, _, Some(b))), u) = (current_target(&u), u.borrow()) else { return };
+            if let Some(s) = u.terms.get(&b).and_then(|t| t.session()) {
+                u.window.clipboard().set_text(&s.all_text());
+            }
+        }));
+    }
+    let (c, s2) = (core.clone(), sel.clone());
+    v.push(item("Windows", "+", "New Window", move || {
+        let (c, s2) = (c.clone(), s2.clone());
+        glib::spawn_future_local(async move {
+            let _ = c.new_window(&s2.server, &s2.session, None).await;
+        });
+    }));
+    let u = ui.clone();
+    v.push(item("Windows", "»", "Next Window", move || cycle_window(&u, 1)));
+    let u = ui.clone();
+    v.push(item("Windows", "«", "Previous Window", move || cycle_window(&u, -1)));
+    let (c, u, srv) = (core.clone(), ui.clone(), sel.server.clone());
+    v.push(item("Sessions", "+", "New Session", move || {
+        let (c, u, srv) = (c.clone(), u.clone(), srv.clone());
+        glib::spawn_future_local(async move {
+            if let Ok((id, _)) = c.create_session(&srv, None, None).await {
+                select(&u, srv, id, None);
+            }
+        });
+    }));
+    v.push(item("Sessions", "✎", "Rename Session…", act("rename-session")));
+    let state = core.state();
+    for s in state.server(&sel.server).map(|s| s.sessions.clone()).unwrap_or_default() {
+        if s.id == sel.session {
+            continue;
+        }
+        let (u, srv, id) = (ui.clone(), sel.server.clone(), s.id.clone());
+        let mut it = item("Sessions", "▸", &format!("Go to {}", s.label), move || select(&u, srv.clone(), id.clone(), None));
+        it.subtitle = s.windows.iter().flat_map(|w| w.blocks.iter()).next().map(|b| b.display_name()).unwrap_or_default();
+        v.push(it);
+    }
+    let current = ui.borrow().theme_id.clone();
+    for t in themes::THEMES {
+        let u = ui.clone();
+        let mut it = item("Themes", if t.id == current { "●" } else { "○" }, t.name, move || {
+            let w = u.borrow().window.clone();
+            let _ = WidgetExt::activate_action(&w, "app.theme", Some(&t.id.to_variant()));
+        });
+        it.keywords = "theme color".into();
+        v.push(it);
+    }
+    v.push(item("View", "A", "Bigger Text", act("font-bigger")));
+    v.push(item("View", "a", "Smaller Text", act("font-smaller")));
+    v
+}
+
+fn palette_row(it: &Item) -> gtk::ListBoxRow {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    let g = gtk::Label::new(Some(it.glyph));
+    g.add_css_class("glyph");
+    row.append(&g);
+    let col = gtk::Box::new(gtk::Orientation::Vertical, 1);
+    col.append(&label(&it.title, &[]));
+    if !it.subtitle.is_empty() {
+        col.append(&label(&it.subtitle, &["dim-label", "caption"]));
+    }
+    row.append(&col);
+    gtk::ListBoxRow::builder().child(&row).build()
+}
+
+/// Everything you can do here, searchable: Shrew's commands plus the server's
+/// own actions (its config's `rex.action`s and block actions like Clear Terminal).
+fn open_palette(ui: &Shared) {
+    let Some((sel, _, block)) = current_target(ui) else { return };
+    let items: Rc<RefCell<Vec<Item>>> = Rc::new(RefCell::new(local_items(ui)));
+
+    let search = gtk::SearchEntry::builder().placeholder_text("Run a command").hexpand(true).build();
+    let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::Browse).build();
+    list.add_css_class("shrew-palette");
+    list.add_css_class("navigation-sidebar");
+    let scroll = gtk::ScrolledWindow::builder().child(&list).vexpand(true).hscrollbar_policy(gtk::PolicyType::Never).build();
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    body.set_margin_start(12);
+    body.set_margin_end(12);
+    body.set_margin_bottom(12);
+    body.append(&search);
+    body.append(&scroll);
+    let view = adw::ToolbarView::new();
+    view.add_top_bar(&adw::HeaderBar::new());
+    view.set_content(Some(&body));
+    let dialog = adw::Dialog::builder().title("Commands").content_width(520).content_height(480).child(&view).build();
+
+    let add_rows = {
+        let (list, items) = (list.clone(), items.clone());
+        move |from: usize| {
+            for (i, it) in items.borrow().iter().enumerate().skip(from) {
+                let r = palette_row(it);
+                r.set_widget_name(&i.to_string());
+                list.append(&r);
+            }
+        }
+    };
+    add_rows(0);
+
+    let matches = {
+        let (items, search) = (items.clone(), search.clone());
+        move |row: &gtk::ListBoxRow| {
+            let q = search.text().to_lowercase();
+            let Ok(i) = row.widget_name().parse::<usize>() else { return true };
+            let items = items.borrow();
+            let it = &items[i];
+            let hay = format!("{} {} {} {}", it.title, it.subtitle, it.category, it.keywords).to_lowercase();
+            q.split_whitespace().all(|w| hay.contains(w))
+        }
+    };
+    let m = matches.clone();
+    list.set_filter_func(move |row| m(row));
+    let items2 = items.clone();
+    list.set_header_func(move |row, before| {
+        let cat = |r: &gtk::ListBoxRow| r.widget_name().parse::<usize>().ok().map(|i| items2.borrow()[i].category.clone());
+        let this = cat(row);
+        if before.and_then(cat) != this {
+            let l = label(&this.unwrap_or_default().to_uppercase(), &["cat"]);
+            l.set_margin_start(10);
+            l.set_margin_top(10);
+            l.set_margin_bottom(2);
+            row.set_header(Some(&l));
+        } else {
+            row.set_header(None::<&gtk::Widget>);
+        }
+    });
+
+    let run = {
+        let (items, dialog) = (items.clone(), dialog.clone());
+        move |row: &gtk::ListBoxRow| {
+            let Ok(i) = row.widget_name().parse::<usize>() else { return };
+            let f = items.borrow()[i].run.clone();
+            dialog.close();
+            f();
+        }
+    };
+    let r = run.clone();
+    list.connect_row_activated(move |_, row| r(row));
+    let first_visible = {
+        let list = list.clone();
+        move || {
+            let mut c = list.first_child();
+            while let Some(w) = c {
+                if let Ok(row) = w.clone().downcast::<gtk::ListBoxRow>()
+                    && row.is_child_visible()
+                {
+                    return Some(row);
+                }
+                c = w.next_sibling();
+            }
+            None
+        }
+    };
+    let (l, fv) = (list.clone(), first_visible.clone());
+    search.connect_search_changed(move |_| {
+        l.invalidate_filter();
+        l.invalidate_headers();
+        if let Some(r) = fv() {
+            l.select_row(Some(&r));
+        }
+    });
+    // Enter runs the highlighted result; Up/Down move through results while typing.
+    let keys = gtk::EventControllerKey::new();
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let (l, search2, r2) = (list.clone(), search.clone(), run.clone());
+    keys.connect_key_pressed(move |_, key, _, _| {
+        let search = &search2;
+        if matches!(key, gdk::Key::Return | gdk::Key::KP_Enter | gdk::Key::ISO_Enter) {
+            if let Some(row) = l.selected_row().filter(|r| r.is_child_visible()).or_else(&first_visible) {
+                r2(&row);
+            }
+            return glib::Propagation::Stop;
+        }
+        let step = match key {
+            gdk::Key::Down => 1,
+            gdk::Key::Up => -1,
+            _ => return glib::Propagation::Proceed,
+        };
+        let mut rows = Vec::new();
+        let mut c = l.first_child();
+        while let Some(w) = c {
+            if let Ok(row) = w.clone().downcast::<gtk::ListBoxRow>()
+                && row.is_child_visible()
+            {
+                rows.push(row);
+            }
+            c = w.next_sibling();
+        }
+        if rows.is_empty() {
+            return glib::Propagation::Stop;
+        }
+        let cur = l.selected_row().and_then(|s| rows.iter().position(|r| *r == s)).map(|p| p as i32).unwrap_or(-1);
+        let next = &rows[((cur + step).rem_euclid(rows.len() as i32)) as usize];
+        l.select_row(Some(next));
+        next.grab_focus();
+        search.grab_focus();
+        search.set_position(-1);
+        glib::Propagation::Stop
+    });
+    dialog.add_controller(keys);
+
+    // The server's actions arrive a moment later.
+    let core = ui.borrow().core.clone();
+    let (items3, list3) = (items.clone(), list.clone());
+    glib::spawn_future_local(async move {
+        let Ok(actions) = core.palette_actions(&sel.server).await else { return };
+        let from = items3.borrow().len();
+        for a in actions {
+            let (core, srv, ses, blk, name) = (core.clone(), sel.server.clone(), sel.session.clone(), block.clone(), a.name.clone());
+            items3.borrow_mut().push(Item {
+                category: if a.category.is_empty() { "Actions".into() } else { a.category },
+                glyph: if a.name.contains('.') { "◆" } else { "λ" },
+                title: a.title,
+                subtitle: a.description,
+                keywords: format!("{} {}", a.keywords, a.name),
+                run: Rc::new(move || {
+                    let (core, srv, ses, blk, name) = (core.clone(), srv.clone(), ses.clone(), blk.clone(), name.clone());
+                    glib::spawn_future_local(async move {
+                        let _ = core.run_action(&srv, &ses, blk.as_deref(), &name).await;
+                    });
+                }),
+            });
+        }
+        add_rows(from);
+        list3.invalidate_filter();
+        list3.invalidate_headers();
+    });
+
+    let parent = ui.borrow().window.clone();
+    dialog.present(Some(&parent));
+    let s = search.clone();
+    glib::idle_add_local_once(move || {
+        s.grab_focus();
+    });
+    // When the palette closes, give the keyboard back to the terminal.
+    let u = ui.clone();
+    dialog.connect_closed(move |_| {
+        if let Some((_, _, Some(b))) = current_target(&u)
+            && let Some(t) = u.borrow().terms.get(&b)
+        {
+            t.grab_focus();
+        }
     });
 }

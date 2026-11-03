@@ -43,6 +43,7 @@ struct State {
     cursor_on: bool,
     sel_anchor: Option<(u16, u16)>,
     last_grid: (u16, u16),
+    on_focus: Option<Rc<dyn Fn()>>,
 }
 
 /// The terminal surface plus a status pill overlay.
@@ -61,6 +62,11 @@ impl TermView {
         let pill = gtk::Label::builder().halign(gtk::Align::Center).valign(gtk::Align::Start).margin_top(10).visible(false).build();
         pill.add_css_class("shrew-pill");
         let root = gtk::Overlay::builder().child(&area).build();
+        root.add_css_class("shrew-pane");
+        // The focus ring floats above the terminal drawing and never takes input.
+        let ring = gtk::Box::builder().hexpand(true).vexpand(true).can_target(false).build();
+        ring.add_css_class("shrew-ring");
+        root.add_overlay(&ring);
         root.add_overlay(&pill);
 
         let (tx, rx) = async_channel::bounded(64);
@@ -78,6 +84,7 @@ impl TermView {
             cursor_on: true,
             sel_anchor: None,
             last_grid: (0, 0),
+            on_focus: None,
         }));
         let this = Self { root, area, pill, state };
         this.wire(rx);
@@ -87,6 +94,23 @@ impl TermView {
 
     pub fn grab_focus(&self) {
         self.area.grab_focus();
+    }
+
+    pub fn has_focus(&self) -> bool {
+        self.area.has_focus()
+    }
+
+    /// Called when this pane takes keyboard focus (click, Ctrl+Tab).
+    pub fn connect_focus(&self, f: impl Fn() + 'static) {
+        self.state.borrow_mut().on_focus = Some(Rc::new(f));
+    }
+
+    /// Force a terminal theme, or `None` for the server's colors.
+    pub fn set_theme(&self, theme: Option<shrew_core::ColorTheme>) {
+        if let Some(s) = self.session() {
+            s.set_theme(theme);
+        }
+        self.area.queue_draw();
     }
 
     pub fn session(&self) -> Option<Arc<TerminalSession>> {
@@ -274,11 +298,17 @@ impl TermView {
         let focus = gtk::EventControllerFocus::new();
         focus.connect_enter(move |_| {
             im2.focus_in();
+            me.root.add_css_class("focused");
             me.area.queue_draw();
+            let cb = me.state.borrow().on_focus.clone();
+            if let Some(cb) = cb {
+                cb();
+            }
         });
         let me = self.clone();
         focus.connect_leave(move |_| {
             im.focus_out();
+            me.root.remove_css_class("focused");
             me.area.queue_draw();
         });
         self.area.add_controller(focus);
