@@ -112,4 +112,19 @@ final class TerminalUITests: XCTestCase {
         sleep(2)
         shot("cleared")
     }
+
+    func testSessionSwitcherAndSettings() throws {
+        XCTAssertTrue(app.textViews["Terminal"].waitForExistence(timeout: 15))
+        app.buttons.matching(identifier: "Sessions").firstMatch.tap()
+        XCTAssertTrue(app.navigationBars["Sessions"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label CONTAINS 'shrew-demo'")).firstMatch.exists)
+        shot("switcher")
+        app.buttons["Settings"].tap()
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
+        shot("settings")
+        app.swipeUp()
+        shot("settings-2")
+        app.buttons["Done"].tap()
+        XCTAssertTrue(app.textViews["Terminal"].waitForExistence(timeout: 5))
+    }
 }

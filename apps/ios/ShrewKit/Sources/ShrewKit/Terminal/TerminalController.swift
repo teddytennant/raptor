@@ -17,7 +17,11 @@ public final class TerminalController {
     @ObservationIgnored public var onClipboard: ((String) -> Void)?
     @ObservationIgnored private var listener: Listener?
 
+    /// Whether the key bar rides on the keyboard (Settings).
+    public let showsKeyBar: Bool
+
     public init(model: ShrewModel, serverId: String, sessionId: String, blockId: String) {
+        showsKeyBar = Prefs.flag(model, Prefs.keyBar)
         self.serverId = serverId
         self.sessionId = sessionId
         self.blockId = blockId

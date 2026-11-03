@@ -15,8 +15,14 @@ public struct TerminalScreen: View {
     @State private var keyboard = false
     @State private var showPalette = false
     @State private var slideEdge: Edge = .trailing
+    /// Set by the app root: the left button and the title open the session
+    /// switcher, and switching sessions goes through the root.
+    var onSessions: (() -> Void)?
+    var onOpen: ((Focus) -> Void)?
 
-    public init(serverId: String, sessionId: String, blockId: String?) {
+    public init(serverId: String, sessionId: String, blockId: String?, onSessions: (() -> Void)? = nil, onOpen: ((Focus) -> Void)? = nil) {
+        self.onSessions = onSessions
+        self.onOpen = onOpen
         self.serverId = serverId
         _sessionId = State(initialValue: sessionId)
         _blockId = State(initialValue: blockId)
@@ -132,10 +138,10 @@ public struct TerminalScreen: View {
             #endif
         }
         add("new-session", "New Session", "plus.rectangle.on.rectangle", "Sessions") {
-            Task { if let id = try? await core.createSession(serverId: srv, label: nil) { sessionId = id } }
+            Task { if let id = try? await core.createSession(serverId: srv, label: nil) { switchTo(id) } }
         }
         for s in model.server(srv)?.sessions ?? [] where s.id != sid {
-            add("session-\(s.id)", "Go to \(s.label)", "rectangle.stack", "Sessions", subtitle: detail(s.focusedBlock)) { sessionId = s.id }
+            add("session-\(s.id)", "Go to \(s.label)", "rectangle.stack", "Sessions", subtitle: detail(s.focusedBlock)) { switchTo(s.id) }
         }
         for t in Themes.all {
             add("theme-\(t.id)", t.name, t.id == model.themeId ? "checkmark.circle.fill" : "paintpalette", "Themes", keywords: "theme color") { model.setTheme(t.id) }
@@ -150,30 +156,22 @@ public struct TerminalScreen: View {
         blockId = session.focusedBlock?.id
     }
 
+    private func switchTo(_ id: String) {
+        if let onOpen { onOpen(Focus(serverId: serverId, sessionId: id, blockId: nil)) } else { sessionId = id }
+    }
+
     @ViewBuilder
     private func header(_ c: Chrome, server: Server?, session: Session?, window: Window?, block: Block?) -> some View {
         HStack(spacing: 10) {
-            Button { dismiss() } label: {
-                Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold)).foregroundStyle(c.text).frame(width: 40, height: 40)
+            Button { if let onSessions { onSessions() } else { dismiss() } } label: {
+                Image(systemName: onSessions == nil ? "chevron.left" : "list.bullet").font(.system(size: 16, weight: .semibold)).foregroundStyle(c.text).frame(width: 40, height: 40)
             }
             .glass(Circle(), c)
-            .accessibilityLabel("Back")
+            .accessibilityLabel(onSessions == nil ? "Back" : "Sessions")
 
             Tile(glyph(block), size: 32)
 
-            Menu {
-                ForEach(server?.sessions ?? [], id: \.id) { s in
-                    Button { sessionId = s.id } label: {
-                        if s.id == sessionId { Label(s.label, systemImage: "checkmark") } else { Text(s.label) }
-                    }
-                }
-                Divider()
-                Button("New Session", systemImage: "plus") {
-                    Task {
-                        if let id = try? await model.core.createSession(serverId: serverId, label: nil) { sessionId = id }
-                    }
-                }
-            } label: {
+            Button { onSessions?() } label: {
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 6) {
                         Text(block.flatMap(runningName) ?? "terminal").font(.system(size: 15, weight: .semibold)).foregroundStyle(c.text)
@@ -190,6 +188,8 @@ public struct TerminalScreen: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Sessions")
 
             if let window, window.blocks.count > 1 {
                 PaneMap(window: window, selected: blockId) { picked in
@@ -375,7 +375,7 @@ struct LiveTerminal: View {
             let c = TerminalController(model: model, serverId: serverId, sessionId: sessionId, blockId: blockId)
             // The phone takes the size while you use it (like tmux following the
             // active client): readable text, and the keyboard never hides the prompt.
-            c.takeControl()
+            if Prefs.flag(model, Prefs.fitOnOpen) { c.takeControl() }
             c.apply(theme)
             own = c
             controller = c
@@ -404,6 +404,7 @@ struct TerminalSurface: UIViewRepresentable {
 
     func makeUIView(context: Context) -> TerminalUIView {
         let v = TerminalUIView(controller: controller, fontSize: fontSize)
+        v.showsKeyBar = controller.showsKeyBar
         v.onFontSizeChanged = onFontSize
         DispatchQueue.main.async { _ = v.becomeFirstResponder() }
         return v

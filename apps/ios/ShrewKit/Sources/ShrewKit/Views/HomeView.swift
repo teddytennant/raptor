@@ -50,8 +50,10 @@ public struct HomeList: View {
     var onOpen: (String, String, String?) -> Void
     var onAdd: () -> Void
     var onEdit: (Server) -> Void
+    var current: Focus?
 
-    public init(onOpen: @escaping (String, String, String?) -> Void, onAdd: @escaping () -> Void, onEdit: @escaping (Server) -> Void) {
+    public init(current: Focus? = nil, onOpen: @escaping (String, String, String?) -> Void, onAdd: @escaping () -> Void, onEdit: @escaping (Server) -> Void) {
+        self.current = current
         self.onOpen = onOpen
         self.onAdd = onAdd
         self.onEdit = onEdit
@@ -77,7 +79,7 @@ public struct HomeList: View {
                     Text("No sessions").font(.subheadline).foregroundStyle(c.tertiary).padding(.horizontal, 20).padding(.vertical, 12)
                 }
                 ForEach(srv.sessions, id: \.id) { s in
-                    SessionRow(server: srv, session: s) { onOpen(srv.id, s.id, nil) }
+                    SessionRow(server: srv, session: s, selected: current?.serverId == srv.id && current?.sessionId == s.id) { onOpen(srv.id, s.id, nil) }
                 }
             }
         }
@@ -177,6 +179,7 @@ private struct SessionRow: View {
     @Environment(\.chrome) private var c
     var server: Server
     var session: Session
+    var selected = false
     var onOpen: () -> Void
     @State private var renaming = false
     @State private var newName = ""
@@ -187,7 +190,6 @@ private struct SessionRow: View {
         Button(action: onOpen) {
             VStack(spacing: 0) {
                 HStack(spacing: 14) {
-                    Tile(glyph(focused), size: 36)
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 8) {
                             Text(session.label).font(.system(size: 16, weight: .medium)).foregroundStyle(online ? c.text : c.tertiary).lineLimit(1)
@@ -207,11 +209,15 @@ private struct SessionRow: View {
                             .padding(.vertical, 2)
                             .background(c.raised, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                     }
+                    if selected {
+                        Image(systemName: "checkmark").font(.system(size: 15, weight: .semibold)).foregroundStyle(c.accent)
+                    }
                 }
                 .padding(.horizontal, 20)
                 .padding(.vertical, 12)
-                Rectangle().fill(c.hairline).frame(height: 1).padding(.leading, 70)
+                Rectangle().fill(c.hairline).frame(height: 1).padding(.leading, 20)
             }
+            .background(selected ? c.surface : .clear)
             .contentShape(Rectangle())
         }
         .buttonStyle(RowStyle())

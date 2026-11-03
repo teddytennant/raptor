@@ -44,7 +44,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MoreHoriz
@@ -129,7 +129,7 @@ private val activeKeyBar = mutableStateOf<(@Composable () -> Unit)?>(null)
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?, onBack: () -> Unit) {
+fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?, onSessions: () -> Unit, onOpen: (dev.shrew.app.Focus) -> Unit) {
     val app = ShrewApplication.instance
     val state by app.state.collectAsState()
     val themeId by app.themeId.collectAsState()
@@ -221,15 +221,11 @@ fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?,
                     .onSizeChanged { topH = it.height + with(density) { 30.dp.roundToPx() } },
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                GlassCircle(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "Back", tint = Ink.text, modifier = Modifier.size(26.dp)) }
+                GlassCircle(onClick = onSessions) { Icon(Icons.AutoMirrored.Filled.List, "Sessions", tint = Ink.text, modifier = Modifier.size(22.dp)) }
                 Spacer(Modifier.width(10.dp))
                 Tile(glyph(block), Modifier.size(32.dp))
                 Spacer(Modifier.width(10.dp))
-                TitleBlock(block, session, server?.sessions.orEmpty(), Modifier.weight(1f)) { other ->
-                    sid = other
-                    blockId = null
-                    windowId = null
-                }
+                TitleBlock(block, session, Modifier.weight(1f), onClick = onSessions)
                 Spacer(Modifier.width(8.dp))
                 if (window != null && window.blocks.size > 1) {
                     PaneMap(window, blockId, Modifier.size(width = 54.dp, height = 38.dp)) { picked ->
@@ -244,7 +240,7 @@ fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?,
             // ---- bottom: window dock, or the key bar while typing ----
             Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().onSizeChanged { bottomH = it.height }) {
                 if (ime) {
-                    activeKeyBar.value?.invoke()
+                    if (dev.shrew.app.ui.Prefs.flag(dev.shrew.app.ui.Prefs.KEY_BAR)) activeKeyBar.value?.invoke()
                 } else if (session != null) {
                     WindowDock(serverId, session, windowId, Modifier.align(Alignment.Center).navigationBarsPadding().padding(bottom = 10.dp)) { w ->
                         windowId = w.id
@@ -278,10 +274,10 @@ fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?,
                     add(PaletteItem("copy-all", "Copy All Text", glyph = "⧉") { h.view.terminal?.allText()?.let(h.view::copy) })
                 }
                 add(PaletteItem("new-session", "New Session", category = "Sessions", glyph = "+") {
-                    scope.launch { runCatching { app.core.createSession(serverId, null) }.getOrNull()?.let { sid = it; blockId = null; windowId = null } }
+                    scope.launch { runCatching { app.core.createSession(serverId, null) }.getOrNull()?.let { onOpen(dev.shrew.app.Focus(serverId, it, null)) } }
                 })
                 for (o in server?.sessions.orEmpty()) if (o.id != sid) {
-                    add(PaletteItem("session-${o.id}", "Go to ${o.label}", category = "Sessions", glyph = "▸") { sid = o.id; blockId = null; windowId = null })
+                    add(PaletteItem("session-${o.id}", "Go to ${o.label}", category = "Sessions", glyph = "▸") { onOpen(dev.shrew.app.Focus(serverId, o.id, null)) })
                 }
                 for (t in Themes) add(PaletteItem("theme-${t.id}", t.name, category = "Themes", glyph = if (t.id == themeId) "●" else "○", keywords = "theme color") { app.setTheme(t.id) })
             }
@@ -309,33 +305,19 @@ fun Tile(text: String, modifier: Modifier) {
 }
 
 @Composable
-private fun TitleBlock(block: Block?, session: Session?, sessions: List<Session>, modifier: Modifier, onSwitch: (String) -> Unit) {
-    var open by remember { mutableStateOf(false) }
-    Box(modifier) {
-        Column(Modifier.clip(RoundedCornerShape(8.dp)).clickable(enabled = sessions.size > 1) { open = true }.padding(vertical = 2.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(block?.let { runningName(it) } ?: "terminal", color = Ink.text, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1)
-                val pwd = block?.shortPwd.orEmpty()
-                if (pwd.isNotEmpty()) {
-                    Spacer(Modifier.width(6.dp))
-                    Text(pwd, color = Ink.secondary, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, fontFamily = Mono)
-                }
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(session?.label ?: "", color = Ink.tertiary, fontSize = 12.sp, maxLines = 1)
-                if (sessions.size > 1) Icon(Icons.Default.KeyboardArrowDown, null, tint = Ink.tertiary, modifier = Modifier.size(14.dp))
+private fun TitleBlock(block: Block?, session: Session?, modifier: Modifier, onClick: () -> Unit) {
+    Column(modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = onClick).padding(vertical = 2.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(block?.let { runningName(it) } ?: "terminal", color = Ink.text, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1)
+            val pwd = block?.shortPwd.orEmpty()
+            if (pwd.isNotEmpty()) {
+                Spacer(Modifier.width(6.dp))
+                Text(pwd, color = Ink.secondary, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, fontFamily = Mono)
             }
         }
-        DropdownMenu(open, { open = false }, containerColor = Ink.raised, shape = RoundedCornerShape(14.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Ink.glassStroke), shadowElevation = 12.dp) {
-            for (s in sessions) {
-                DropdownMenuItem(
-                    text = { Text(s.label, color = if (s.id == session?.id) Ink.accent else Ink.text) },
-                    onClick = {
-                        open = false
-                        if (s.id != session?.id) onSwitch(s.id)
-                    },
-                )
-            }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(session?.label ?: "", color = Ink.tertiary, fontSize = 12.sp, maxLines = 1)
+            Icon(Icons.Default.KeyboardArrowDown, null, tint = Ink.tertiary, modifier = Modifier.size(14.dp))
         }
     }
 }
@@ -465,8 +447,8 @@ private fun LiveTerminal(
         view.terminal = term
         // The phone takes the size while you use it (like tmux following the active
         // client): readable text, and the keyboard never hides the prompt.
-        term?.takeControl()
-        control = term != null
+        if (Prefs.flag(Prefs.FIT_ON_OPEN)) term?.takeControl()
+        control = term != null && Prefs.flag(Prefs.FIT_ON_OPEN)
         view.control = control
         view.post { view.showKeyboard() }
         onDispose {

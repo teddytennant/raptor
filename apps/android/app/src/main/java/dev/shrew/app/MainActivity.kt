@@ -1,5 +1,13 @@
 package dev.shrew.app
 
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.ui.unit.sp
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Settings
+import dev.shrew.app.ui.SessionList
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -30,7 +38,6 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import dev.shrew.app.ui.AddServerSheet
-import dev.shrew.app.ui.HomeScreen
 import dev.shrew.app.ui.ShrewTheme
 import dev.shrew.app.ui.TerminalScreen
 import uniffi.shrew_ffi.Server
@@ -57,7 +64,6 @@ class MainActivity : ComponentActivity() {
         setContent {
             val themeId by app.themeId.collectAsState()
             ShrewTheme(dev.shrew.app.ui.Chrome.of(dev.shrew.app.ui.themeById(themeId))) {
-                val nav = rememberNavController()
                 var sheet by remember { mutableStateOf(false) }
                 var editing by remember { mutableStateOf<Server?>(null) }
                 val pending by app.pendingOpen.collectAsState()
@@ -74,75 +80,94 @@ class MainActivity : ComponentActivity() {
                         return@LaunchedEffect
                     }
                 }
-                // Tablets, unfolded foldables and wide landscape get the iPad layout:
-                // sessions on the left, the open terminal beside them.
+                // The app opens straight into your last session. Everything else
+                // (other sessions, servers, settings) is one tap away in the switcher.
                 val wide = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 720
-                var detail by remember { mutableStateOf<Focus?>(null) }
-                LaunchedEffect(pending, wide) {
+                var current by remember { mutableStateOf(lastOpen()) }
+                var switcher by remember { mutableStateOf(false) }
+                var settings by remember { mutableStateOf(false) }
+                fun open(f: Focus) {
+                    current = f
+                    app.core.setSetting("last_open", "${f.serverId}|${f.sessionId}")
+                }
+                LaunchedEffect(pending) {
                     val p = pending ?: return@LaunchedEffect
                     app.pendingOpen.value = null
-                    if (wide) detail = p
-                    else nav.navigate("t/${p.serverId}/${p.sessionId}?block=${p.blockId.orEmpty()}") { launchSingleTop = true }
+                    open(p)
                 }
+                // If the saved session is gone, forget it. Never open a session the
+                // user didn't pick: opening one fits it to the phone, which resizes
+                // it for everyone else watching it.
+                LaunchedEffect(appState, current) {
+                    val c = current ?: return@LaunchedEffect
+                    val srv = appState.servers.firstOrNull { it.id == c.serverId }
+                    val gone = srv == null || (srv.connectivity is uniffi.shrew_ffi.Connectivity.Online && srv.sessions.none { it.id == c.sessionId })
+                    if (gone && appState.servers.isNotEmpty()) {
+                        current = null
+                        app.core.setSetting("last_open", "")
+                        switcher = true
+                    }
+                }
+                // Nothing open yet: offer the switcher once.
+                LaunchedEffect(Unit) { if (current == null && appState.servers.isNotEmpty()) switcher = true }
                 val addServer = {
                     editing = null
                     sheet = true
                     maybeAskNotifications()
                 }
-                if (wide) {
+                val editServer = { s: Server -> editing = s; sheet = true }
+
+                val terminal = @androidx.compose.runtime.Composable {
+                    val c = current
+                    when {
+                        appState.servers.isEmpty() -> dev.shrew.app.ui.Welcome(addServer)
+                        c == null -> dev.shrew.app.ui.PickASession(onSessions = { switcher = true })
+                        else -> androidx.compose.runtime.key(c) {
+                            TerminalScreen(c.serverId, c.sessionId, c.blockId, onSessions = { switcher = true }, onOpen = ::open)
+                        }
+                    }
+                }
+                if (wide && appState.servers.isNotEmpty()) {
+                    // Tablets and unfolded foldables: sessions beside the terminal.
                     androidx.compose.foundation.layout.Row(androidx.compose.ui.Modifier.fillMaxSize().background(dev.shrew.app.ui.Ink.bg)) {
-                        androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.width(360.dp).fillMaxHeight()) {
-                            HomeScreen(
-                                onOpenSession = { s, ses, b -> detail = Focus(s, ses, b) },
-                                onAddServer = addServer,
-                                onEditServer = { editing = it; sheet = true },
-                            )
+                        androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.width(340.dp).fillMaxHeight().statusBarsPadding()) {
+                            androidx.compose.foundation.layout.Row(
+                                androidx.compose.ui.Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
+                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                            ) {
+                                androidx.compose.material3.Text("Sessions", color = dev.shrew.app.ui.Ink.text, fontSize = 22.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, modifier = androidx.compose.ui.Modifier.weight(1f))
+                                dev.shrew.app.ui.GlassCircle(size = 40.dp, onClick = { settings = true }) {
+                                    androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Default.Settings, "Settings", tint = dev.shrew.app.ui.Ink.text, modifier = androidx.compose.ui.Modifier.size(20.dp))
+                                }
+                                androidx.compose.foundation.layout.Spacer(androidx.compose.ui.Modifier.width(8.dp))
+                                dev.shrew.app.ui.GlassCircle(size = 40.dp, onClick = addServer) {
+                                    androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Default.Add, "Add server", tint = dev.shrew.app.ui.Ink.accent, modifier = androidx.compose.ui.Modifier.size(22.dp))
+                                }
+                            }
+                            SessionList(current, onOpenSession = { s, ses, b -> open(Focus(s, ses, b)) }, onAddServer = addServer, onEditServer = editServer)
                         }
                         androidx.compose.material3.VerticalDivider(color = dev.shrew.app.ui.Ink.hairline)
-                        androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.weight(1f).fillMaxHeight()) {
-                            val d = detail
-                            if (d != null) {
-                                androidx.compose.runtime.key(d) {
-                                    TerminalScreen(serverId = d.serverId, sessionId = d.sessionId, initialBlockId = d.blockId, onBack = { detail = null })
-                                }
-                            } else {
-                                dev.shrew.app.ui.PickASession()
-                            }
-                        }
+                        androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.weight(1f).fillMaxHeight()) { terminal() }
                     }
-                    if (sheet) AddServerSheet(editing) { sheet = false }
-                    return@ShrewTheme
+                } else {
+                    terminal()
                 }
-                NavHost(
-                    nav,
-                    startDestination = "home",
-                    enterTransition = { slideInHorizontally { it / 3 } + fadeIn() },
-                    exitTransition = { fadeOut() },
-                    popEnterTransition = { fadeIn() },
-                    popExitTransition = { slideOutHorizontally { it / 3 } + fadeOut() },
+                if (switcher) {
+                    dev.shrew.app.ui.SessionSheet(
+                        current = current,
+                        onOpen = ::open,
+                        onAddServer = addServer,
+                        onEditServer = editServer,
+                        onSettings = { settings = true },
+                        onDismiss = { switcher = false },
+                    )
+                }
+                androidx.compose.animation.AnimatedVisibility(
+                    settings,
+                    enter = androidx.compose.animation.slideInHorizontally { it } + fadeIn(),
+                    exit = androidx.compose.animation.slideOutHorizontally { it } + fadeOut(),
                 ) {
-                    composable("home") {
-                        HomeScreen(
-                            onOpenSession = { s, ses, b -> nav.navigate("t/$s/$ses?block=${b.orEmpty()}") },
-                            onAddServer = addServer,
-                            onEditServer = {
-                                editing = it
-                                sheet = true
-                            },
-                        )
-                    }
-                    composable(
-                        "t/{server}/{session}?block={block}",
-                        arguments = listOf(navArgument("block") { type = NavType.StringType; defaultValue = "" }),
-                    ) { e ->
-                        val a = e.arguments!!
-                        TerminalScreen(
-                            serverId = a.getString("server")!!,
-                            sessionId = a.getString("session")!!,
-                            initialBlockId = a.getString("block")?.ifEmpty { null },
-                            onBack = { nav.popBackStack() },
-                        )
-                    }
+                    dev.shrew.app.ui.SettingsScreen(onClose = { settings = false }, onAddServer = addServer, onEditServer = editServer)
                 }
                 if (sheet) AddServerSheet(editing) { sheet = false }
             }
@@ -152,6 +177,13 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleIntent(intent)
+    }
+
+    /** The session that was open last time, if any. */
+    private fun lastOpen(): Focus? {
+        val v = ShrewApplication.instance.core.setting("last_open") ?: return null
+        val parts = v.split('|')
+        return if (parts.size >= 2) Focus(parts[0], parts[1], null) else null
     }
 
     private fun handleIntent(intent: Intent?) {

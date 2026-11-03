@@ -340,7 +340,9 @@ public final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGest
     // MARK: keyboard
 
     public override var canBecomeFirstResponder: Bool { true }
-    public override var inputAccessoryView: UIView? { keyBar }
+    /// The key bar rides on the keyboard unless turned off in Settings.
+    public var showsKeyBar = true
+    public override var inputAccessoryView: UIView? { showsKeyBar ? keyBar : nil }
 
     public override func becomeFirstResponder() -> Bool {
         let r = super.becomeFirstResponder()

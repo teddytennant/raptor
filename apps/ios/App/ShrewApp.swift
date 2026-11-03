@@ -30,43 +30,63 @@ struct ShrewApp: App {
     }
 }
 
-/// Navigation: home → terminal. iPad gets a sidebar.
+/// The app opens straight into your last session. Other sessions, servers and
+/// settings are one tap away in the switcher. iPad keeps a sessions sidebar.
 struct RootView: View {
     @Environment(ShrewModel.self) private var model
-    @State private var path: [Route] = []
     @Environment(\.horizontalSizeClass) private var hsize
-
-    struct Route: Hashable {
-        var server: String
-        var session: String
-        var block: String?
-    }
+    @State private var current: Focus?
+    @State private var switcher = false
+    @State private var settings = false
+    @State private var addingServer = false
+    @State private var editing: Server?
+    @State private var loaded = false
 
     var body: some View {
         Group {
-            if hsize == .regular {
+            if hsize == .regular, !model.state.servers.isEmpty {
                 NavigationSplitView {
-                    HomeView { s, ses, b in path = [Route(server: s, session: ses, block: b)] }
-                } detail: {
-                    if let r = path.last {
-                        NavigationStack { TerminalScreen(serverId: r.server, sessionId: r.session, blockId: r.block).id(r) }
-                    } else {
-                        ContentUnavailableView("Pick a session", systemImage: "terminal", description: Text("Your sessions keep running on the server."))
+                    ScrollView {
+                        HomeList(current: current, onOpen: { s, ses, b in open(Focus(serverId: s, sessionId: ses, blockId: b)) },
+                                 onAdd: { addingServer = true }, onEdit: { editing = $0 })
                     }
+                    .background(Chrome(model.theme).bg.ignoresSafeArea())
+                    .navigationTitle("Sessions")
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) { Button { settings = true } label: { Image(systemName: "gearshape") } }
+                        ToolbarItem(placement: .topBarTrailing) { Button { addingServer = true } label: { Image(systemName: "plus") } }
+                    }
+                } detail: {
+                    detail
                 }
             } else {
-                NavigationStack(path: $path) {
-                    HomeView { s, ses, b in path.append(Route(server: s, session: ses, block: b)) }
-                        .navigationDestination(for: Route.self) { r in
-                            TerminalScreen(serverId: r.server, sessionId: r.session, blockId: r.block)
-                        }
-                }
+                detail
             }
+        }
+        .sheet(isPresented: $switcher) {
+            SessionSheet(current: current, onOpen: open, onAddServer: { addingServer = true }, onEditServer: { editing = $0 }, onSettings: { settings = true })
+        }
+        .sheet(isPresented: $settings) {
+            SettingsView(onAddServer: { addingServer = true }, onEditServer: { editing = $0 })
+        }
+        .sheet(isPresented: $addingServer) { AddServerView(editing: nil) { addingServer = false } }
+        .sheet(item: $editing) { srv in AddServerView(editing: srv) { editing = nil } }
+        .onAppear {
+            guard !loaded else { return }
+            loaded = true
+            current = lastOpen()
+        }
+        .onChange(of: model.state) { _, state in
+            // A saved session that no longer exists is forgotten. Never open one the
+            // user didn't pick: opening fits it to the phone, resizing it for others.
+            guard let c = current, !state.servers.isEmpty else { return }
+            guard let srv = state.servers.first(where: { $0.id == c.serverId }) else { forget(); return }
+            if srv.connectivity.isOnline, !srv.sessions.contains(where: { $0.id == c.sessionId }) { forget() }
         }
         .onChange(of: model.pendingOpen) { _, f in
             guard let f else { return }
             model.pendingOpen = nil
-            path = [Route(server: f.serverId, session: f.sessionId, block: f.blockId)]
+            open(f)
         }
         .onChange(of: model.state.servers.count) { _, n in
             if n > 0 { Notifier.requestAuthorizationIfNeeded() }
@@ -75,23 +95,50 @@ struct RootView: View {
         .task {
             guard let want = ProcessInfo.processInfo.environment["SHREW_OPEN"] else { return }
             for _ in 0..<100 {
-                if let url = URL(string: "shrew://open?session=\(want)"), open(url) { return }
+                if let url = URL(string: "shrew://open?session=\(want)"), openURL(url) { return }
                 try? await Task.sleep(for: .milliseconds(100))
             }
         }
         // shrew://open?session=<label or id>[&server=<name or id>]
-        .onOpenURL { url in _ = open(url) }
+        .onOpenURL { url in _ = openURL(url) }
+    }
+
+    @ViewBuilder private var detail: some View {
+        if model.state.servers.isEmpty {
+            WelcomeView { addingServer = true }
+        } else if let c = current {
+            TerminalScreen(serverId: c.serverId, sessionId: c.sessionId, blockId: c.blockId, onSessions: { switcher = true }, onOpen: open)
+                .id("\(c.serverId)/\(c.sessionId)")
+        } else {
+            PickSessionView { switcher = true }
+        }
+    }
+
+    private func open(_ f: Focus) {
+        current = f
+        model.core.setSetting(key: "last_open", value: "\(f.serverId)|\(f.sessionId)")
+    }
+
+    private func forget() {
+        current = nil
+        model.core.setSetting(key: "last_open", value: "")
+        switcher = true
+    }
+
+    private func lastOpen() -> Focus? {
+        let parts = (model.core.setting(key: "last_open") ?? "").split(separator: "|").map(String.init)
+        return parts.count >= 2 ? Focus(serverId: parts[0], sessionId: parts[1], blockId: nil) : nil
     }
 
     @discardableResult
-    private func open(_ url: URL) -> Bool {
+    private func openURL(_ url: URL) -> Bool {
         guard url.scheme == "shrew", url.host == "open",
               let q = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else { return false }
         let want = q.first { $0.name == "session" }?.value
         let srvWant = q.first { $0.name == "server" }?.value
         for srv in model.state.servers where srvWant == nil || srv.id == srvWant || srv.name == srvWant {
             if let s = srv.sessions.first(where: { $0.id == want || $0.label == want }) {
-                path = [Route(server: srv.id, session: s.id, block: nil)]
+                open(Focus(serverId: srv.id, sessionId: s.id, blockId: nil))
                 return true
             }
         }
@@ -144,6 +191,16 @@ enum Notifier {
     }
 
     static func post(_ n: ShrewKit.Notification) {
+        if let m = model {
+            let wanted: Bool
+            switch n.kind {
+            case .agentBlocked, .agentError: wanted = Prefs.flag(m, Prefs.notifyBlocked)
+            case .agentDone: wanted = Prefs.flag(m, Prefs.notifyDone)
+            case .processExited: wanted = Prefs.flag(m, Prefs.notifyExit, default: false)
+            default: wanted = Prefs.flag(m, Prefs.notifyProgram)
+            }
+            guard wanted else { return }
+        }
         let c = UNMutableNotificationContent()
         switch n.kind {
         case .agentBlocked: c.title = "\(n.title) needs you"; c.interruptionLevel = .timeSensitive; c.categoryIdentifier = "agent"

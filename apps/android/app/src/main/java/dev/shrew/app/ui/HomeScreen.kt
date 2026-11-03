@@ -27,6 +27,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreHoriz
@@ -81,68 +82,36 @@ import uniffi.shrew_ffi.Connectivity
 import uniffi.shrew_ffi.Server
 import uniffi.shrew_ffi.Session
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * Every server and its sessions, as a quiet list: what needs you first, then
+ * each server's sessions. Used by the session switcher and the tablet sidebar.
+ */
 @Composable
-fun HomeScreen(
+fun SessionList(
+    current: dev.shrew.app.Focus?,
     onOpenSession: (serverId: String, sessionId: String, blockId: String?) -> Unit,
     onAddServer: () -> Unit,
     onEditServer: (Server) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val app = ShrewApplication.instance
     val state by app.state.collectAsState()
-    var refreshing by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
     val needs = state.attention.filter { it.block.agent?.state == AgentState.BLOCKED || it.block.agent?.state == AgentState.ERROR }
-
-    val list = rememberLazyListState()
-    // Like a large navigation title: the big "Shrew" scrolls away and a small
-    // centered one fades into the bar.
-    val collapsed by remember { derivedStateOf { list.firstVisibleItemIndex > 0 || list.firstVisibleItemScrollOffset > 60 } }
-    val small by animateFloatAsState(if (collapsed) 1f else 0f, tween(180), label = "title")
-    Column(Modifier.fillMaxSize().background(Ink.bg).statusBarsPadding()) {
-        Box(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 12.dp)) {
-            Text("Shrew", color = Ink.text, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.align(Alignment.Center).alpha(small))
-            Box(Modifier.align(Alignment.CenterEnd)) {
-                GlassCircle(size = 44.dp, onClick = onAddServer) { Icon(Icons.Default.Add, "Add server", tint = Ink.accent, modifier = Modifier.size(24.dp)) }
-            }
-            if (small > 0f) HorizontalDivider(Modifier.align(Alignment.BottomCenter).alpha(small), color = Ink.hairline)
+    LazyColumn(modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = 24.dp)) {
+        if (state.servers.isEmpty()) item(key = "empty") { EmptyState(onAddServer) }
+        if (needs.isNotEmpty()) {
+            item(key = "needs") { Header("Needs you") }
+            items(needs, key = { "n" + it.serverId + it.block.id }) { NeedsRow(it) { onOpenSession(it.serverId, it.sessionId, it.block.id) } }
         }
-        PullToRefreshBox(
-            isRefreshing = refreshing,
-            onRefresh = {
-                refreshing = true
-                state.servers.forEach { app.core.reconnect(it.id) }
-                scope.launch { delay(600); refreshing = false }
-            },
-            modifier = Modifier.fillMaxSize(),
-        ) {
-            LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(bottom = 32.dp)) {
-                item(key = "title") {
-                    Text(
-                        "Shrew",
-                        color = Ink.text,
-                        fontSize = 34.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 0.2.sp,
-                        modifier = Modifier.padding(start = 20.dp, top = 4.dp, bottom = 10.dp).alpha(1f - small),
-                    )
+        for (srv in state.servers) {
+            item(key = "s" + srv.id) { ServerHeader(srv, onEditServer) { sid -> onOpenSession(srv.id, sid, null) } }
+            if (srv.connectivity is Connectivity.Online && srv.sessions.isEmpty()) {
+                item(key = "e" + srv.id) {
+                    Text("No sessions", color = Ink.tertiary, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
                 }
-                if (state.servers.isEmpty()) item(key = "empty") { EmptyState(onAddServer) }
-                if (needs.isNotEmpty()) {
-                    item { Header("Needs you") }
-                    items(needs, key = { "n" + it.serverId + it.block.id }) { NeedsRow(it) { onOpenSession(it.serverId, it.sessionId, it.block.id) } }
-                }
-                for (srv in state.servers) {
-                    item(key = "s" + srv.id) { ServerHeader(srv, onEditServer) { sid -> onOpenSession(srv.id, sid, null) } }
-                    if (srv.connectivity is Connectivity.Online && srv.sessions.isEmpty()) {
-                        item(key = "e" + srv.id) {
-                            Text("No sessions", color = Ink.tertiary, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
-                        }
-                    }
-                    items(srv.sessions, key = { srv.id + it.id }) { s ->
-                        SessionRow(srv, s) { onOpenSession(srv.id, s.id, null) }
-                    }
-                }
+            }
+            items(srv.sessions, key = { srv.id + it.id }) { s ->
+                SessionRow(srv, s, selected = current?.serverId == srv.id && current.sessionId == s.id) { onOpenSession(srv.id, s.id, null) }
             }
         }
     }
@@ -179,7 +148,7 @@ internal fun runningName(b: Block): String? {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun SessionRow(srv: Server, s: Session, onOpen: () -> Unit) {
+private fun SessionRow(srv: Server, s: Session, selected: Boolean, onOpen: () -> Unit) {
     val app = ShrewApplication.instance
     val st = LocalStatus.current
     val scope = rememberCoroutineScope()
@@ -197,7 +166,7 @@ private fun SessionRow(srv: Server, s: Session, onOpen: () -> Unit) {
         Row(
             Modifier
                 .fillMaxWidth()
-                .background(if (pressed) Ink.raised else Color.Transparent)
+                .background(if (pressed) Ink.raised else if (selected) Ink.surface else Color.Transparent)
                 .combinedClickable(
                     interactionSource = interaction,
                     indication = null,
@@ -211,8 +180,6 @@ private fun SessionRow(srv: Server, s: Session, onOpen: () -> Unit) {
                 .padding(horizontal = 20.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Tile(glyph(focused), Modifier.size(36.dp))
-            Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(s.label, color = if (online) Ink.text else Ink.tertiary, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
@@ -237,6 +204,10 @@ private fun SessionRow(srv: Server, s: Session, onOpen: () -> Unit) {
                     modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(Ink.raised).padding(horizontal = 7.dp, vertical = 2.dp),
                 )
             }
+            if (selected) {
+                Spacer(Modifier.width(12.dp))
+                Icon(Icons.Default.Check, "Current", tint = Ink.accent, modifier = Modifier.size(18.dp))
+            }
         }
         ShrewMenu(menu, { menu = false }) {
             ShrewMenuItem("Rename…", Icons.Default.Edit) { menu = false; renaming = true }
@@ -251,7 +222,7 @@ private fun SessionRow(srv: Server, s: Session, onOpen: () -> Unit) {
             }
         }
     }
-    HorizontalDivider(Modifier.padding(start = 70.dp), color = Ink.hairline)
+    HorizontalDivider(Modifier.padding(start = 20.dp), color = Ink.hairline)
     if (renaming) RenameDialog(s.label, onDismiss = { renaming = false }) { name ->
         renaming = false
         scope.launch { runCatching { app.core.renameSession(srv.id, s.id, name) } }

@@ -1,7 +1,7 @@
 //! A terminal a UI is showing: its stream, its emulator, and its input queue.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex;
@@ -138,6 +138,8 @@ pub struct TerminalSession {
     stop: watch::Sender<bool>,
     /// The device's own grid size, for "fit to this screen".
     device: Mutex<Option<(u16, u16, u32, u32)>>,
+    /// Bumped on every grid change; a pending resize only fires if it's still current.
+    resize_gen: Arc<AtomicU64>,
     control: AtomicBool,
     forced: Mutex<Option<ColorTheme>>,
     /// Methods are called from UI threads, so spawn on the engine's runtime explicitly.
@@ -160,6 +162,7 @@ impl TerminalSession {
             input,
             stop: watch::channel(false).0,
             device: Mutex::new(None),
+            resize_gen: Arc::new(AtomicU64::new(0)),
             control: AtomicBool::new(false),
             forced: Mutex::new(None),
             rt: tokio::runtime::Handle::current(),
@@ -426,7 +429,7 @@ impl TerminalSession {
     pub fn set_device_grid(&self, cols: u16, rows: u16, cell_w: u32, cell_h: u32) {
         let prev = self.device.lock().replace((cols, rows, cell_w, cell_h));
         if self.control.load(Ordering::Acquire) && prev.map(|p| (p.0, p.1)) != Some((cols, rows)) {
-            self.push_resize();
+            self.push_resize_settled();
         }
     }
 
@@ -473,6 +476,30 @@ impl TerminalSession {
                 }
             });
         }
+    }
+
+    /// Resize once the grid stops changing. While the keyboard slides in, the
+    /// view's height changes every frame; sending each step would make the
+    /// program redraw a dozen times (visible stutter and reflow). 120 ms of
+    /// quiet is shorter than a person notices, longer than an animation frame.
+    fn push_resize_settled(&self) {
+        let ticket = self.resize_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        let latest = self.resize_gen.clone();
+        let device = *self.device.lock();
+        let (server, sid, bid) = (self.server.clone(), self.session_id.clone(), self.block_id.clone());
+        self.rt.spawn(async move {
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            if latest.load(Ordering::Acquire) != ticket {
+                return; // a newer size superseded this one
+            }
+            let Some((cols, rows, cw, ch)) = device else { return };
+            if let Some(c) = server.connection() {
+                let px = (cw > 0 && ch > 0).then_some((cw, ch));
+                if let Err(e) = c.resize(&sid, &bid, cols as u32, rows as u32, px).await {
+                    tracing::warn!("resize: {e}");
+                }
+            }
+        });
     }
 
     fn push_resize(&self) {

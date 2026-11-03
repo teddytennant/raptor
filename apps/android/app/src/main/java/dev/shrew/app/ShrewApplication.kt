@@ -98,6 +98,14 @@ class ShrewApplication : Application() {
             (f.blockId == null || f.blockId == n.blockId)
         if (looking) return
         if (n.kind == NotificationKind.BELL && inForeground) return
+        // What you've chosen to hear about in Settings.
+        val wanted = when (n.kind) {
+            NotificationKind.AGENT_BLOCKED, NotificationKind.AGENT_ERROR -> dev.shrew.app.ui.Prefs.flag(dev.shrew.app.ui.Prefs.NOTIFY_BLOCKED)
+            NotificationKind.AGENT_DONE -> dev.shrew.app.ui.Prefs.flag(dev.shrew.app.ui.Prefs.NOTIFY_DONE)
+            NotificationKind.PROCESS_EXITED -> dev.shrew.app.ui.Prefs.flag(dev.shrew.app.ui.Prefs.NOTIFY_EXIT, default = false)
+            else -> dev.shrew.app.ui.Prefs.flag(dev.shrew.app.ui.Prefs.NOTIFY_PROGRAM)
+        }
+        if (!wanted) return
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) return
