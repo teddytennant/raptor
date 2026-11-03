@@ -38,6 +38,17 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         handleIntent(intent)
         val app = ShrewApplication.instance
+        // With a hardware keyboard Android leaves touch mode and paints a default
+        // focus highlight over any focused View that has no focus style of its
+        // own. The Compose root fills the window, so that reads as a grey wash
+        // over the whole app. Compose draws its own focus states; turn this off.
+        window.decorView.viewTreeObserver.addOnGlobalLayoutListener {
+            fun off(v: android.view.View) {
+                v.defaultFocusHighlightEnabled = false
+                if (v is android.view.ViewGroup) for (i in 0 until v.childCount) off(v.getChildAt(i))
+            }
+            off(window.decorView)
+        }
         setContent {
             val themeId by app.themeId.collectAsState()
             ShrewTheme(dev.shrew.app.ui.Chrome.of(dev.shrew.app.ui.themeById(themeId))) {

@@ -145,3 +145,51 @@ fun LayoutThumbnail(window: Window?, modifier: Modifier = Modifier, highlight: S
         }
     }
 }
+
+
+/** Menus styled like the rest of the chrome: raised surface, soft corners, hairline. */
+@Composable
+fun ShrewMenu(expanded: Boolean, onDismiss: () -> Unit, content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
+    androidx.compose.material3.DropdownMenu(
+        expanded = expanded,
+        onDismissRequest = onDismiss,
+        containerColor = Ink.raised,
+        shape = RoundedCornerShape(14.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Ink.glassStroke),
+        shadowElevation = 12.dp,
+        content = content,
+    )
+}
+
+@Composable
+fun ShrewMenuItem(text: String, icon: androidx.compose.ui.graphics.vector.ImageVector? = null, color: Color = Ink.text, onClick: () -> Unit) {
+    val view = androidx.compose.ui.platform.LocalView.current
+    androidx.compose.material3.DropdownMenuItem(
+        text = { Text(text, color = color, fontSize = 15.sp) },
+        leadingIcon = icon?.let { { androidx.compose.material3.Icon(it, null, tint = color.copy(alpha = 0.8f), modifier = Modifier.size(18.dp)) } },
+        onClick = {
+            view.performHapticFeedback(android.view.HapticFeedbackConstants.CONTEXT_CLICK)
+            onClick()
+        },
+    )
+}
+
+/** A filled circle with an up arrow (send), drawn to match the iOS symbol. */
+@Composable
+fun SendGlyph(color: Color, size: Dp = 24.dp) {
+    Canvas(Modifier.size(size)) {
+        val r = this.size.minDimension / 2
+        drawCircle(color, r)
+        val c = Offset(r, r)
+        val w = r * 0.12f
+        val stroke = androidx.compose.ui.graphics.drawscope.Stroke(width = w * 1.6f, cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round)
+        val bg = Color.Black.copy(alpha = 0.85f)
+        drawLine(bg, Offset(c.x, c.y + r * 0.45f), Offset(c.x, c.y - r * 0.42f), strokeWidth = w * 1.6f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+        val path = androidx.compose.ui.graphics.Path().apply {
+            moveTo(c.x - r * 0.38f, c.y - r * 0.05f)
+            lineTo(c.x, c.y - r * 0.45f)
+            lineTo(c.x + r * 0.38f, c.y - r * 0.05f)
+        }
+        drawPath(path, bg, style = stroke)
+    }
+}

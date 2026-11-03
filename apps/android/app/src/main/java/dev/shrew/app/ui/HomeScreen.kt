@@ -26,7 +26,21 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalView
+import android.view.HapticFeedbackConstants
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -80,10 +94,18 @@ fun HomeScreen(
     val scope = rememberCoroutineScope()
     val needs = state.attention.filter { it.block.agent?.state == AgentState.BLOCKED || it.block.agent?.state == AgentState.ERROR }
 
+    val list = rememberLazyListState()
+    // Like a large navigation title: the big "Shrew" scrolls away and a small
+    // centered one fades into the bar.
+    val collapsed by remember { derivedStateOf { list.firstVisibleItemIndex > 0 || list.firstVisibleItemScrollOffset > 60 } }
+    val small by animateFloatAsState(if (collapsed) 1f else 0f, tween(180), label = "title")
     Column(Modifier.fillMaxSize().background(Ink.bg).statusBarsPadding()) {
-        Row(Modifier.fillMaxWidth().height(56.dp).padding(start = 20.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("Shrew", style = MaterialTheme.typography.titleLarge, color = Ink.text, modifier = Modifier.weight(1f))
-            IconButton(onClick = onAddServer) { Icon(Icons.Default.Add, "Add server", tint = Ink.text) }
+        Box(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 12.dp)) {
+            Text("Shrew", color = Ink.text, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.align(Alignment.Center).alpha(small))
+            Box(Modifier.align(Alignment.CenterEnd)) {
+                GlassCircle(size = 44.dp, onClick = onAddServer) { Icon(Icons.Default.Add, "Add server", tint = Ink.accent, modifier = Modifier.size(24.dp)) }
+            }
+            if (small > 0f) HorizontalDivider(Modifier.align(Alignment.BottomCenter).alpha(small), color = Ink.hairline)
         }
         PullToRefreshBox(
             isRefreshing = refreshing,
@@ -94,11 +116,18 @@ fun HomeScreen(
             },
             modifier = Modifier.fillMaxSize(),
         ) {
-            if (state.servers.isEmpty()) {
-                EmptyState(onAddServer)
-                return@PullToRefreshBox
-            }
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 32.dp)) {
+            LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(bottom = 32.dp)) {
+                item(key = "title") {
+                    Text(
+                        "Shrew",
+                        color = Ink.text,
+                        fontSize = 34.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.2.sp,
+                        modifier = Modifier.padding(start = 20.dp, top = 4.dp, bottom = 10.dp).alpha(1f - small),
+                    )
+                }
+                if (state.servers.isEmpty()) item(key = "empty") { EmptyState(onAddServer) }
                 if (needs.isNotEmpty()) {
                     item { Header("Needs you") }
                     items(needs, key = { "n" + it.serverId + it.block.id }) { NeedsRow(it) { onOpenSession(it.serverId, it.sessionId, it.block.id) } }
@@ -160,12 +189,25 @@ private fun SessionRow(srv: Server, s: Session, onOpen: () -> Unit) {
     val focused = active?.blocks?.firstOrNull { it.id == active.focusedBlockId } ?: active?.blocks?.firstOrNull()
     val online = srv.connectivity is Connectivity.Online
     val agent = s.agentState?.takeIf { it != AgentState.IDLE }
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val view = LocalView.current
 
     Box {
         Row(
             Modifier
                 .fillMaxWidth()
-                .combinedClickable(enabled = online, onClick = onOpen, onLongClick = { menu = true })
+                .background(if (pressed) Ink.raised else Color.Transparent)
+                .combinedClickable(
+                    interactionSource = interaction,
+                    indication = null,
+                    enabled = online,
+                    onClick = onOpen,
+                    onLongClick = {
+                        view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                        menu = true
+                    },
+                )
                 .padding(horizontal = 20.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -196,16 +238,17 @@ private fun SessionRow(srv: Server, s: Session, onOpen: () -> Unit) {
                 )
             }
         }
-        DropdownMenu(menu, { menu = false }) {
-            DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; renaming = true })
-            DropdownMenuItem(text = { Text("New window") }, onClick = {
+        ShrewMenu(menu, { menu = false }) {
+            ShrewMenuItem("Rename…", Icons.Default.Edit) { menu = false; renaming = true }
+            ShrewMenuItem("New Window", Icons.Default.Add) {
                 menu = false
                 scope.launch { runCatching { app.core.newWindow(srv.id, s.id) } }
-            })
-            DropdownMenuItem(text = { Text("End session", color = MaterialTheme.colorScheme.error) }, onClick = {
+            }
+            HorizontalDivider(color = Ink.hairline)
+            ShrewMenuItem("End Session", Icons.Default.Close, color = LocalStatus.current.error) {
                 menu = false
                 scope.launch { runCatching { app.core.destroySession(srv.id, s.id) } }
-            })
+            }
         }
     }
     HorizontalDivider(Modifier.padding(start = 70.dp), color = Ink.hairline)
@@ -241,7 +284,7 @@ private fun ServerHeader(srv: Server, onEdit: (Server) -> Unit, onCreated: (Stri
         is Connectivity.Idle -> st.offline to ""
     }
     Column {
-        Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 4.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 4.dp, top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(6.dp).clip(CircleShape).background(dot))
             Spacer(Modifier.width(8.dp))
             Text(srv.name, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Ink.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
@@ -252,11 +295,12 @@ private fun ServerHeader(srv: Server, onEdit: (Server) -> Unit, onCreated: (Stri
                 }
             }
             Box {
-                IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Server options", tint = Ink.tertiary, modifier = Modifier.size(20.dp)) }
-                DropdownMenu(menu, { menu = false }) {
-                    DropdownMenuItem(text = { Text("Edit") }, onClick = { menu = false; onEdit(srv) })
-                    DropdownMenuItem(text = { Text("Reconnect") }, onClick = { menu = false; app.core.reconnect(srv.id) })
-                    DropdownMenuItem(text = { Text("Remove", color = MaterialTheme.colorScheme.error) }, onClick = { menu = false; app.core.removeServer(srv.id) })
+                IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreHoriz, "Server options", tint = Ink.tertiary, modifier = Modifier.size(20.dp)) }
+                ShrewMenu(menu, { menu = false }) {
+                    ShrewMenuItem("Edit…", Icons.Default.Edit) { menu = false; onEdit(srv) }
+                    ShrewMenuItem("Reconnect", Icons.Default.Refresh) { menu = false; app.core.reconnect(srv.id) }
+                    HorizontalDivider(color = Ink.hairline)
+                    ShrewMenuItem("Remove", Icons.Default.Delete, color = LocalStatus.current.error) { menu = false; app.core.removeServer(srv.id) }
                 }
             }
         }
@@ -332,7 +376,7 @@ private fun NeedsRow(item: AttentionItem, onOpen: () -> Unit) {
                 )
             }
             IconButton(onClick = { send() }, enabled = reply.isNotEmpty()) {
-                Icon(Icons.AutoMirrored.Filled.Send, "Send", tint = if (reply.isNotEmpty()) Ink.accent else Ink.tertiary, modifier = Modifier.size(18.dp))
+                SendGlyph(if (reply.isNotEmpty()) Ink.accent else Ink.tertiary, 24.dp)
             }
         }
     }
@@ -340,7 +384,7 @@ private fun NeedsRow(item: AttentionItem, onOpen: () -> Unit) {
 
 @Composable
 private fun EmptyState(onAdd: () -> Unit) {
-    Column(Modifier.fillMaxSize().padding(32.dp), verticalArrangement = Arrangement.Center) {
+    Column(Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 48.dp)) {
         Text("No servers yet", color = Ink.text, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(8.dp))
         Text(
@@ -350,6 +394,6 @@ private fun EmptyState(onAdd: () -> Unit) {
             lineHeight = 21.sp,
         )
         Spacer(Modifier.height(20.dp))
-        TextButton(onClick = onAdd, contentPadding = PaddingValues(0.dp)) { Text("Add a server", fontSize = 15.sp) }
+        TextButton(onClick = onAdd, contentPadding = PaddingValues(0.dp)) { Text("Add a server", fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = Ink.accent) }
     }
 }

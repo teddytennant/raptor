@@ -34,8 +34,17 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.filled.KeyboardCommandKey
+import androidx.compose.material.icons.filled.CloseFullscreen
+import androidx.compose.material.icons.filled.OpenInFull
+import androidx.compose.material.icons.filled.VerticalSplit
+import androidx.compose.material.icons.filled.HorizontalSplit
+import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MoreHoriz
@@ -212,7 +221,7 @@ fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?,
                     .onSizeChanged { topH = it.height + with(density) { 30.dp.roundToPx() } },
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                GlassCircle(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Ink.text, modifier = Modifier.size(20.dp)) }
+                GlassCircle(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "Back", tint = Ink.text, modifier = Modifier.size(26.dp)) }
                 Spacer(Modifier.width(10.dp))
                 Tile(glyph(block), Modifier.size(32.dp))
                 Spacer(Modifier.width(10.dp))
@@ -286,7 +295,7 @@ fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?,
 fun Modifier.glass(shape: Shape): Modifier = this.clip(shape).background(Ink.glass).border(1.dp, Ink.glassStroke, shape)
 
 @Composable
-private fun GlassCircle(size: Dp = 40.dp, onClick: () -> Unit, content: @Composable () -> Unit) {
+fun GlassCircle(size: Dp = 40.dp, onClick: () -> Unit, content: @Composable () -> Unit) {
     Box(Modifier.size(size).glass(CircleShape).clickable(onClick = onClick), contentAlignment = Alignment.Center) { content() }
 }
 
@@ -317,7 +326,7 @@ private fun TitleBlock(block: Block?, session: Session?, sessions: List<Session>
                 if (sessions.size > 1) Icon(Icons.Default.KeyboardArrowDown, null, tint = Ink.tertiary, modifier = Modifier.size(14.dp))
             }
         }
-        DropdownMenu(open, { open = false }, containerColor = Ink.raised) {
+        DropdownMenu(open, { open = false }, containerColor = Ink.raised, shape = RoundedCornerShape(14.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Ink.glassStroke), shadowElevation = 12.dp) {
             for (s in sessions) {
                 DropdownMenuItem(
                     text = { Text(s.label, color = if (s.id == session?.id) Ink.accent else Ink.text) },
@@ -501,38 +510,41 @@ private fun MoreMenu(serverId: String, sessionId: String, blockId: String?, h: T
     var themes by remember { mutableStateOf(false) }
     Box {
         GlassCircle(onClick = { menu = true }) { Icon(Icons.Default.MoreHoriz, "More", tint = Ink.text, modifier = Modifier.size(20.dp)) }
-        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = Ink.raised) {
-            MenuRow("Command palette") { menu = false; onPalette() }
+        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = Ink.raised, shape = RoundedCornerShape(14.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Ink.glassStroke), shadowElevation = 12.dp) {
+            ShrewMenuItem("Command Palette", Icons.Default.KeyboardCommandKey) { menu = false; onPalette() }
             HorizontalDivider(color = Ink.hairline)
             if (h != null) {
                 val control = h.control.value
-                MenuRow(if (control) "Use desktop size" else "Fit to this screen") {
+                ShrewMenuItem(
+                    if (control) "Use Desktop Size" else "Fit to This Screen",
+                    if (control) Icons.Default.CloseFullscreen else Icons.Default.OpenInFull,
+                ) {
                     menu = false
-                    val t = h.view.terminal ?: return@MenuRow
+                    val t = h.view.terminal ?: return@ShrewMenuItem
                     if (control) t.releaseControl() else t.takeControl()
                     h.control.value = !control
                     h.view.control = !control
                 }
             }
             if (blockId != null) {
-                MenuRow("Split right") { menu = false; scope.launch { runCatching { app.core.split(serverId, sessionId, blockId, false) } } }
-                MenuRow("Split down") { menu = false; scope.launch { runCatching { app.core.split(serverId, sessionId, blockId, true) } } }
+                ShrewMenuItem("Split Right", Icons.Default.VerticalSplit) { menu = false; scope.launch { runCatching { app.core.split(serverId, sessionId, blockId, false) } } }
+                ShrewMenuItem("Split Down", Icons.Default.HorizontalSplit) { menu = false; scope.launch { runCatching { app.core.split(serverId, sessionId, blockId, true) } } }
             }
             HorizontalDivider(color = Ink.hairline)
             if (h != null) {
-                MenuRow("Paste") { menu = false; h.view.pasteClipboard() }
-                MenuRow("Copy all text") { menu = false; h.view.terminal?.allText()?.let(h.view::copy) }
+                ShrewMenuItem("Paste", Icons.Default.ContentPaste) { menu = false; h.view.pasteClipboard() }
+                ShrewMenuItem("Copy All Text", Icons.Default.ContentCopy) { menu = false; h.view.terminal?.allText()?.let(h.view::copy) }
             }
-            MenuRow("Theme") { menu = false; themes = true }
+            ShrewMenuItem("Theme", Icons.Default.Palette) { menu = false; themes = true }
             if (blockId != null) {
                 HorizontalDivider(color = Ink.hairline)
-                MenuRow("Close pane", color = MaterialTheme.colorScheme.error) {
+                ShrewMenuItem("Close Pane", Icons.Default.Close, color = LocalStatus.current.error) {
                     menu = false
                     scope.launch { runCatching { app.core.closeBlock(serverId, sessionId, blockId) } }
                 }
             }
         }
-        DropdownMenu(expanded = themes, onDismissRequest = { themes = false }, containerColor = Ink.raised) {
+        DropdownMenu(expanded = themes, onDismissRequest = { themes = false }, containerColor = Ink.raised, shape = RoundedCornerShape(14.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Ink.glassStroke), shadowElevation = 12.dp) {
             val current by app.themeId.collectAsState()
             for (t in Themes) {
                 DropdownMenuItem(
@@ -546,9 +558,7 @@ private fun MoreMenu(serverId: String, sessionId: String, blockId: String?, h: T
 }
 
 @Composable
-private fun MenuRow(text: String, color: Color = Ink.text, onClick: () -> Unit) {
-    DropdownMenuItem(text = { Text(text, color = color, fontSize = 14.sp) }, onClick = onClick)
-}
+private fun MenuRow(text: String, color: Color = Ink.text, onClick: () -> Unit) = ShrewMenuItem(text, color = color, onClick = onClick)
 
 @Composable
 private fun StatusOverlay(status: TerminalStatus, modifier: Modifier) {

@@ -22,6 +22,12 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -95,57 +101,77 @@ fun CommandPalette(serverId: String, sessionId: String, blockId: String?, local:
         val hay = "${i.title} ${i.subtitle} ${i.category} ${i.keywords}".lowercase()
         words.all { hay.contains(it) }
     }
-    fun pick(i: PaletteItem) {
-        scope.launch { sheet.hide(); onDismiss() }
-        i.run()
+    // Close first, then act: running the command mid-animation can interrupt the
+    // hide, which would leave the sheet's scrim over the terminal.
+    fun close(after: () -> Unit = {}) {
+        scope.launch { sheet.hide() }.invokeOnCompletion {
+            onDismiss()
+            // Let the sheet's window (and its dim layer) finish going away before
+            // the command changes the screen under it, or the dim can stick.
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(after, 250)
+        }
     }
+    fun pick(i: PaletteItem) = close(i.run)
 
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheet, containerColor = Ink.surface) {
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheet, containerColor = Ink.bg, dragHandle = {
+        Box(Modifier.padding(top = 8.dp, bottom = 10.dp).size(width = 40.dp, height = 4.dp).clip(RoundedCornerShape(2.dp)).background(Ink.tertiary.copy(alpha = 0.5f)))
+    }) {
         Column(Modifier.navigationBarsPadding().imePadding()) {
-            Row(
-                Modifier.padding(horizontal = 16.dp).fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Ink.raised).padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Default.Search, null, tint = Ink.tertiary, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Box(Modifier.weight(1f)) {
-                    if (query.isEmpty()) Text("Run a command", color = Ink.tertiary, fontSize = 15.sp)
-                    BasicTextField(
-                        query,
-                        { query = it },
-                        singleLine = true,
-                        textStyle = TextStyle(color = Ink.text, fontSize = 15.sp),
-                        cursorBrush = SolidColor(Ink.accent),
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go, autoCorrectEnabled = false),
-                        keyboardActions = KeyboardActions(onGo = { shown.firstOrNull()?.let(::pick) }),
-                        modifier = Modifier.fillMaxWidth().focusRequester(focus),
-                    )
-                }
-                if (server == null) CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 1.5.dp, color = Ink.accent)
-            }
-            LazyColumn(Modifier.fillMaxWidth().heightIn(max = 480.dp).padding(top = 8.dp, bottom = 8.dp)) {
-                var last: String? = null
-                for (i in shown) {
-                    if (i.category != last) {
-                        val cat = i.category
-                        item(key = "h-$cat-${i.id}") {
-                            Text(cat.uppercase(), color = Ink.tertiary, fontSize = 11.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(start = 20.dp, top = 14.dp, bottom = 4.dp))
-                        }
-                        last = cat
+            Row(Modifier.padding(horizontal = 16.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    Modifier.weight(1f).height(48.dp).glass(RoundedCornerShape(50)).padding(horizontal = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Default.Search, null, tint = Ink.secondary, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(10.dp))
+                    Box(Modifier.weight(1f)) {
+                        if (query.isEmpty()) Text("Run a command", color = Ink.tertiary, fontSize = 17.sp)
+                        BasicTextField(
+                            query,
+                            { query = it },
+                            singleLine = true,
+                            textStyle = TextStyle(color = Ink.text, fontSize = 17.sp),
+                            cursorBrush = SolidColor(Ink.accent),
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go, autoCorrectEnabled = false),
+                            keyboardActions = KeyboardActions(onGo = { shown.firstOrNull()?.let(::pick) }),
+                            modifier = Modifier.fillMaxWidth().focusRequester(focus),
+                        )
                     }
-                    item(key = i.id) {
-                        Row(
-                            Modifier.fillMaxWidth().clickable { pick(i) }.padding(horizontal = 20.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            Text(i.glyph, color = Ink.accent, fontFamily = Mono, fontSize = 14.sp, modifier = Modifier.width(18.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text(i.title, color = Ink.text, fontSize = 15.sp)
-                                if (i.subtitle.isNotEmpty()) Text(i.subtitle, color = Ink.secondary, fontSize = 12.sp, maxLines = 1)
+                    if (server == null) CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 1.5.dp, color = Ink.accent)
+                    else if (query.isNotEmpty()) Icon(Icons.Default.Close, "Clear", tint = Ink.secondary, modifier = Modifier.size(18.dp).clip(CircleShape).clickable { query = "" })
+                }
+                Spacer(Modifier.width(10.dp))
+                GlassCircle(size = 48.dp, onClick = { close() }) {
+                    Icon(Icons.Default.Close, "Close", tint = Ink.text, modifier = Modifier.size(22.dp))
+                }
+            }
+            val groups = shown.groupBy { it.category }
+            LazyColumn(Modifier.fillMaxWidth().heightIn(max = 520.dp).padding(top = 4.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
+                for ((cat, rows) in groups) {
+                    item(key = "h-$cat") {
+                        Text(cat, color = Ink.secondary, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(start = 32.dp, top = 18.dp, bottom = 8.dp))
+                    }
+                    item(key = "c-$cat") {
+                        Column(Modifier.padding(horizontal = 16.dp).fillMaxWidth().clip(RoundedCornerShape(22.dp)).background(Ink.surface)) {
+                            rows.forEachIndexed { idx, i ->
+                                Row(
+                                    Modifier.fillMaxWidth().clickable { pick(i) }.padding(horizontal = 18.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(i.glyph, color = Ink.accent, fontFamily = Mono, fontSize = 16.sp, modifier = Modifier.width(26.dp))
+                                    Spacer(Modifier.width(12.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(i.title, color = Ink.text, fontSize = 17.sp)
+                                        if (i.subtitle.isNotEmpty()) Text(i.subtitle, color = Ink.secondary, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    }
+                                }
+                                if (idx < rows.lastIndex) HorizontalDivider(Modifier.padding(start = 56.dp, end = 18.dp), color = Ink.hairline)
                             }
                         }
                     }
+                }
+                if (server == null) item(key = "loading") {
+                    Text("Loading server actions…", color = Ink.tertiary, fontSize = 14.sp, modifier = Modifier.padding(start = 32.dp, top = 16.dp))
                 }
             }
         }
