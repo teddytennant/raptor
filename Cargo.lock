@@ -1236,6 +1236,92 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
+name = "raptor-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "raptor-client",
+ "raptor-proto",
+ "raptor-term",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "raptor-client"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "http",
+ "raptor-proto",
+ "rustls",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "raptor-core"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "parking_lot",
+ "raptor-client",
+ "raptor-proto",
+ "raptor-term",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "raptor-ffi"
+version = "0.1.0"
+dependencies = [
+ "raptor-core",
+ "serde_json",
+ "tracing",
+ "uniffi",
+]
+
+[[package]]
+name = "raptor-gtk"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "gtk4",
+ "libadwaita",
+ "pangocairo",
+ "raptor-core",
+ "raptor-term",
+ "tracing",
+]
+
+[[package]]
+name = "raptor-proto"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "raptor-term"
+version = "0.1.0"
+dependencies = [
+ "libghostty-vt",
+ "raptor-proto",
+]
+
+[[package]]
 name = "redox_syscall"
 version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1430,92 +1516,6 @@ name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
-
-[[package]]
-name = "shrew-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "serde_json",
- "shrew-client",
- "shrew-proto",
- "shrew-term",
- "tokio",
-]
-
-[[package]]
-name = "shrew-client"
-version = "0.1.0"
-dependencies = [
- "futures-util",
- "http",
- "rustls",
- "serde",
- "serde_json",
- "shrew-proto",
- "thiserror",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "shrew-core"
-version = "0.1.0"
-dependencies = [
- "futures-util",
- "parking_lot",
- "serde",
- "serde_json",
- "shrew-client",
- "shrew-proto",
- "shrew-term",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "shrew-ffi"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "shrew-core",
- "tracing",
- "uniffi",
-]
-
-[[package]]
-name = "shrew-gtk"
-version = "0.1.0"
-dependencies = [
- "async-channel",
- "gtk4",
- "libadwaita",
- "pangocairo",
- "shrew-core",
- "shrew-term",
- "tracing",
-]
-
-[[package]]
-name = "shrew-proto"
-version = "0.1.0"
-dependencies = [
- "base64",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "shrew-term"
-version = "0.1.0"
-dependencies = [
- "libghostty-vt",
- "shrew-proto",
-]
 
 [[package]]
 name = "signal-hook-registry"

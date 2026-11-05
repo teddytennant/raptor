@@ -1,4 +1,4 @@
-//! A GTK terminal widget backed by a `shrew_core::TerminalSession`.
+//! A GTK terminal widget backed by a `raptor_core::TerminalSession`.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use gtk::prelude::*;
 use gtk::{gdk, glib};
-use shrew_core::{Key, Shrew, TerminalListener, TerminalSession, TerminalStatus};
+use raptor_core::{Key, Raptor, TerminalListener, TerminalSession, TerminalStatus};
 
 use crate::render::Renderer;
 
@@ -56,16 +56,16 @@ pub struct TermView {
 }
 
 impl TermView {
-    pub fn new(core: &Shrew, server: &str, session: &str, block: &str, take_size: bool, font_size: f64) -> Self {
+    pub fn new(core: &Raptor, server: &str, session: &str, block: &str, take_size: bool, font_size: f64) -> Self {
         let area = gtk::DrawingArea::builder().hexpand(true).vexpand(true).focusable(true).can_focus(true).build();
-        area.add_css_class("shrew-terminal");
+        area.add_css_class("raptor-terminal");
         let pill = gtk::Label::builder().halign(gtk::Align::Center).valign(gtk::Align::Start).margin_top(10).visible(false).build();
-        pill.add_css_class("shrew-pill");
+        pill.add_css_class("raptor-pill");
         let root = gtk::Overlay::builder().child(&area).build();
-        root.add_css_class("shrew-pane");
+        root.add_css_class("raptor-pane");
         // The focus ring floats above the terminal drawing and never takes input.
         let ring = gtk::Box::builder().hexpand(true).vexpand(true).can_target(false).build();
-        ring.add_css_class("shrew-ring");
+        ring.add_css_class("raptor-ring");
         root.add_overlay(&ring);
         root.add_overlay(&pill);
 
@@ -106,7 +106,7 @@ impl TermView {
     }
 
     /// Force a terminal theme, or `None` for the server's colors.
-    pub fn set_theme(&self, theme: Option<shrew_core::ColorTheme>) {
+    pub fn set_theme(&self, theme: Option<raptor_core::ColorTheme>) {
         if let Some(s) = self.session() {
             s.set_theme(theme);
         }

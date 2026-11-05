@@ -6,13 +6,13 @@ members = ["crates/*", "apps/linux"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/teddytennant/shrew"
+repository = "https://github.com/teddytennant/raptor"
 rust-version = "1.90"
 
 [workspace.dependencies]
-shrew-proto = { path = "crates/shrew-proto" }
-shrew-client = { path = "crates/shrew-client" }
-shrew-term = { path = "crates/shrew-term" }
+raptor-proto = { path = "crates/raptor-proto" }
+raptor-client = { path = "crates/raptor-client" }
+raptor-term = { path = "crates/raptor-term" }
 
 [profile.release]
 lto = "thin"

@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "dev.shrew.app"
+    namespace = "dev.raptor.app"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "dev.shrew.app"
+        applicationId = "dev.raptor.app"
         minSdk = 28
         targetSdk = 36
         versionCode = 1

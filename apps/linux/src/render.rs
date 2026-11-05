@@ -1,8 +1,8 @@
-//! Draws a `shrew_core::Frame` with Cairo + Pango.
+//! Draws a `raptor_core::Frame` with Cairo + Pango.
 
 use gtk::cairo;
 use gtk::pango;
-use shrew_core::{CursorStyle, Frame, Rgb, Run, Underline};
+use raptor_core::{CursorStyle, Frame, Rgb, Run, Underline};
 
 pub const FONT_FAMILY: &str = "JetBrains Mono, Cascadia Mono, Fira Code, DejaVu Sans Mono, monospace";
 
@@ -312,12 +312,12 @@ mod tests {
     use super::*;
     use gtk::prelude::*;
 
-    /// Renders a real libghostty-vt frame offscreen; set SHREW_RENDER_PNG to keep the image.
+    /// Renders a real libghostty-vt frame offscreen; set RAPTOR_RENDER_PNG to keep the image.
     #[test]
     fn renders_frame_offscreen() {
-        let mut t = shrew_term::Terminal::new(60, 12);
+        let mut t = raptor_term::Terminal::new(60, 12);
         t.set_default_colors(Some(Rgb::new(0xe6, 0xed, 0xf3)), Some(Rgb::new(0x0d, 0x11, 0x17)), Some(Rgb::new(0x34, 0xd3, 0x99)));
-        t.write_vt("\x1b[1mShrew on Linux\x1b[0m — Cairo + Pango\r\n\r\n\x1b[1;35mbold\x1b[0m \x1b[3mitalic\x1b[0m \x1b[4:3mcurly\x1b[0m \x1b[9mstrike\x1b[0m \x1b[7m inverse \x1b[0m\r\nwide: 中文字 ok\r\n┌──────┬──────┐\r\n│ box  │ draw │\r\n└──────┴──────┘\r\n$ ".as_bytes());
+        t.write_vt("\x1b[1mRaptor on Linux\x1b[0m — Cairo + Pango\r\n\r\n\x1b[1;35mbold\x1b[0m \x1b[3mitalic\x1b[0m \x1b[4:3mcurly\x1b[0m \x1b[9mstrike\x1b[0m \x1b[7m inverse \x1b[0m\r\nwide: 中文字 ok\r\n┌──────┬──────┐\r\n│ box  │ draw │\r\n└──────┴──────┘\r\n$ ".as_bytes());
         let frame = t.frame();
         let fm = pangocairo::FontMap::new();
         let pctx = fm.create_context();
@@ -330,7 +330,7 @@ mod tests {
         r.draw(&cr, &pctx, &frame, w as f64, h as f64, 6.0, 1.0, true, true);
         drop(cr);
         assert!(r.metrics.cell_w > 4.0 && r.metrics.cell_h > 8.0);
-        if let Ok(p) = std::env::var("SHREW_RENDER_PNG") {
+        if let Ok(p) = std::env::var("RAPTOR_RENDER_PNG") {
             let mut surf = surf;
             let stride = surf.stride() as usize;
             let (sw, sh) = (surf.width(), surf.height());

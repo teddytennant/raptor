@@ -1,7 +1,7 @@
 import XCTest
 
 /// Drives the real app against a live Rex server. Needs a server saved in the app
-/// and a session named by SHREW_TEST_SESSION (default "shrew-demo").
+/// and a session named by RAPTOR_TEST_SESSION (default "raptor-demo").
 final class TerminalUITests: XCTestCase {
     var app: XCUIApplication!
 
@@ -9,8 +9,8 @@ final class TerminalUITests: XCTestCase {
         continueAfterFailure = false
         app = XCUIApplication()
         app.launchEnvironment = [
-            "SHREW_NO_PROMPTS": "1",
-            "SHREW_OPEN": ProcessInfo.processInfo.environment["SHREW_TEST_SESSION"] ?? "shrew-demo",
+            "RAPTOR_NO_PROMPTS": "1",
+            "RAPTOR_OPEN": ProcessInfo.processInfo.environment["RAPTOR_TEST_SESSION"] ?? "raptor-demo",
         ]
         app.launch()
     }
@@ -120,7 +120,7 @@ final class TerminalUITests: XCTestCase {
         XCTAssertTrue(app.textViews["Terminal"].waitForExistence(timeout: 15))
         app.buttons.matching(identifier: "Sessions").firstMatch.tap()
         XCTAssertTrue(app.navigationBars["Sessions"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label CONTAINS 'shrew-demo'")).firstMatch.exists)
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label CONTAINS 'raptor-demo'")).firstMatch.exists)
         shot("switcher")
         app.buttons["Settings"].tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))

@@ -1,4 +1,4 @@
-//! Shrew for Linux: GTK 4 + libadwaita, on the shared Rust engine.
+//! Raptor for Linux: GTK 4 + libadwaita, on the shared Rust engine.
 
 mod render;
 mod terminal;
@@ -12,11 +12,11 @@ use std::time::Duration;
 
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
-use shrew_core::{AgentState, AppState, Config, Connectivity, Listener, Notification, NotificationKind, Shrew};
+use raptor_core::{AgentState, AppState, Config, Connectivity, Listener, Notification, NotificationKind, Raptor};
 
 use terminal::TermView;
 
-const APP_ID: &str = "dev.shrew.Shrew";
+const APP_ID: &str = "dev.raptor.Raptor";
 
 enum Event {
     State,
@@ -41,7 +41,7 @@ struct Selection {
 }
 
 struct Ui {
-    core: Arc<Shrew>,
+    core: Arc<Raptor>,
     window: adw::ApplicationWindow,
     sidebar: gtk::ListBox,
     split: adw::NavigationSplitView,
@@ -67,24 +67,30 @@ fn main() -> glib::ExitCode {
 }
 
 fn data_dir() -> std::path::PathBuf {
-    if let Ok(d) = std::env::var("SHREW_DATA_DIR") {
+    if let Ok(d) = std::env::var("RAPTOR_DATA_DIR") {
         return d.into();
     }
-    glib::user_data_dir().join("shrew")
+    let dir = glib::user_data_dir().join("raptor");
+    // Keep the servers someone saved back when this app was called Shrew.
+    let old = glib::user_data_dir().join("shrew/shrew.json");
+    if !dir.exists() && old.exists() && std::fs::create_dir_all(&dir).is_ok() {
+        let _ = std::fs::copy(&old, dir.join("raptor.json"));
+    }
+    dir
 }
 
 fn build(app: &adw::Application) {
     load_css();
     let (tx, rx) = async_channel::unbounded();
     let device = glib::host_name().to_string();
-    let core = Arc::new(Shrew::new(
+    let core = Arc::new(Raptor::new(
         Config { data_dir: Some(data_dir()), platform: "linux".into(), device_label: Some(device), ..Default::default() },
         Arc::new(Bridge(tx)),
     ));
     if core.state().servers.is_empty() {
         core.add_local_server_if_present();
     }
-    if let Ok(addr) = std::env::var("SHREW_ADD_SERVER")
+    if let Ok(addr) = std::env::var("RAPTOR_ADD_SERVER")
         && !core.state().servers.iter().any(|s| s.address == addr) {
             let _ = core.add_server("", &addr);
         }
@@ -96,17 +102,17 @@ fn build(app: &adw::Application) {
     let add_btn = gtk::Button::from_icon_name("list-add-symbolic");
     add_btn.set_tooltip_text(Some("Add server"));
     let side_header = adw::HeaderBar::new();
-    side_header.set_title_widget(Some(&adw::WindowTitle::new("Shrew", "")));
+    side_header.set_title_widget(Some(&adw::WindowTitle::new("Raptor", "")));
     side_header.pack_end(&add_btn);
     let side_view = adw::ToolbarView::new();
     side_view.add_top_bar(&side_header);
     side_view.set_content(Some(&side_scroll));
-    let side_page = adw::NavigationPage::builder().title("Shrew").child(&side_view).build();
+    let side_page = adw::NavigationPage::builder().title("Raptor").child(&side_view).build();
 
     // ---- content ----
-    let content_title = adw::WindowTitle::new("Shrew", "");
+    let content_title = adw::WindowTitle::new("Raptor", "");
     let tabs = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-    tabs.add_css_class("shrew-tabs");
+    tabs.add_css_class("raptor-tabs");
     let new_win = gtk::Button::from_icon_name("tab-new-symbolic");
     new_win.set_tooltip_text(Some("New window"));
     let split_h = gtk::Button::from_icon_name("view-dual-symbolic");
@@ -125,11 +131,11 @@ fn build(app: &adw::Application) {
     let panes = gtk::Fixed::new();
     panes.set_hexpand(true);
     panes.set_vexpand(true);
-    panes.add_css_class("shrew-panes");
+    panes.add_css_class("raptor-panes");
     let empty = adw::StatusPage::builder()
         .icon_name("utilities-terminal-symbolic")
         .title("Pick a session")
-        .description("Your sessions keep running on the server, whether or not Shrew is open.")
+        .description("Your sessions keep running on the server, whether or not Raptor is open.")
         .build();
     let stack = gtk::Stack::new();
     stack.set_transition_type(gtk::StackTransitionType::Crossfade);
@@ -142,7 +148,7 @@ fn build(app: &adw::Application) {
 
     let split = adw::NavigationSplitView::builder().sidebar(&side_page).content(&content_page).min_sidebar_width(260.0).build();
     let window =
-        adw::ApplicationWindow::builder().application(app).title("Shrew").default_width(1200).default_height(780).content(&split).build();
+        adw::ApplicationWindow::builder().application(app).title("Raptor").default_width(1200).default_height(780).content(&split).build();
 
     let theme_id = core.setting("theme").and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_else(|| "tokyo-night".into());
     let theme_css = gtk::CssProvider::new();
@@ -250,20 +256,20 @@ fn load_css() {
     let css = gtk::CssProvider::new();
     css.load_from_string(
         r#"
-        .shrew-pill { border-radius: 999px; padding: 5px 12px; font-size: 0.9em; }
-        .shrew-dot { min-width: 8px; min-height: 8px; border-radius: 99px; }
+        .raptor-pill { border-radius: 999px; padding: 5px 12px; font-size: 0.9em; }
+        .raptor-dot { min-width: 8px; min-height: 8px; border-radius: 99px; }
         .dot-online, .dot-done { background: #34d399; }
         .dot-connecting { background: #fbbf24; }
         .dot-offline, .dot-error { background: #f43f5e; }
         .dot-idle { background: #6b7280; }
         .dot-working { background: #38bdf8; }
         .dot-blocked { background: #f59e0b; }
-        .shrew-section { font-size: 0.78em; font-weight: 700; letter-spacing: 0.04em; opacity: 0.6; margin: 14px 10px 4px 10px; }
-        .shrew-server { font-weight: 700; }
-        .shrew-mono { font-family: "JetBrains Mono", monospace; font-size: 0.85em; }
-        .shrew-needs { background: alpha(#f59e0b, 0.10); border-radius: 10px; }
-        .shrew-tabs button { padding: 2px 10px; }
-        .shrew-tabs button.active { background: alpha(@accent_bg_color, 0.25); }
+        .raptor-section { font-size: 0.78em; font-weight: 700; letter-spacing: 0.04em; opacity: 0.6; margin: 14px 10px 4px 10px; }
+        .raptor-server { font-weight: 700; }
+        .raptor-mono { font-family: "JetBrains Mono", monospace; font-size: 0.85em; }
+        .raptor-needs { background: alpha(#f59e0b, 0.10); border-radius: 10px; }
+        .raptor-tabs button { padding: 2px 10px; }
+        .raptor-tabs button.active { background: alpha(@accent_bg_color, 0.25); }
         "#,
     );
     gtk::style_context_add_provider_for_display(&gdk::Display::default().unwrap(), &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
@@ -271,7 +277,7 @@ fn load_css() {
 
 fn dot(class: &str) -> gtk::Box {
     let d = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    d.add_css_class("shrew-dot");
+    d.add_css_class("raptor-dot");
     d.add_css_class(class);
     d.set_valign(gtk::Align::Center);
     d
@@ -312,7 +318,7 @@ fn rebuild_sidebar(ui: &Shared, state: &AppState) {
     }
     let section = |t: &str| {
         let r = gtk::ListBoxRow::builder().selectable(false).activatable(false).build();
-        r.set_child(Some(&label(t, &["shrew-section"])));
+        r.set_child(Some(&label(t, &["raptor-section"])));
         r
     };
 
@@ -327,7 +333,7 @@ fn rebuild_sidebar(ui: &Shared, state: &AppState) {
             let ag = a.block.agent.clone().unwrap();
             let row = gtk::ListBoxRow::new();
             row.set_widget_name(&format!("session|{}|{}|{}", a.server_id, a.session_id, a.block.id));
-            row.add_css_class("shrew-needs");
+            row.add_css_class("raptor-needs");
             let b = gtk::Box::new(gtk::Orientation::Horizontal, 8);
             b.set_margin_top(6);
             b.set_margin_bottom(6);
@@ -358,7 +364,7 @@ fn rebuild_sidebar(ui: &Shared, state: &AppState) {
         };
         let v = gtk::Box::new(gtk::Orientation::Vertical, 0);
         v.set_hexpand(true);
-        v.append(&label(&srv.name, &["shrew-server"]));
+        v.append(&label(&srv.name, &["raptor-server"]));
         let sb = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         sb.append(&dot(cls));
         sb.append(&label(&status, &["caption", "dim-label"]));
@@ -402,11 +408,11 @@ fn rebuild_sidebar(ui: &Shared, state: &AppState) {
             let active = s.windows.iter().find(|w| Some(&w.id) == s.active_window_id.as_ref()).or(s.windows.first());
             let focused = active.and_then(|w| w.blocks.iter().find(|b| Some(&b.id) == w.focused_block_id.as_ref()).or(w.blocks.first()));
             let detail = match focused {
-                Some(b) if !b.pwd.is_empty() => format!("{} · {}", b.display_name(), shrew_core::short_path(&b.pwd)),
+                Some(b) if !b.pwd.is_empty() => format!("{} · {}", b.display_name(), raptor_core::short_path(&b.pwd)),
                 Some(b) => b.display_name(),
                 None => String::new(),
             };
-            v.append(&label(&detail, &["caption", "dim-label", "shrew-mono"]));
+            v.append(&label(&detail, &["caption", "dim-label", "raptor-mono"]));
             b.append(&v);
             if let Some(st) = s.agent_state().filter(|s| *s != AgentState::Idle) {
                 b.append(&dot(agent_class(Some(st))));
@@ -470,7 +476,7 @@ fn update_content(ui: &Shared, state: &AppState) {
     u.content_title.set_title(&session.label);
     u.content_title.set_subtitle(
         &focused
-            .map(|b| if b.pwd.is_empty() { b.display_name() } else { format!("{} · {}", b.display_name(), shrew_core::short_path(&b.pwd)) })
+            .map(|b| if b.pwd.is_empty() { b.display_name() } else { format!("{} · {}", b.display_name(), raptor_core::short_path(&b.pwd)) })
             .unwrap_or_default(),
     );
 
@@ -679,7 +685,7 @@ fn rename_dialog(ui: &Shared) {
 fn add_server_dialog(ui: &Shared) {
     let u = ui.borrow();
     let addr = gtk::Entry::builder().placeholder_text("studio.tail1234.ts.net or 100.64.0.2:7878").activates_default(true).build();
-    addr.add_css_class("shrew-mono");
+    addr.add_css_class("raptor-mono");
     let name = gtk::Entry::builder().placeholder_text("Name (optional)").activates_default(true).build();
     let status = gtk::Label::builder().label("We'll test the connection as you type.").xalign(0.0).wrap(true).build();
     status.add_css_class("dim-label");
@@ -747,9 +753,9 @@ fn notify(app: &adw::Application, ui: &Shared, n: Notification) {
     app.send_notification(Some(&format!("{}{}", n.server_id, n.block_id)), &g);
 }
 
-/// SHREW_OPEN=<session label>: open that session as soon as it shows up (automation, launchers).
+/// RAPTOR_OPEN=<session label>: open that session as soon as it shows up (automation, launchers).
 fn open_from_env(ui: &Shared) {
-    let Ok(want) = std::env::var("SHREW_OPEN") else { return };
+    let Ok(want) = std::env::var("RAPTOR_OPEN") else { return };
     let u = ui.clone();
     let tries = Rc::new(RefCell::new(0));
     glib::timeout_add_local(Duration::from_millis(200), move || {
@@ -767,14 +773,14 @@ fn open_from_env(ui: &Shared) {
     });
 }
 
-/// SHREW_SCREENSHOT=out.png: open the first session, save the window to a PNG, quit.
+/// RAPTOR_SCREENSHOT=out.png: open the first session, save the window to a PNG, quit.
 /// Used for headless checks (e.g. GDK_BACKEND=broadway) so nothing pops up on a desktop.
 fn screenshot_mode(ui: &Shared) {
-    let Ok(path) = std::env::var("SHREW_SCREENSHOT") else { return };
+    let Ok(path) = std::env::var("RAPTOR_SCREENSHOT") else { return };
     let u = ui.clone();
     glib::timeout_add_local_once(Duration::from_secs(4), move || {
         let state = u.borrow().core.state();
-        let pick = std::env::var("SHREW_SCREENSHOT_SESSION").ok();
+        let pick = std::env::var("RAPTOR_SCREENSHOT_SESSION").ok();
         if let Some((srv, ses)) = state
             .servers
             .iter()
@@ -816,7 +822,7 @@ fn apply_theme(ui: &Shared, id: &str) {
 
 /// The selected session's visible window and the block to act on: the pane with
 /// keyboard focus, else the window's focused block.
-fn current_target(ui: &Shared) -> Option<(Selection, Option<shrew_core::WindowState>, Option<String>)> {
+fn current_target(ui: &Shared) -> Option<(Selection, Option<raptor_core::WindowState>, Option<String>)> {
     let u = ui.borrow();
     let sel = u.selected.clone()?;
     let state = u.core.state();
@@ -972,7 +978,7 @@ fn palette_row(it: &Item) -> gtk::ListBoxRow {
     gtk::ListBoxRow::builder().child(&row).build()
 }
 
-/// Everything you can do here, searchable: Shrew's commands plus the server's
+/// Everything you can do here, searchable: Raptor's commands plus the server's
 /// own actions (its config's `rex.action`s and block actions like Clear Terminal).
 fn open_palette(ui: &Shared) {
     let Some((sel, _, block)) = current_target(ui) else { return };
@@ -980,7 +986,7 @@ fn open_palette(ui: &Shared) {
 
     let search = gtk::SearchEntry::builder().placeholder_text("Run a command").hexpand(true).build();
     let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::Browse).build();
-    list.add_css_class("shrew-palette");
+    list.add_css_class("raptor-palette");
     list.add_css_class("navigation-sidebar");
     let scroll = gtk::ScrolledWindow::builder().child(&list).vexpand(true).hscrollbar_policy(gtk::PolicyType::Never).build();
     let body = gtk::Box::new(gtk::Orientation::Vertical, 8);

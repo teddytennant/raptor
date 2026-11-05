@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Build the Rust core for Apple platforms and package ShrewFFI.xcframework
-# plus Swift bindings for apps/ios/ShrewKit.
+# Build the Rust core for Apple platforms and package RaptorFFI.xcframework
+# plus Swift bindings for apps/ios/RaptorKit.
 #   scripts/build-apple.sh          # macOS slice always; iOS slices when an iOS SDK exists
 #   TARGETS="macos ios sim" scripts/build-apple.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 PROFILE=${PROFILE:-release}
-KIT=apps/ios/ShrewKit
-OUT=$KIT/ShrewFFI.xcframework
+KIT=apps/ios/RaptorKit
+OUT=$KIT/RaptorFFI.xcframework
 if [ -d "$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin" ]; then
   export PATH="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$PATH"
 fi
@@ -31,16 +31,16 @@ for t in $TARGETS; do
   esac
   [ "$t" = ios ] || [ "$t" = sim ] && export IPHONEOS_DEPLOYMENT_TARGET=17.0
   [ "$t" = macos ] && export MACOSX_DEPLOYMENT_TARGET=14.0
-  cargo build -p shrew-ffi --lib --target "$triple" "${flag[@]}"
+  cargo build -p raptor-ffi --lib --target "$triple" "${flag[@]}"
   slices+=("$triple|$id|$plat|$variant")
 done
 
 # Swift bindings (from the host library's metadata).
-cargo build -p shrew-ffi --features bindgen --bin uniffi-bindgen
+cargo build -p raptor-ffi --features bindgen --bin uniffi-bindgen
 gen=$(mktemp -d)
-./target/debug/uniffi-bindgen generate --library "target/aarch64-apple-darwin/$dir/libshrew_ffi.dylib" --language swift --out-dir "$gen"
-mkdir -p "$KIT/Sources/ShrewKit/Generated"
-cp "$gen/shrew_ffi.swift" "$KIT/Sources/ShrewKit/Generated/shrew_ffi.swift"
+./target/debug/uniffi-bindgen generate --library "target/aarch64-apple-darwin/$dir/libraptor_ffi.dylib" --language swift --out-dir "$gen"
+mkdir -p "$KIT/Sources/RaptorKit/Generated"
+cp "$gen/raptor_ffi.swift" "$KIT/Sources/RaptorKit/Generated/raptor_ffi.swift"
 
 rm -rf "$OUT"
 mkdir -p "$OUT"
@@ -49,11 +49,11 @@ for s in "${slices[@]}"; do
   IFS='|' read -r triple id plat variant <<<"$s"
   d="$OUT/$id"
   mkdir -p "$d/Headers"
-  cp "target/$triple/$dir/libshrew_ffi.a" "$d/libshrew_ffi.a"
-  cp "$gen/shrew_ffiFFI.h" "$d/Headers/"
-  printf 'module shrew_ffiFFI {\n  header "shrew_ffiFFI.h"\n  export *\n}\n' > "$d/Headers/module.modulemap"
+  cp "target/$triple/$dir/libraptor_ffi.a" "$d/libraptor_ffi.a"
+  cp "$gen/raptor_ffiFFI.h" "$d/Headers/"
+  printf 'module raptor_ffiFFI {\n  header "raptor_ffiFFI.h"\n  export *\n}\n' > "$d/Headers/module.modulemap"
   v=""; [ -n "$variant" ] && v="<key>SupportedPlatformVariant</key><string>$variant</string>"
-  libs+="<dict><key>LibraryIdentifier</key><string>$id</string><key>LibraryPath</key><string>libshrew_ffi.a</string><key>HeadersPath</key><string>Headers</string><key>SupportedArchitectures</key><array><string>arm64</string></array><key>SupportedPlatform</key><string>$plat</string>$v</dict>"
+  libs+="<dict><key>LibraryIdentifier</key><string>$id</string><key>LibraryPath</key><string>libraptor_ffi.a</string><key>HeadersPath</key><string>Headers</string><key>SupportedArchitectures</key><array><string>arm64</string></array><key>SupportedPlatform</key><string>$plat</string>$v</dict>"
 done
 cat > "$OUT/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

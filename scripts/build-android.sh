@@ -24,12 +24,12 @@ for abi in $ABIS; do flags+=(-t "$abi"); done
 release=()
 [ "$PROFILE" = release ] && release=(--release)
 
-cargo ndk "${flags[@]}" --platform 28 -o "$APP/jniLibs" build -p shrew-ffi "${release[@]}"
+cargo ndk "${flags[@]}" --platform 28 -o "$APP/jniLibs" build -p raptor-ffi "${release[@]}"
 
 # Bindings are generated from the host build's metadata (identical across targets).
-cargo build -p shrew-ffi --features bindgen --bin uniffi-bindgen
-cargo build -p shrew-ffi
-lib=target/debug/libshrew_ffi.dylib
-[ -f "$lib" ] || lib=target/debug/libshrew_ffi.so
+cargo build -p raptor-ffi --features bindgen --bin uniffi-bindgen
+cargo build -p raptor-ffi
+lib=target/debug/libraptor_ffi.dylib
+[ -f "$lib" ] || lib=target/debug/libraptor_ffi.so
 ./target/debug/uniffi-bindgen generate --library "$lib" --language kotlin --no-format --out-dir "$APP/java"
 echo "Android core ready: $APP/jniLibs, $APP/java/uniffi"

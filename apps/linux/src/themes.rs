@@ -1,7 +1,7 @@
 //! Terminal themes, shared in spirit with the iOS and Android apps: the same
 //! names and colors, and the window chrome is derived from the terminal.
 
-use shrew_core::{ColorTheme, Rgb};
+use raptor_core::{ColorTheme, Rgb};
 
 pub struct Theme {
     pub id: &'static str,
@@ -27,8 +27,8 @@ pub const THEMES: &[Theme] = &[
         ]),
     },
     Theme {
-        id: "shrew",
-        name: "Shrew",
+        id: "raptor",
+        name: "Raptor",
         bg: 0x0D1117,
         fg: 0xE6EDF3,
         cursor: 0x5EE0A8,
@@ -136,15 +136,15 @@ impl Theme {
             @define-color accent_bg_color {acc};
             @define-color accent_color {acc};
             @define-color accent_fg_color {onacc};
-            .shrew-terminal {{ background: {bgc}; }}
-            .shrew-panes {{ background: {gap}; }}
-            .shrew-ring {{ border: 1px solid transparent; }}
-            .shrew-pane.focused .shrew-ring {{ border-color: alpha({acc}, 0.7); }}
-            .shrew-pill {{ background: alpha({raised}, 0.94); color: {fgc}; }}
-            .shrew-tile {{ background: alpha({acc}, 0.16); color: {acc}; border-radius: 7px; min-width: 26px; min-height: 26px; font-family: "JetBrains Mono", monospace; font-weight: 700; }}
-            .shrew-palette row {{ padding: 6px 10px; border-radius: 8px; }}
-            .shrew-palette .cat {{ font-size: 0.75em; font-weight: 700; opacity: 0.55; letter-spacing: 0.05em; }}
-            .shrew-palette .glyph {{ color: {acc}; font-family: "JetBrains Mono", monospace; min-width: 18px; }}
+            .raptor-terminal {{ background: {bgc}; }}
+            .raptor-panes {{ background: {gap}; }}
+            .raptor-ring {{ border: 1px solid transparent; }}
+            .raptor-pane.focused .raptor-ring {{ border-color: alpha({acc}, 0.7); }}
+            .raptor-pill {{ background: alpha({raised}, 0.94); color: {fgc}; }}
+            .raptor-tile {{ background: alpha({acc}, 0.16); color: {acc}; border-radius: 7px; min-width: 26px; min-height: 26px; font-family: "JetBrains Mono", monospace; font-weight: 700; }}
+            .raptor-palette row {{ padding: 6px 10px; border-radius: 8px; }}
+            .raptor-palette .cat {{ font-size: 0.75em; font-weight: 700; opacity: 0.55; letter-spacing: 0.05em; }}
+            .raptor-palette .glyph {{ color: {acc}; font-family: "JetBrains Mono", monospace; min-width: 18px; }}
             "#,
             win = mix(bg, fg, 0.04),
             side = mix(bg, fg, 0.07),
