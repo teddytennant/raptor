@@ -22,6 +22,7 @@ struct RaptorApp: App {
                 .environment(model)
                 .tint(Palette.accent)
         }
+        .commands { TerminalMenuCommands() }
         .onChange(of: phase) { _, p in
             model.setForeground(p != .background)
             // Only ask once there's something to be notified about.
@@ -107,7 +108,8 @@ struct RootView: View {
         if model.state.servers.isEmpty {
             WelcomeView { addingServer = true }
         } else if let c = current {
-            TerminalScreen(serverId: c.serverId, sessionId: c.sessionId, blockId: c.blockId, onSessions: { switcher = true }, onOpen: open)
+            TerminalScreen(serverId: c.serverId, sessionId: c.sessionId, blockId: c.blockId, onSessions: { switcher = true }, onOpen: open,
+                           onSettings: { settings = true })
                 .id("\(c.serverId)/\(c.sessionId)")
         } else if hsize == .regular {
             PickSessionView { switcher = true }

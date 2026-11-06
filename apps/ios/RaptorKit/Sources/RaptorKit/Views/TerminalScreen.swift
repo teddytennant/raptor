@@ -19,10 +19,13 @@ public struct TerminalScreen: View {
     /// switcher, and switching sessions goes through the root.
     var onSessions: (() -> Void)?
     var onOpen: ((Focus) -> Void)?
+    var onSettings: (() -> Void)?
 
-    public init(serverId: String, sessionId: String, blockId: String?, onSessions: (() -> Void)? = nil, onOpen: ((Focus) -> Void)? = nil) {
+    public init(serverId: String, sessionId: String, blockId: String?, onSessions: (() -> Void)? = nil, onOpen: ((Focus) -> Void)? = nil,
+                onSettings: (() -> Void)? = nil) {
         self.onSessions = onSessions
         self.onOpen = onOpen
+        self.onSettings = onSettings
         self.serverId = serverId
         _sessionId = State(initialValue: sessionId)
         _blockId = State(initialValue: blockId)
@@ -46,7 +49,7 @@ public struct TerminalScreen: View {
             if let b = blockId {
                 LiveTerminal(serverId: serverId, sessionId: sessionId, blockId: b, theme: model.theme, chrome: c,
                              insetTop: topInset, insetBottom: bottomInset, controller: $controller,
-                             onSwipe: { swipe($0, session: session) }, onPalette: { showPalette = true }) { termColors = ($0, $1) }
+                             onSwipe: { swipe($0, session: session) }) { termColors = ($0, $1) }
                     .id(b)
                     .transition(.asymmetric(insertion: .move(edge: slideEdge), removal: .move(edge: slideEdge == .trailing ? .leading : .trailing)))
                     .ignoresSafeArea(.container, edges: [.top, .bottom])
@@ -125,6 +128,7 @@ public struct TerminalScreen: View {
         .onChange(of: sessionId) { blockId = nil; windowId = nil; pick(model.session(serverId, sessionId)) }
         .onChange(of: blockId) { model.focus = Focus(serverId: serverId, sessionId: sessionId, blockId: blockId) }
         .onDisappear { model.focus = nil }
+        .focusedSceneValue(\.terminalActions, actions(session: session))
         .sheet(isPresented: $showPalette) {
             CommandPalette(serverId: serverId, local: localCommands(session: session), sessionId: sessionId, blockId: blockId)
                 .environment(\.chrome, c)
@@ -136,22 +140,31 @@ public struct TerminalScreen: View {
         (s?.windows ?? []).flatMap { w in w.blocks.map { (w.id, $0.id) } }
     }
 
-    /// Swipe to the next (+1) or previous (-1) pane, crossing into other windows.
     /// Swipe left/right moves between tabs (windows), landing on each tab's
     /// focused pane. With a single tab, it cycles that tab's panes instead.
     private func swipe(_ dir: Int, session: Session?) {
-        if let wins = session?.windows, wins.count > 1 {
-            let i = wins.firstIndex { $0.id == windowId } ?? 0
-            let w = wins[(i + dir + wins.count) % wins.count]
-            slideEdge = dir > 0 ? .trailing : .leading
-            Haptics.select()
-            withAnimation(.snappy(duration: 0.28)) {
-                windowId = w.id
-                blockId = w.blocks.first { $0.id == w.focusedBlockId }?.id ?? w.blocks.first?.id
-            }
-            Task { try? await model.core.focusWindow(serverId: serverId, sessionId: sessionId, windowId: w.id) }
-            return
+        if let wins = session?.windows, wins.count > 1 { cycleWindow(dir, session: session) } else { cyclePane(dir, session: session) }
+    }
+
+    private func cycleWindow(_ dir: Int, session: Session?) {
+        guard let wins = session?.windows, wins.count > 1 else { return }
+        let i = wins.firstIndex { $0.id == windowId } ?? 0
+        showWindow(wins[(i + dir + wins.count) % wins.count], edge: dir > 0 ? .trailing : .leading)
+    }
+
+    private func showWindow(_ w: Window, edge: Edge) {
+        guard w.id != windowId else { return }
+        slideEdge = edge
+        Haptics.select()
+        withAnimation(.snappy(duration: 0.28)) {
+            windowId = w.id
+            blockId = w.blocks.first { $0.id == w.focusedBlockId }?.id ?? w.blocks.first?.id
         }
+        Task { try? await model.core.focusWindow(serverId: serverId, sessionId: sessionId, windowId: w.id) }
+    }
+
+    /// The next (+1) or previous (-1) pane, crossing into other windows.
+    private func cyclePane(_ dir: Int, session: Session?) {
         let all = panes(session)
         guard all.count > 1, let i = all.firstIndex(where: { $0.block == blockId }) else { return }
         let next = all[(i + dir + all.count) % all.count]
@@ -162,6 +175,33 @@ public struct TerminalScreen: View {
             blockId = next.block
         }
         Task { try? await model.core.focusBlock(serverId: serverId, sessionId: sessionId, blockId: next.block) }
+    }
+
+    /// What the keyboard shortcuts and the iPad menu bar can do here.
+    private func actions(session: Session?) -> TerminalActions {
+        let core = model.core, srv = serverId, sid = sessionId, ctl = controller
+        return TerminalActions(
+            newWindow: { Task { try? await core.newWindow(serverId: srv, sessionId: sid) } },
+            split: { vertical in
+                guard let b = blockId else { return }
+                Task { _ = try? await core.split(serverId: srv, sessionId: sid, blockId: b, vertical: vertical) }
+            },
+            closePane: { if let b = blockId { closePane(b, session: session) } },
+            cycleWindow: { cycleWindow($0, session: session) },
+            cyclePane: { cyclePane($0, session: session) },
+            selectWindow: { n in
+                guard let wins = session?.windows, wins.indices.contains(n) else { return }
+                let cur = wins.firstIndex { $0.id == windowId } ?? 0
+                showWindow(wins[n], edge: n > cur ? .trailing : .leading)
+            },
+            jumpPrompt: { ctl?.terminal?.jumpPrompt(delta: Int32($0)) },
+            fontStep: { ctl?.onFontStep?($0) },
+            toggleFit: { ctl?.toggleControl() },
+            hasControl: ctl?.hasControl ?? false,
+            palette: { showPalette = true },
+            sessions: onSessions,
+            settings: onSettings
+        )
     }
 
     private func localCommands(session: Session?) -> [PaletteItem] {
@@ -422,7 +462,6 @@ struct LiveTerminal: View {
     let insetBottom: CGFloat
     @Binding var controller: TerminalController?
     var onSwipe: (Int) -> Void
-    var onPalette: () -> Void
     var onColors: (UInt32, UInt32) -> Void
     @State private var own: TerminalController?
 
@@ -430,7 +469,7 @@ struct LiveTerminal: View {
         ZStack {
             if let ctl = own {
                 TerminalSurface(controller: ctl, fontSize: fontSize, chrome: chrome, insetTop: insetTop, insetBottom: insetBottom,
-                                appearance: TerminalAppearance(model), onColors: onColors, onSwipe: onSwipe, onPalette: onPalette) {
+                                appearance: TerminalAppearance(model), onColors: onColors, onSwipe: onSwipe) {
                     model.core.setSetting(key: "font_size", value: String(Double($0)))
                 }
                 if let text = ctl.status.banner {
@@ -475,7 +514,6 @@ struct TerminalSurface: UIViewRepresentable {
     let appearance: TerminalAppearance
     var onColors: (UInt32, UInt32) -> Void
     var onSwipe: (Int) -> Void
-    var onPalette: () -> Void
     var onFontSize: (CGFloat) -> Void
 
     final class Coordinator { var applied: TerminalAppearance? }
@@ -499,7 +537,6 @@ struct TerminalSurface: UIViewRepresentable {
         v.insetBottom = insetBottom
         v.onColors = onColors
         v.onSwipePane = onSwipe
-        v.onPalette = onPalette
     }
 }
 #else
@@ -513,7 +550,6 @@ struct TerminalSurface: NSViewRepresentable {
     let appearance: TerminalAppearance
     var onColors: (UInt32, UInt32) -> Void
     var onSwipe: (Int) -> Void
-    var onPalette: () -> Void
     var onFontSize: (CGFloat) -> Void
 
     final class View: NSView {
@@ -555,5 +591,81 @@ struct TerminalAppearance: Equatable {
         lineHeight = CGFloat(Double(model.core.setting(key: Prefs.lineHeight) ?? "") ?? 1.06)
         cursor = model.core.setting(key: Prefs.cursor)
         blink = Prefs.flag(model, Prefs.blink)
+    }
+}
+
+/// Commands for the focused terminal, for the menu bar and hardware keyboards.
+public struct TerminalActions {
+    var newWindow: () -> Void
+    var split: (_ vertical: Bool) -> Void
+    var closePane: () -> Void
+    var cycleWindow: (Int) -> Void
+    var cyclePane: (Int) -> Void
+    var selectWindow: (Int) -> Void
+    var jumpPrompt: (Int) -> Void
+    var fontStep: (Int) -> Void
+    var toggleFit: () -> Void
+    var hasControl: Bool
+    var palette: () -> Void
+    var sessions: (() -> Void)?
+    var settings: (() -> Void)?
+}
+
+private struct TerminalActionsKey: FocusedValueKey {
+    typealias Value = TerminalActions
+}
+
+public extension FocusedValues {
+    var terminalActions: TerminalActions? {
+        get { self[TerminalActionsKey.self] }
+        set { self[TerminalActionsKey.self] = newValue }
+    }
+}
+
+/// The Terminal menu: every shortcut is listed in the menu bar and in the
+/// overlay that holding ⌘ shows.
+public struct TerminalMenuCommands: Commands {
+    @FocusedValue(\.terminalActions) private var actions
+
+    public init() {}
+
+    public var body: some Commands {
+        CommandGroup(replacing: .appSettings) {
+            Button("Settings…") { actions?.settings?() }
+                .keyboardShortcut(",")
+                .disabled(actions?.settings == nil)
+        }
+        CommandMenu("Terminal") {
+            Group { menu }.disabled(actions == nil)
+        }
+    }
+
+    @ViewBuilder private var menu: some View {
+        Button("New Window") { actions?.newWindow() }.keyboardShortcut("t")
+        Button("Split Right") { actions?.split(false) }.keyboardShortcut("d")
+        Button("Split Down") { actions?.split(true) }.keyboardShortcut("d", modifiers: [.command, .shift])
+        Button("Close Pane") { actions?.closePane() }.keyboardShortcut("w")
+        Divider()
+        Button("Next Tab") { actions?.cycleWindow(1) }.keyboardShortcut("]", modifiers: [.command, .shift])
+        Button("Previous Tab") { actions?.cycleWindow(-1) }.keyboardShortcut("[", modifiers: [.command, .shift])
+        Button("Next Pane") { actions?.cyclePane(1) }.keyboardShortcut("]")
+        Button("Previous Pane") { actions?.cyclePane(-1) }.keyboardShortcut("[")
+        Menu("Go to Tab") {
+            ForEach(1..<10) { n in
+                Button("Tab \(n)") { actions?.selectWindow(n - 1) }.keyboardShortcut(KeyEquivalent(Character("\(n)")))
+            }
+        }
+        Divider()
+        Button("Previous Prompt") { actions?.jumpPrompt(-1) }.keyboardShortcut(.upArrow)
+        Button("Next Prompt") { actions?.jumpPrompt(1) }.keyboardShortcut(.downArrow)
+        Divider()
+        Button("Bigger Text") { actions?.fontStep(1) }.keyboardShortcut("=")
+        Button("Smaller Text") { actions?.fontStep(-1) }.keyboardShortcut("-")
+        Button("Actual Size") { actions?.fontStep(0) }.keyboardShortcut("0")
+        Button(actions?.hasControl == true ? "Use Desktop Size" : "Fit to This Screen") { actions?.toggleFit() }
+            .keyboardShortcut("r", modifiers: [.command, .shift])
+        Divider()
+        Button("Sessions…") { actions?.sessions?() }.keyboardShortcut("o").disabled(actions?.sessions == nil)
+        Button("Command Palette…") { actions?.palette() }.keyboardShortcut("k")
     }
 }

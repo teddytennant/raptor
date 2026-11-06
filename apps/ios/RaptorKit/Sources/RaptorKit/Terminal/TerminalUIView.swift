@@ -1,4 +1,5 @@
 #if os(iOS)
+import GameController
 import SwiftUI
 import UIKit
 
@@ -10,8 +11,6 @@ public final class TerminalUIView: UIView, UITextInputTraits, UIGestureRecognize
     public var onFontSizeChanged: ((CGFloat) -> Void)?
     /// Horizontal swipe: +1 next pane, -1 previous.
     public var onSwipePane: ((Int) -> Void)?
-    /// ⌘K / ⌘⇧P on a hardware keyboard.
-    public var onPalette: (() -> Void)?
 
     private var frameCache: Frame?
     private let padding: CGFloat = 6
@@ -27,6 +26,12 @@ public final class TerminalUIView: UIView, UITextInputTraits, UIGestureRecognize
     private var editMenu: UIEditMenuInteraction?
     private let keyBar: KeyBar
     let modifiers = StickyModifiers()
+    var kb = KeyboardDocument()
+    private var repeatTimer: Timer?
+    private var repeatKey: UIKeyboardHIDUsage?
+    public weak var inputDelegate: UITextInputDelegate?
+    public lazy var tokenizer: UITextInputTokenizer = UITextInputStringTokenizer(textInput: self)
+    public var markedTextStyle: [NSAttributedString.Key: Any]?
 
     /// Settings: forced cursor shape (nil follows the program) and blinking.
     public var cursorShape: CursorShape?
@@ -53,6 +58,7 @@ public final class TerminalUIView: UIView, UITextInputTraits, UIGestureRecognize
         keyBar.terminal = self
         controller.onFrame = { [weak self] in self?.refresh() }
         controller.onClipboard = { UIPasteboard.general.string = $0 }
+        controller.onFontStep = { [weak self] in self?.stepFont($0) }
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(onTap(_:)))
         let doubleTap = UITapGestureRecognizer(target: self, action: #selector(onDoubleTap(_:)))
@@ -95,7 +101,15 @@ public final class TerminalUIView: UIView, UITextInputTraits, UIGestureRecognize
 
     public override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window == nil { link?.invalidate(); link = nil }
+        if window == nil {
+            link?.invalidate()
+            link = nil
+            stopRepeat()
+        } else if GCKeyboard.coalesced != nil {
+            // With a hardware keyboard there's no on-screen keyboard to cover the
+            // screen, so be ready to type (and for ⌘ shortcuts) right away.
+            DispatchQueue.main.async { [weak self] in _ = self?.becomeFirstResponder() }
+        }
     }
 
     // MARK: drawing
@@ -458,43 +472,65 @@ public final class TerminalUIView: UIView, UITextInputTraits, UIGestureRecognize
         if let s = controller.terminal?.selectionText() { UIPasteboard.general.string = s }
     }
 
-    public override var keyCommands: [UIKeyCommand]? {
-        [
-            UIKeyCommand(title: "Paste", action: #selector(paste(_:)), input: "v", modifierFlags: .command),
-            UIKeyCommand(title: "Command Palette", action: #selector(palette), input: "k", modifierFlags: .command),
-            UIKeyCommand(title: "Command Palette", action: #selector(palette), input: "p", modifierFlags: [.command, .shift]),
-            UIKeyCommand(title: "Next Pane", action: #selector(nextPane), input: "]", modifierFlags: .command),
-            UIKeyCommand(title: "Previous Pane", action: #selector(prevPane), input: "[", modifierFlags: .command),
-            UIKeyCommand(title: "Copy", action: #selector(copy(_:)), input: "c", modifierFlags: .command),
-            UIKeyCommand(title: "Bigger Text", action: #selector(bigger), input: "=", modifierFlags: .command),
-            UIKeyCommand(title: "Smaller Text", action: #selector(smaller), input: "-", modifierFlags: .command),
-        ]
+    private func stepFont(_ d: Int) {
+        renderer.setFontSize(d == 0 ? 13 : renderer.fontSize + CGFloat(d))
+        pushGrid()
+        setNeedsDisplay()
+        onFontSizeChanged?(renderer.fontSize)
     }
 
-    @objc private func palette() { onPalette?() }
-    @objc private func nextPane() { onSwipePane?(1) }
-    @objc private func prevPane() { onSwipePane?(-1) }
-
-    @objc private func bigger() { renderer.setFontSize(renderer.fontSize + 1); pushGrid(); setNeedsDisplay(); onFontSizeChanged?(renderer.fontSize) }
-    @objc private func smaller() { renderer.setFontSize(renderer.fontSize - 1); pushGrid(); setNeedsDisplay(); onFontSizeChanged?(renderer.fontSize) }
-
-    /// Hardware keyboards: arrows, Esc, function keys, and Ctrl/Alt chords.
+    /// Hardware keyboards: arrows, Esc, function keys, and Ctrl/Alt chords. UIKit
+    /// doesn't repeat presses it hands us, so held keys repeat here.
     public override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        // An input method is composing: arrows, Esc and Return belong to it.
+        guard kb.marked.isEmpty else { return super.pressesBegan(presses, with: event) }
         var unhandled = Set<UIPress>()
         for press in presses {
             guard let key = press.key else { unhandled.insert(press); continue }
             let f = key.modifierFlags
             let ctrl = f.contains(.control), alt = f.contains(.alternate), shift = f.contains(.shift)
             if f.contains(.command) { unhandled.insert(press); continue }
-            if let k = Self.named(key.keyCode) {
-                send(k, ctrl: ctrl, alt: alt, shift: shift)
+            let k: Key
+            if let named = Self.named(key.keyCode) {
+                k = named
             } else if ctrl || alt, let ch = key.charactersIgnoringModifiers.first {
-                send(.char(c: String(ch)), ctrl: ctrl, alt: alt, shift: shift)
+                k = .char(c: String(ch))
             } else {
                 unhandled.insert(press)
+                continue
             }
+            send(k, ctrl: ctrl, alt: alt, shift: shift)
+            startRepeat(key.keyCode) { [weak self] in self?.send(k, ctrl: ctrl, alt: alt, shift: shift) }
         }
         if !unhandled.isEmpty { super.pressesBegan(unhandled, with: event) }
+    }
+
+    public override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if presses.contains(where: { $0.key?.keyCode == repeatKey }) { stopRepeat() }
+        super.pressesEnded(presses, with: event)
+    }
+
+    public override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        stopRepeat()
+        super.pressesCancelled(presses, with: event)
+    }
+
+    private func startRepeat(_ code: UIKeyboardHIDUsage, _ action: @escaping () -> Void) {
+        stopRepeat()
+        repeatKey = code
+        repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.repeatTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { _ in
+                    MainActor.assumeIsolated { action() }
+                }
+            }
+        }
+    }
+
+    private func stopRepeat() {
+        repeatTimer?.invalidate()
+        repeatTimer = nil
+        repeatKey = nil
     }
 
     private static func named(_ code: UIKeyboardHIDUsage) -> Key? {
@@ -510,6 +546,7 @@ public final class TerminalUIView: UIView, UITextInputTraits, UIGestureRecognize
         case .keyboardPageUp: return .pageUp
         case .keyboardPageDown: return .pageDown
         case .keyboardDeleteForward: return .delete
+        case .keyboardInsert: return .insert
         case .keyboardF1: return .f(n: 1)
         case .keyboardF2: return .f(n: 2)
         case .keyboardF3: return .f(n: 3)

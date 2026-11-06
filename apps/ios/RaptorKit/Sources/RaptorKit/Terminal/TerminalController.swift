@@ -15,6 +15,8 @@ public final class TerminalController {
     /// Called on the main thread when a new frame should be drawn.
     @ObservationIgnored public var onFrame: (() -> Void)?
     @ObservationIgnored public var onClipboard: ((String) -> Void)?
+    /// Set by the view: +1/-1 to change the text size, 0 to reset it.
+    @ObservationIgnored public var onFontStep: ((Int) -> Void)?
     @ObservationIgnored private var listener: Listener?
 
     /// Whether the key bar rides on the keyboard (Settings).
