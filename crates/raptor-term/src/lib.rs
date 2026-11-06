@@ -426,6 +426,7 @@ impl Terminal {
         let mut cursor_on_wide = false;
 
         let mut lines = Vec::with_capacity(rows as usize);
+        let mut text = String::new();
         if let Ok(mut row_it) = self.rows_it.update(&snapshot) {
             while let Some(row_iter) = row_it.next() {
                 let mut row = Row::default();
@@ -457,10 +458,9 @@ impl Terminal {
                     if style.invisible {
                         fg = bg.unwrap_or(bg_default);
                     }
-                    let mut text = String::new();
-                    match cell.graphemes() {
-                        Ok(g) if !g.is_empty() => text.extend(g),
-                        _ => text.push(' '),
+                    if cell.graphemes_utf8(&mut text).is_err() || text.is_empty() {
+                        text.clear();
+                        text.push(' ');
                     }
                     let underline = match style.underline {
                         vt::style::Underline::None => Underline::None,
@@ -498,7 +498,7 @@ impl Terminal {
                         row.runs.push(Run {
                             col: this_col,
                             cells: width as u16,
-                            text,
+                            text: text.clone(),
                             widths: vec![width],
                             fg,
                             bg,
