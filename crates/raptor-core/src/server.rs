@@ -415,7 +415,8 @@ impl ServerEntry {
                 },
                 _ = self.wake.notified() => {
                     // A manual "reconnect" while online: re-read everything.
-                    for id in self.model.lock().order.clone() {
+                    let order = self.model.lock().order.clone();
+                    for id in order {
                         self.clone().refresh_view(conn.clone(), id, sink.clone());
                     }
                 }
