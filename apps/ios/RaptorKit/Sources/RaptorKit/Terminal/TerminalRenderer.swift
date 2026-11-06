@@ -130,7 +130,7 @@ public final class TerminalRenderer {
                 ctx.fill(CGRect(x: CGFloat(run.col) * m.width, y: top, width: CGFloat(run.cells) * m.width, height: m.height + 0.5))
             }
             for run in line.runs where !run.text.allSatisfy({ $0 == " " }) {
-                var color = run.fg
+                var color = readable(run.fg, on: run.bg ?? frame.background, fallback: frame.foreground)
                 if run.style & styleFaint != 0 { color = blend(color, frame.background, 0.5) }
                 drawRun(run, font: face(run.style), color: color, at: CGPoint(x: CGFloat(run.col) * m.width, y: top), in: ctx)
                 decorate(run, color: cg(run.underlineColor ?? color), top: top, in: ctx)
@@ -396,6 +396,22 @@ func cellWidth(_ c: Character) -> Int {
 }
 func cg(_ argb: UInt32) -> CGColor {
     CGColor(srgbRed: CGFloat((argb >> 16) & 0xFF) / 255, green: CGFloat((argb >> 8) & 0xFF) / 255, blue: CGFloat(argb & 0xFF) / 255, alpha: 1)
+}
+
+/// Text in a palette color that nearly matches its background (white on a light
+/// theme, say) is drawn in the default foreground instead. Equal colors are kept:
+/// that's a program hiding text on purpose.
+func readable(_ fg: UInt32, on bg: UInt32, fallback: UInt32) -> UInt32 {
+    guard fg & 0xFFFFFF != bg & 0xFFFFFF else { return fg }
+    func lum(_ c: UInt32) -> Double {
+        func ch(_ s: UInt32) -> Double {
+            let v = Double((c >> s) & 0xFF) / 255
+            return v <= 0.03928 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * ch(16) + 0.7152 * ch(8) + 0.0722 * ch(0)
+    }
+    let a = lum(fg), b = lum(bg)
+    return (max(a, b) + 0.05) / (min(a, b) + 0.05) < 1.35 ? fallback : fg
 }
 
 func blend(_ a: UInt32, _ b: UInt32, _ t: Double) -> UInt32 {
