@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Raptor
+Comment=Terminals on your Rex servers
+Exec=raptor
+Icon=dev.raptor.Raptor
+Terminal=false
+Type=Application
+Categories=System;TerminalEmulator;
+Keywords=terminal;rex;shell;multiplexer;remote;
+StartupNotify=true
