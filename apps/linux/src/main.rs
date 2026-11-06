@@ -361,10 +361,36 @@ fn build(app: &adw::Application) {
         }
     });
 
+    watch_wake(&core);
     refresh(&ui);
     window.present();
     open_from_env(&ui);
     screenshot_mode(&ui);
+}
+
+/// After a suspend or a network change, connections may be dead without knowing it yet.
+fn watch_wake(core: &Arc<Raptor>) {
+    let c = core.clone();
+    gio::NetworkMonitor::default().connect_network_changed(move |_, _| c.verify_connections());
+    let c = core.clone();
+    glib::spawn_future_local(async move {
+        let Ok(bus) = gio::bus_get_future(gio::BusType::System).await else { return };
+        let sub = bus.subscribe_to_signal(
+            Some("org.freedesktop.login1"),
+            Some("org.freedesktop.login1.Manager"),
+            Some("PrepareForSleep"),
+            Some("/org/freedesktop/login1"),
+            None,
+            gio::DBusSignalFlags::NONE,
+            move |sig| {
+                if sig.parameters.get::<(bool,)>().is_some_and(|(sleeping,)| !sleeping) {
+                    c.verify_connections();
+                }
+            },
+        );
+        // Lasts for the life of the app.
+        std::mem::forget(sub);
+    });
 }
 
 fn load_css() {
