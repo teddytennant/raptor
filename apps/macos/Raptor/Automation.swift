@@ -36,7 +36,9 @@ enum Automation {
         let args = line.split(separator: " ", maxSplits: 1).map(String.init)
         guard let cmd = args.first else { return "err empty" }
         let rest = args.count > 1 ? args[1] : ""
-        guard let w = window else { return "err no window" }
+        guard let main = window else { return "err no window" }
+        // Keys and clicks go to a sheet while one is up, as they would for a person.
+        let w = main.attachedSheet ?? main
         switch cmd {
         case "key":
             for spec in rest.split(separator: " ") { key(String(spec), in: w) }
@@ -96,16 +98,31 @@ enum Automation {
             }
             return "err no session \(rest)"
         case "dump":
-            return dump(w)
-        case "snapself":
-            // Offscreen render of the window's views, for when the screen can't be captured.
-            guard let v = w.contentView?.superview ?? w.contentView, let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { return "err snapself" }
+            return dump(main)
+        case "windows":
+            return NSApp.windows.map { "\($0.title.isEmpty ? "-" : $0.title) visible=\($0.isVisible) \(Int($0.frame.width))x\(Int($0.frame.height)) \(type(of: $0))" }.joined(separator: "\n")
+        case "snapself", "snapwin":
+            // Offscreen render of a window's views, for when the screen can't be captured.
+            // snapwin renders the frontmost other window (Settings, About, a sheet).
+            let target = cmd == "snapwin" ? NSApp.windows.filter { $0.isVisible && $0 !== w }.max { $0.orderedIndex > $1.orderedIndex } ?? w : w
+            guard let v = target.contentView?.superview ?? target.contentView, let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { return "err snapself" }
             v.cacheDisplay(in: v.bounds, to: rep)
             try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: rest))
             return "ok snapself \(rest)"
         case "views":
             guard let t = AppModel.shared.current?.focusedTerminal else { return "err" }
             return t.subviews.map { "\(type(of: $0)) \($0.frame) alpha=\($0.alphaValue) hidden=\($0.isHidden)" }.joined(separator: "\n") + "\nterm \(t.frame) window \(String(describing: t.window?.frame))"
+        case "perf":
+            // Time scroll + frame + full redraw, as one trackpad step would cost.
+            guard let t = AppModel.shared.current?.focusedTerminal else { return "err" }
+            let n = 120
+            let start = Date()
+            for i in 0..<n {
+                t.terminal?.scroll(rows: i % 2 == 0 ? -3 : 3)
+                t.refresh()
+                t.display()
+            }
+            return String(format: "perf %.2f ms per scroll step (%dx%@)", Date().timeIntervalSince(start) * 1000 / Double(n), Int(t.bounds.width), "\(Int(t.bounds.height))")
         case "row":
             guard let r = Int(rest), let f = AppModel.shared.current?.focusedTerminal?.frameCache, f.lines.indices.contains(r) else { return "err row n" }
             return f.lines[r].runs.map { run in
@@ -229,10 +246,9 @@ enum Automation {
                 log("menu item: \(m.items[i].title)")
                 return
             }
-            if w.performKeyEquivalent(with: down) { return }
-        } else if mods.contains(.control), w.performKeyEquivalent(with: down) {
-            return
         }
+        // As NSApplication does: key equivalents (default buttons, Escape) first, then the responder.
+        if w.performKeyEquivalent(with: down) { return }
         w.sendEvent(down)
     }
 
@@ -260,7 +276,7 @@ enum Automation {
                 let t = ws?.terminals[b.id]
                 let f = t?.frameCache
                 let mark = b.id == ws?.focusedBlockId ? "*" : " "
-                out.append("\(mark) \(b.name) rect=\(String(format: "%.3f,%.3f,%.3f,%.3f", b.x, b.y, b.w, b.h)) grid=\(f.map { "\($0.cols)x\($0.rows)" } ?? "-") off=\(f.map { "\($0.scrollOffset)/\($0.scrollTotal)" } ?? "-") ctl=\(t?.controller.hasControl ?? false) status=\(t.map { "\($0.controller.status)" } ?? "-") sel=\(t?.terminal?.selectionText()?.prefix(60).debugDescription ?? "nil")")
+                out.append("\(mark) \(b.name) rect=\(String(format: "%.3f,%.3f,%.3f,%.3f", b.x, b.y, b.w, b.h)) grid=\(f.map { "\($0.cols)x\($0.rows)" } ?? "-") cur=\(f?.cursor.map { "\($0.col),\($0.row)" } ?? "-") alt=\(f?.alternateScreen ?? false) mouse=\(t?.terminal?.mouseTracking() ?? false) off=\(f.map { "\($0.scrollOffset)/\($0.scrollTotal)" } ?? "-") ctl=\(t?.controller.hasControl ?? false) status=\(t.map { "\($0.controller.status)" } ?? "-") sel=\(t?.terminal?.selectionText()?.prefix(60).debugDescription ?? "nil")")
             }
             for s in aw.splits { out.append("  split \(s.horizontal ? "h" : "v") ratio=\(String(format: "%.3f", s.ratio))") }
         }

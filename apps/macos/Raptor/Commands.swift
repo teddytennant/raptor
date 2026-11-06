@@ -18,6 +18,7 @@ struct RaptorCommands: Commands {
                 .keyboardShortcut("t")
             Button("New Session") { ws?.newSession() }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
+            Button("Add Server…") { ws?.addingServer = true }
             Divider()
             Button("Split Right") { ws?.split(vertical: false) }
                 .keyboardShortcut("d")

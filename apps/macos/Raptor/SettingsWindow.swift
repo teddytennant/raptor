@@ -4,11 +4,10 @@ import SwiftUI
 struct SettingsWindow: View {
     var body: some View {
         TabView {
-            AppearanceSettings().tabItem { Label("Appearance", systemImage: "paintpalette") }
-            GeneralSettings().tabItem { Label("General", systemImage: "gearshape") }
-            ServerSettings().tabItem { Label("Servers", systemImage: "server.rack") }
+            AppearanceSettings().frame(width: 560, height: 680).tabItem { Label("Appearance", systemImage: "paintpalette") }
+            GeneralSettings().frame(width: 560, height: 400).tabItem { Label("General", systemImage: "gearshape") }
+            ServerSettings().frame(width: 560).tabItem { Label("Servers", systemImage: "server.rack") }
         }
-        .frame(width: 560)
     }
 }
 
@@ -116,7 +115,9 @@ private struct Sample: NSViewRepresentable {
             let ansi = theme.ansi ?? Themes.all[1].ansi!
             let fg = 0xFF00_0000 | theme.foreground
             func run(_ col: Int, _ text: String, _ color: UInt32, bold: Bool = false) -> Run {
-                Run(col: UInt16(col), cells: UInt16(text.count), text: text, widths: Data(repeating: 1, count: text.count), fg: 0xFF00_0000 | color, bg: nil, underlineColor: nil, style: bold ? 1 : 0)
+                let widths = text.unicodeScalars.map { UInt8($0.value >= 0x2E80 ? 2 : 1) }
+                return Run(col: UInt16(col), cells: UInt16(widths.reduce(0) { $0 + UInt16($1) }), text: text, widths: Data(widths),
+                           fg: 0xFF00_0000 | color, bg: nil, underlineColor: nil, style: bold ? 1 : 0)
             }
             let lines = [
                 Line(runs: [run(0, "~/src/raptor", ansi[4], bold: true), run(13, "main", ansi[5]), run(18, "$ ", fg), run(20, "cargo test", fg)]),
@@ -232,12 +233,14 @@ struct ServerSheet: View {
     @State private var status: String?
     @State private var failed = false
     @State private var checking = false
+    @FocusState private var addressFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(editing == nil ? "Add Server" : "Edit Server").font(.headline)
             Form {
                 TextField("Address", text: $address, prompt: Text("studio.tailnet.ts.net:7979"))
+                    .focused($addressFocused)
                 TextField("Name", text: $name, prompt: Text("Optional"))
             }
             .formStyle(.columns)
@@ -265,6 +268,7 @@ struct ServerSheet: View {
                 name = e.name
                 address = e.address
             }
+            addressFocused = true
         }
     }
 
@@ -278,7 +282,7 @@ struct ServerSheet: View {
             failed = false
             return true
         } catch {
-            status = "\(error)"
+            status = describe(error)
             failed = true
             return false
         }
@@ -295,7 +299,7 @@ struct ServerSheet: View {
             }
             dismiss()
         } catch {
-            status = "\(error)"
+            status = describe(error)
             failed = true
         }
     }

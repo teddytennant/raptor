@@ -241,7 +241,7 @@ struct ReplySheet: View {
             do {
                 try await core.quickReply(serverId: item.serverId, sessionId: item.sessionId, blockId: item.block.id, text: text + "\r")
                 dismiss()
-            } catch { self.error = "\(error)" }
+            } catch { self.error = describe(error) }
         }
     }
 }

@@ -13,6 +13,7 @@ final class Workspace {
     private(set) var sessionId: String?
     var paletteShown = false
     var findShown = false
+    var addingServer = false
     var renaming: RenameRequest?
     var confirm: ConfirmRequest?
     var error: String?
@@ -126,7 +127,7 @@ final class Workspace {
         guard let serverId, let sessionId else { return }
         let core = model.core
         Task {
-            do { try await body(core, serverId, sessionId) } catch { self.error = "\(error)" }
+            do { try await body(core, serverId, sessionId) } catch { self.error = describe(error) }
         }
     }
 
@@ -274,7 +275,7 @@ final class Workspace {
             do {
                 let id = try await core.createSession(serverId: srv, label: nil)
                 self.open(serverId: srv, sessionId: id)
-            } catch { self.error = "\(error)" }
+            } catch { self.error = describe(error) }
         }
     }
 

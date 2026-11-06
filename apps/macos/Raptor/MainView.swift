@@ -12,19 +12,18 @@ struct MainView: View {
     @SceneStorage("session") private var savedSession = ""
     @SceneStorage("sidebar") private var sidebarShown = true
     @State private var columns = NavigationSplitViewVisibility.all
-    @State private var addingServer = false
     @State private var editing: Server?
 
     var body: some View {
         let chrome = Chrome(model.theme)
         NavigationSplitView(columnVisibility: $columns) {
             if let ws {
-                Sidebar(ws: ws, onAddServer: { addingServer = true }, onEditServer: { editing = $0 })
+                Sidebar(ws: ws, onAddServer: { ws.addingServer = true }, onEditServer: { editing = $0 })
                     .navigationSplitViewColumnWidth(min: 200, ideal: 250, max: 380)
             }
         } detail: {
             if let ws {
-                Detail(ws: ws, onAddServer: { addingServer = true })
+                Detail(ws: ws, onAddServer: { ws.addingServer = true })
             }
         }
         .navigationTitle(ws?.session?.label ?? "Raptor")
@@ -65,20 +64,8 @@ struct MainView: View {
             if let ws, (n.object as? NSWindow) === ws.window { app.current = ws }
         }
         .onDisappear { ws?.close() }
-        .sheet(isPresented: $addingServer) { ServerSheet(editing: nil) }
         .sheet(item: $editing) { ServerSheet(editing: $0) }
-        .sheet(item: Binding(get: { ws?.renaming }, set: { ws?.renaming = $0 })) { RenameSheet(request: $0) }
-        .alert(ws?.confirm?.title ?? "", isPresented: Binding(get: { ws?.confirm != nil }, set: { if !$0 { ws?.confirm = nil } }), presenting: ws?.confirm) { c in
-            Button(c.action, role: .destructive) { c.run() }
-            Button("Cancel", role: .cancel) {}
-        } message: { c in
-            Text(c.message)
-        }
-        .alert("Something went wrong", isPresented: Binding(get: { ws?.error != nil }, set: { if !$0 { ws?.error = nil } })) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(ws?.error ?? "")
-        }
+        .modifier(WorkspaceDialogs(ws: ws))
     }
 
     private func start() {
@@ -392,5 +379,31 @@ struct RenameSheet: View {
     private func commit() {
         request.commit(text.trimmingCharacters(in: .whitespaces))
         dismiss()
+    }
+}
+
+/// The sheets and alerts a workspace can raise.
+private struct WorkspaceDialogs: ViewModifier {
+    let ws: Workspace?
+
+    func body(content: Content) -> some View {
+        let adding = Binding(get: { ws?.addingServer ?? false }, set: { ws?.addingServer = $0 })
+        let renaming = Binding(get: { ws?.renaming }, set: { ws?.renaming = $0 })
+        let confirming = Binding(get: { ws?.confirm != nil }, set: { if !$0 { ws?.confirm = nil } })
+        let failed = Binding(get: { ws?.error != nil }, set: { if !$0 { ws?.error = nil } })
+        content
+            .sheet(isPresented: adding) { ServerSheet(editing: nil) }
+            .sheet(item: renaming) { RenameSheet(request: $0) }
+            .alert(ws?.confirm?.title ?? "", isPresented: confirming, presenting: ws?.confirm) { c in
+                Button(c.action, role: .destructive) { c.run() }
+                Button("Cancel", role: .cancel) {}
+            } message: { c in
+                Text(c.message)
+            }
+            .alert("Something went wrong", isPresented: failed) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(ws?.error ?? "")
+            }
     }
 }

@@ -36,6 +36,7 @@ struct CommandPaletteView: View {
             Item(id: "find", title: "Find…", subtitle: "Terminal", symbol: "magnifyingglass", shortcut: "⌘F") { ws.findShown = true },
             Item(id: "bigger", title: "Bigger Text", subtitle: "View", symbol: "textformat.size.larger", shortcut: "⌘+") { app.biggerText() },
             Item(id: "smaller", title: "Smaller Text", subtitle: "View", symbol: "textformat.size.smaller", shortcut: "⌘−") { app.smallerText() },
+            Item(id: "add-server", title: "Add Server…", subtitle: "Servers", symbol: "plus.circle") { ws.addingServer = true },
             Item(id: "reconnect", title: "Reconnect All Servers", subtitle: "Servers", symbol: "arrow.clockwise", shortcut: "⇧⌘R") { app.reconnectAll() },
             Item(id: "settings", title: "Settings…", subtitle: "Raptor", symbol: "gearshape", shortcut: "⌘,") { openSettings() },
         ]
