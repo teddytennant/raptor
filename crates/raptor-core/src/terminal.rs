@@ -160,7 +160,8 @@ fn apply_colors(t: &mut Terminal, forced: Option<&ColorTheme>, server: &ServerTh
 enum Input {
     Text(String),
     Key(KeyPress),
-    /// A `block.event`: paste, mouse button, wheel.
+    Paste(String),
+    /// A `block.event`: mouse button, wheel.
     Event(serde_json::Value),
 }
 
@@ -431,7 +432,7 @@ impl TerminalSession {
     pub fn paste(&self, text: &str) {
         if !text.is_empty() {
             self.snap_to_bottom();
-            let _ = self.input.send(Input::Event(json!({"type": "paste", "payload": {"text": text}})));
+            let _ = self.input.send(Input::Paste(text.to_owned()));
         }
     }
 
@@ -605,10 +606,18 @@ impl TerminalSession {
 /// run of them goes out back to back and costs one round trip; typed text runs
 /// alongside them there, so it waits for what came before and vice versa.
 async fn send_input(conn: &Connection, sid: &str, bid: &str, batch: Vec<Input>) {
+    // Requests over the server's message limit close the connection, and JSON
+    // can grow text up to sixfold (control characters), so big text goes in parts.
+    let part = (conn.welcome().limits.max_message_bytes / 8).max(1024) as usize;
     let mut ordered = Vec::new();
     for item in batch {
         match item {
             Input::Key(k) => ordered.push(conn.send_key(sid, bid, &k).boxed()),
+            Input::Paste(text) => {
+                for p in split_text(&text, part) {
+                    ordered.push(conn.send_event(sid, bid, json!({"type": "paste", "payload": {"text": p}})).boxed());
+                }
+            }
             Input::Event(e) => ordered.push(conn.send_event(sid, bid, e).boxed()),
             Input::Text(t) => {
                 for r in futures_util::future::join_all(ordered.drain(..)).await {
@@ -616,8 +625,10 @@ async fn send_input(conn: &Connection, sid: &str, bid: &str, batch: Vec<Input>) 
                         tracing::warn!("input: {e}");
                     }
                 }
-                if let Err(e) = conn.write(sid, bid, &t).await {
-                    tracing::warn!("input: {e}");
+                for p in split_text(&t, part) {
+                    if let Err(e) = conn.write(sid, bid, p).await {
+                        tracing::warn!("input: {e}");
+                    }
                 }
             }
         }
@@ -629,6 +640,28 @@ async fn send_input(conn: &Connection, sid: &str, bid: &str, batch: Vec<Input>) 
     }
 }
 
+/// Split text into pieces of at most `max` bytes, on character boundaries.
+fn split_text(text: &str, max: usize) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while rest.len() > max {
+        let mut cut = max.max(1);
+        while !rest.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        if cut == 0 {
+            cut = rest.chars().next().map_or(1, char::len_utf8);
+        }
+        let (a, b) = rest.split_at(cut);
+        out.push(a);
+        rest = b;
+    }
+    if !rest.is_empty() || out.is_empty() {
+        out.push(rest);
+    }
+    out
+}
+
 impl Drop for TerminalSession {
     fn drop(&mut self) {
         let _ = self.stop.send(true);
@@ -638,6 +671,14 @@ impl Drop for TerminalSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn splits_on_char_boundaries() {
+        assert_eq!(split_text("aé€b", 3), ["aé", "€", "b"]);
+        assert_eq!(split_text("", 3), [""]);
+        assert_eq!(split_text("abcdef", 3), ["abc", "def"]);
+        assert_eq!(split_text("€€", 1), ["€", "€"]);
+    }
 
     #[test]
     fn server_theme_parse() {

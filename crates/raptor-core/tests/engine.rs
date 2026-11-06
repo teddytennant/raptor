@@ -278,3 +278,30 @@ fn process_labels() {
     fake.emit_block("process_changed", serde_json::json!({"foreground": {"pid": 3, "user_id": 1, "name": "node", "argv0": "claude"}}));
     assert!(wait(2.0, || name().as_deref() == Some("claude")), "{:?}", name());
 }
+
+#[test]
+fn huge_paste_fits_the_message_limit() {
+    let fake = Fake::start(Options::default());
+    let (raptor, id) = online(&fake);
+    let term = raptor.open_terminal(&id, fake::SESSION, fake::BLOCK, Arc::new(NoTerm)).unwrap();
+    assert!(wait(5.0, || term.status() == TerminalStatus::Live));
+    fake.log.lock().clear();
+    // 3 MB of log with control characters, which JSON escapes six times over.
+    let text: String = (0..60_000).map(|i| format!("line {i} é\u{1}\n")).collect();
+    term.paste(&text);
+    term.send_text(&text);
+    let got = |kind: &str| -> String {
+        fake.log
+            .lock()
+            .iter()
+            .filter_map(|(m, p)| match (m.as_str(), kind) {
+                ("block.event", "paste") => p.pointer("/event/payload/text")?.as_str().map(str::to_owned),
+                ("com.superlogical.terminal.write", "write") => p.pointer("/args/data")?.as_str().map(str::to_owned),
+                _ => None,
+            })
+            .collect()
+    };
+    assert!(wait(10.0, || got("write").len() == text.len()), "{} of {}", got("write").len(), text.len());
+    assert_eq!(got("paste"), text);
+    assert_eq!(got("write"), text);
+}
