@@ -978,6 +978,9 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
 
             override fun getTextAfterCursor(n: Int, flags: Int): CharSequence = ""
 
+            // A shell prompt is never the start of a sentence: no auto-capitals.
+            override fun getCursorCapsMode(reqModes: Int): Int = 0
+
             override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
                 repeat(beforeLength) { key(Key.Backspace) }
                 repeat(afterLength) { key(Key.Delete) }
