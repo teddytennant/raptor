@@ -18,6 +18,8 @@ raptor-core = { path = "../../crates/raptor-core" }
 async-channel = "2"
 tracing = "0.1"
 pangocairo = "0.22"
+pango = { version = "0.22", features = ["v1_56"] }
+unicode-segmentation = "1"
 
 [dev-dependencies]
 raptor-term = { path = "../../crates/raptor-term" }
