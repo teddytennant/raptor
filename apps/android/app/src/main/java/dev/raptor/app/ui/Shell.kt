@@ -4,6 +4,9 @@ import android.content.Intent
 import android.net.Uri
 import androidx.compose.ui.text.withStyle
 import androidx.activity.BackEventCompat
+import androidx.compose.material3.TextButton
+import androidx.core.app.NotificationManagerCompat
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.foundation.Image
@@ -345,6 +348,21 @@ fun SettingsScreen(onClose: () -> Unit, onAddServer: () -> Unit, onEditServer: (
                 Toggle("Voice, swipe and CJK input", Prefs.SMART_KEYBOARD, default = false) { RaptorApplication.instance.appearance.value++ }
             }
             Section("Notifications") {
+                // Re-checked on every resume, so coming back from system settings updates it.
+                var allowed by remember { mutableStateOf(true) }
+                LifecycleResumeEffect(Unit) {
+                    allowed = NotificationManagerCompat.from(context).areNotificationsEnabled()
+                    onPauseOrDispose {}
+                }
+                if (!allowed) {
+                    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 6.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Notifications are off for Raptor", color = LocalStatus.current.blocked, fontSize = 16.sp, modifier = Modifier.weight(1f))
+                        TextButton(onClick = {
+                            context.startActivity(Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName))
+                        }) { Text("Turn On", color = Ink.accent, fontWeight = FontWeight.SemiBold, fontSize = 16.sp) }
+                    }
+                    Divider()
+                }
                 Toggle("An agent needs you", Prefs.NOTIFY_BLOCKED)
                 Divider()
                 Toggle("An agent finishes", Prefs.NOTIFY_DONE)
