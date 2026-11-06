@@ -206,8 +206,10 @@ fun BackToHome(current: Focus?, onBack: () -> Unit, home: @Composable () -> Unit
 @Composable
 fun Welcome(onAddServer: () -> Unit) {
     Column(Modifier.fillMaxSize().background(Ink.bg).statusBarsPadding().navigationBarsPadding().padding(horizontal = 28.dp), verticalArrangement = Arrangement.Center) {
-        Icon(Icons.Default.Terminal, null, tint = Ink.accent, modifier = Modifier.size(40.dp))
-        Spacer(Modifier.height(20.dp))
+        Box(Modifier.size(64.dp).clip(RoundedCornerShape(16.dp)).background(colorResource(dev.raptor.app.R.color.ic_bg))) {
+            Image(painterResource(dev.raptor.app.R.drawable.ic_foreground), null, Modifier.requiredSize(108.dp).align(Alignment.Center).scale(64f / 72f))
+        }
+        Spacer(Modifier.height(24.dp))
         Text("Raptor", color = Ink.text, fontSize = 34.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(10.dp))
         Text(
