@@ -154,6 +154,22 @@ final class TourUITests: XCTestCase {
         shot("notify-replied")
     }
 
+    func testRotation() throws {
+        open(env["RAPTOR_TEST_SESSION"] ?? "editor")
+        XCTAssertTrue(app.textViews["Terminal"].waitForExistence(timeout: 15))
+        sleep(3)
+        shot("rotate-portrait")
+        XCUIDevice.shared.orientation = .landscapeLeft
+        sleep(3)
+        shot("rotate-landscape")
+        app.textViews["Terminal"].tap()
+        sleep(2)
+        shot("rotate-landscape-keyboard")
+        XCUIDevice.shared.orientation = .portrait
+        sleep(3)
+        shot("rotate-back")
+    }
+
     func testOtherSessions() throws {
         for s in ["api", "monitor", "editor", "build"] {
             open(s)
