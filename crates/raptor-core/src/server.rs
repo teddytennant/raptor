@@ -288,7 +288,7 @@ impl ServerEntry {
                 Ok((conn, events)) => {
                     token = conn.reconnect_token().map(str::to_owned);
                     let rtt = started.elapsed().as_millis().min(60_000) as u32;
-                    match self.clone().serve(conn, events, &sink, rtt, &mut stop, &mut fg, &mut token).await {
+                    match self.clone().serve(conn, events, &sink, rtt, &mut stop, &mut fg).await {
                         Served::Stopped => return,
                         Served::Background => continue,
                         Served::Lost(reason) => {
@@ -328,7 +328,6 @@ impl ServerEntry {
         rtt: u32,
         stop: &mut watch::Receiver<bool>,
         fg: &mut watch::Receiver<bool>,
-        token: &mut Option<String>,
     ) -> Served {
         // Attach the sessions we already know in the same round trip (a reconnect),
         // then any others, before telling anyone we're online: until a session is
@@ -394,12 +393,10 @@ impl ServerEntry {
                     Some(ConnEvent::Event { event, .. }) => self.clone().apply(&conn, event, sink),
                     Some(ConnEvent::Closed { reason }) => {
                         *self.conn.lock() = None;
-                        *token = conn.reconnect_token().map(str::to_owned);
                         return Served::Lost(reason);
                     }
                     None => {
                         *self.conn.lock() = None;
-                        *token = conn.reconnect_token().map(str::to_owned);
                         return Served::Lost("connection lost".into());
                     }
                 },
@@ -408,7 +405,6 @@ impl ServerEntry {
                     return Served::Stopped;
                 }
                 _ = fg.changed() => if !*fg.borrow() {
-                    *token = conn.reconnect_token().map(str::to_owned);
                     *self.conn.lock() = None;
                     conn.abort();
                     return Served::Background;

@@ -1,7 +1,7 @@
 //! A tiny stand-in for a Rex server, for tests that need to misbehave on cue
 //! or record exactly what the client sent.
 
-#![allow(dead_code)]
+#![allow(dead_code, clippy::result_large_err)] // the handshake callback signature is tungstenite's
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
