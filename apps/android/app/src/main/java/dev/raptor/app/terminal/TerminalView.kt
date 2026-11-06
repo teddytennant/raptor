@@ -911,6 +911,22 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
 
     override fun onCheckIsTextEditor() = true
 
+    // Screen readers get the visible screen as text.
+    override fun onInitializeAccessibilityNodeInfo(info: android.view.accessibility.AccessibilityNodeInfo) {
+        super.onInitializeAccessibilityNodeInfo(info)
+        info.className = "android.widget.EditText"
+        info.isEditable = true
+        info.hintText = "Terminal"
+        info.text = frame?.lines?.joinToString("\n") { l ->
+            buildString {
+                for (r in l.runs) {
+                    while (length < r.col.toInt()) append(' ')
+                    append(r.text)
+                }
+            }.trimEnd()
+        }?.trimEnd()
+    }
+
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
         // Visible-password text gets raw characters from most keyboards: no autocorrect,
         // no composing, a number row. The smart mode lets them compose.
