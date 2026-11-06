@@ -639,7 +639,7 @@ final class KeyBar: UIInputView {
         [.key("esc", .escape, repeats: false), .key("tab", .tab, repeats: false), .ctrl, .alt,
          .key("←", .left, repeats: true), .key("↓", .down, repeats: true), .key("↑", .up, repeats: true), .key("→", .right, repeats: true), .more],
         [.text("|"), .text("~"), .text("/"), .text("-"), .text("`"),
-         .key("home", .home, repeats: false), .key("end", .end, repeats: false), .key("pgup", .pageUp, repeats: true), .more],
+         .key("home", .home, repeats: false), .key("end", .end, repeats: false), .key("pgup", .pageUp, repeats: true), .key("pgdn", .pageDown, repeats: true), .more],
     ]
 
     override init(frame: CGRect, inputViewStyle: UIInputView.Style = .default) {
@@ -695,11 +695,23 @@ final class KeyBar: UIInputView {
         rebuild()
     }
 
+    /// Wide keyboards (iPad, landscape) fit both pages in one row.
+    private var wide = false
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if (bounds.width >= 640) != wide {
+            wide.toggle()
+            rebuild()
+        }
+    }
+
     private func rebuild() {
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         ctrlButton = nil
         altButton = nil
-        for item in pages[page] { stack.addArrangedSubview(button(for: item)) }
+        let items = wide ? pages.flatMap { $0.filter { if case .more = $0 { false } else { true } } } : pages[page]
+        for item in items { stack.addArrangedSubview(button(for: item)) }
         refresh()
     }
 
