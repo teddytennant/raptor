@@ -7,7 +7,7 @@
 //! style runs that any renderer (Core Text, Android Canvas, GTK/Pango) can draw.
 
 use libghostty_vt as vt;
-use libghostty_vt::render::{CellIterator, CursorVisualStyle, RenderState, RowIterator};
+use libghostty_vt::render::{CellIterator, CursorVisualStyle, Dirty, RenderState, RowIterator};
 use libghostty_vt::screen::CellWide;
 use libghostty_vt::selection::{FormatOptions, Selection, SelectLineOptions, SelectWordOptions};
 use libghostty_vt::style::{Palette, RgbColor, StyleColor};
@@ -177,6 +177,19 @@ impl From<vt::Error> for TermError {
     }
 }
 
+/// Whether a wide character starts at `col`.
+fn wide_at(row: &Row, col: u16) -> bool {
+    let Some(run) = row.runs.iter().find(|r| r.col <= col && col < r.col + r.cells) else { return false };
+    let mut c = run.col;
+    for &w in &run.widths {
+        if c == col {
+            return w == 2;
+        }
+        c += w as u16;
+    }
+    false
+}
+
 /// One terminal emulator instance.
 pub struct Terminal {
     raw: vt::Terminal<'static, 'static>,
@@ -186,6 +199,10 @@ pub struct Terminal {
     framer: Option<SnapshotFramer>,
     scrollback_bytes: usize,
     cell_px: (u32, u32),
+    /// Rows of the last frame; only rows libghostty marks dirty are rebuilt.
+    rows_cache: Vec<Row>,
+    /// Rebuild every row next frame (colors, selection, viewport or terminal changed).
+    full_redraw: bool,
 }
 
 // libghostty-vt handles aren't thread-safe for concurrent use, but every
@@ -204,6 +221,8 @@ impl Terminal {
             framer: None,
             scrollback_bytes: 10 << 20,
             cell_px: (0, 0),
+            rows_cache: Vec::new(),
+            full_redraw: true,
         };
         t.apply_options();
         t
@@ -259,6 +278,7 @@ impl Terminal {
 
     /// Replace the whole terminal state with a complete Ghostty snapshot.
     pub fn restore(&mut self, snapshot: &[u8]) -> Result<(), TermError> {
+        self.full_redraw = true;
         let decoder = vt::snapshot::Decoder::new_buf(snapshot).map_err(|e| TermError::Snapshot(e.to_string()))?;
         self.raw = decoder.decode().map_err(|e| TermError::Snapshot(e.to_string()))?;
         self.apply_options();
@@ -282,6 +302,7 @@ impl Terminal {
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16, cell_w_px: u32, cell_h_px: u32) {
+        self.full_redraw = true;
         self.cell_px = (cell_w_px, cell_h_px);
         let _ = self.raw.resize(cols.max(1), rows.max(1), cell_w_px, cell_h_px);
     }
@@ -312,19 +333,23 @@ impl Terminal {
 
     /// Scroll the viewport by `delta` rows (negative is up, into history).
     pub fn scroll(&mut self, delta: isize) {
+        self.full_redraw = true;
         self.raw.scroll_viewport(ScrollViewport::Delta(delta));
     }
 
     /// Jump `delta` shell prompts (needs shell integration).
     pub fn scroll_prompts(&mut self, delta: isize) {
+        self.full_redraw = true;
         self.raw.scroll_viewport(ScrollViewport::DeltaPrompt(delta));
     }
 
     pub fn scroll_to_bottom(&mut self) {
+        self.full_redraw = true;
         self.raw.scroll_viewport(ScrollViewport::Bottom);
     }
 
     pub fn scroll_to_top(&mut self) {
+        self.full_redraw = true;
         self.raw.scroll_viewport(ScrollViewport::Top);
     }
 
@@ -334,6 +359,7 @@ impl Terminal {
 
     /// Select from one viewport cell to another (inclusive).
     pub fn select(&mut self, from: (u16, u16), to: (u16, u16)) -> bool {
+        self.full_redraw = true;
         let (Ok(a), Ok(b)) = (self.raw.grid_ref(Self::viewport(from.0, from.1)), self.raw.grid_ref(Self::viewport(to.0, to.1))) else {
             return false;
         };
@@ -343,6 +369,7 @@ impl Terminal {
 
     /// Select the word under a viewport cell (double-tap).
     pub fn select_word(&mut self, col: u16, row: u16) -> bool {
+        self.full_redraw = true;
         let Ok(r) = self.raw.grid_ref(Self::viewport(col, row)) else { return false };
         match self.raw.select_word(SelectWordOptions::new(r)) {
             Ok(Some(sel)) => self.raw.set_selection(Some(&sel)).is_ok(),
@@ -352,6 +379,7 @@ impl Terminal {
 
     /// Select a whole line (triple-tap), trimmed the way Ghostty does.
     pub fn select_line(&mut self, row: u16) -> bool {
+        self.full_redraw = true;
         let Ok(r) = self.raw.grid_ref(Self::viewport(0, row)) else { return false };
         match self.raw.select_line(SelectLineOptions::new(r)) {
             Ok(Some(sel)) => self.raw.set_selection(Some(&sel)).is_ok(),
@@ -360,6 +388,7 @@ impl Terminal {
     }
 
     pub fn clear_selection(&mut self) {
+        self.full_redraw = true;
         let _ = self.raw.set_selection(None);
     }
 
@@ -422,17 +451,28 @@ impl Terminal {
         let bg_default: Rgb = colors.as_ref().map(|c| c.background.into()).unwrap_or_default();
         let palette = |i: u8| -> Rgb { colors.as_ref().map(|c| c.palette[i as usize].into()).unwrap_or_default() };
         let cur = snapshot.cursor().ok();
-        let cursor_at = cur.as_ref().and_then(|c| c.viewport).map(|vp| (vp.x, vp.y as usize));
-        let mut cursor_on_wide = false;
 
-        let mut lines = Vec::with_capacity(rows as usize);
+        let dirty = snapshot.dirty().unwrap_or(Dirty::Full);
+        let full = std::mem::take(&mut self.full_redraw) || dirty == Dirty::Full || self.rows_cache.len() != rows as usize;
+        if full {
+            self.rows_cache = vec![Row::default(); rows as usize];
+        }
         let mut text = String::new();
-        if let Ok(mut row_it) = self.rows_it.update(&snapshot) {
+        if (full || dirty != Dirty::Clean)
+            && let Ok(mut row_it) = self.rows_it.update(&snapshot)
+        {
+            let mut y = 0;
             while let Some(row_iter) = row_it.next() {
+                let rebuild = full || row_iter.dirty().unwrap_or(true);
+                let _ = row_iter.set_dirty(false);
+                y += 1;
+                if !rebuild || y > self.rows_cache.len() {
+                    continue;
+                }
                 let mut row = Row::default();
                 let mut col: u16 = 0;
                 let Ok(mut cell_it) = self.cells_it.update(row_iter) else {
-                    lines.push(row);
+                    self.rows_cache[y - 1] = row;
                     continue;
                 };
                 while let Some(cell) = cell_it.next() {
@@ -443,9 +483,6 @@ impl Terminal {
                         continue; // covered by the wide cell before it
                     }
                     let width: u8 = if matches!(wide, CellWide::Wide) { 2 } else { 1 };
-                    if width == 2 && cursor_at == Some((this_col, lines.len())) {
-                        cursor_on_wide = true;
-                    }
                     let Ok(style) = cell.style() else { continue };
                     let selected = cell.is_selected().unwrap_or(false);
                     let mut fg: Rgb = cell.fg_color().ok().flatten().map(Into::into).unwrap_or(fg_default);
@@ -513,9 +550,13 @@ impl Terminal {
                         });
                     }
                 }
-                lines.push(row);
+                self.rows_cache[y - 1] = row;
             }
+            let _ = snapshot.set_dirty(Dirty::Clean);
         }
+        let lines = self.rows_cache.clone();
+        let cursor_at = cur.as_ref().and_then(|c| c.viewport).map(|vp| (vp.x, vp.y as usize));
+        let cursor_on_wide = cursor_at.is_some_and(|(x, y)| lines.get(y).is_some_and(|r| wide_at(r, x)));
 
         let cursor = cur.and_then(|c| {
             let vp = c.viewport?;
@@ -566,6 +607,7 @@ impl Terminal {
     /// Change entries of the built-in 256-color palette; every other entry
     /// goes back to its built-in color.
     pub fn set_palette(&mut self, entries: &[(u8, Rgb)]) {
+        self.full_redraw = true;
         let _ = self.raw.set_default_color_palette(None);
         if entries.is_empty() {
             return;
@@ -579,6 +621,7 @@ impl Terminal {
 
     /// Set default colors (from the stream's `theme` message or a chosen theme).
     pub fn set_default_colors(&mut self, fg: Option<Rgb>, bg: Option<Rgb>, cursor: Option<Rgb>) {
+        self.full_redraw = true;
         let _ = self.raw.set_default_fg_color(fg.map(Into::into));
         let _ = self.raw.set_default_bg_color(bg.map(Into::into));
         let _ = self.raw.set_default_cursor_color(cursor.map(Into::into));
@@ -722,5 +765,46 @@ mod tests {
         let snap = Terminal::new(40, 5).snapshot().unwrap();
         t.restore(&snap).unwrap();
         assert!(fill(&mut t) <= capped + 5, "limit lost on restore");
+    }
+
+    /// Rebuilding only dirty rows must draw exactly what a full rebuild draws.
+    #[test]
+    fn incremental_frames_match_full_ones() {
+        let mut t = Terminal::new(30, 6);
+        let steps: &[&[u8]] = &[
+            b"hello\r\nworld",
+            b"\x1b[1;1H\x1b[31mHE\x1b[0m",
+            "\r\n中文 e\u{301}\x1b[7m inv \x1b[0m".as_bytes(),
+            b"\x1b[2;3H\x1b[K",
+            b"\x1b]4;1;rgb:00/ff/00\x1b\\",
+            b"\x1b[3;5r\x1b[5;1H\r\nscrolled\r\nregion\x1b[r",
+            b"\x1b[?1049hALT\x1b[2J\x1b[3;3Hin alt",
+            b"\x1b[?1049l",
+            b"\x1b[6;1Hl1\r\nl2\r\nl3\r\nl4\r\n",
+            b"\x1b[?25l",
+            b"\x1b[?25h\x1b[1;30H\x1b[44mX",
+        ];
+        for (i, step) in steps.iter().enumerate() {
+            t.write_vt(step);
+            let incremental = t.frame();
+            t.full_redraw = true;
+            assert_eq!(incremental, t.frame(), "step {i}");
+            if i == 3 {
+                t.select((0, 0), (4, 1));
+                let sel = t.frame();
+                t.full_redraw = true;
+                assert_eq!(sel, t.frame());
+                t.clear_selection();
+            }
+        }
+        t.scroll(-2);
+        let scrolled = t.frame();
+        t.full_redraw = true;
+        assert_eq!(scrolled, t.frame());
+        t.set_default_colors(Some(Rgb::new(1, 2, 3)), Some(Rgb::new(4, 5, 6)), None);
+        let f = t.frame();
+        assert_eq!(f.background, Rgb::new(4, 5, 6));
+        t.full_redraw = true;
+        assert_eq!(f, t.frame());
     }
 }
