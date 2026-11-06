@@ -566,3 +566,29 @@ fn verify_leaves_healthy_connections_alone() {
     l.type_line(&term, "echo still-here");
     assert!(wait(10, || screen(&term).contains("\nstill-here\n")), "{}", screen(&term));
 }
+
+#[test]
+fn find_in_scrollback() {
+    let Some(l) = Live::new() else { return };
+    let (term, _) = l.open(&l.bid);
+    let script = l.script("lines", "for i in $(seq 1 200); do case $i in 20|150) echo \"line $i Needle\";; *) echo \"line $i\";; esac; done; echo done-$((6*7))");
+    l.type_line(&term, &format!("sh {script}"));
+    assert!(wait(10, || screen(&term).contains("done-42\n")), "{}", screen(&term));
+    let bottom = term.frame().scrollbar.offset;
+
+    assert!(term.find("needle", true));
+    assert_eq!(term.selection_text().as_deref(), Some("Needle"));
+    assert!(screen(&term).contains("line 150 Needle"));
+    assert!(term.find("needle", true));
+    assert!(screen(&term).contains("line 20 Needle"), "{}", screen(&term));
+    let there = term.frame().scrollbar.offset;
+    assert!(there < bottom);
+    assert!(!term.find("needle", true), "no older match");
+    assert_eq!(term.frame().scrollbar.offset, there, "a miss leaves the view where it was");
+
+    assert!(term.find("NEEDLE", false));
+    assert!(screen(&term).contains("line 150 Needle"));
+    term.reset_find();
+    assert!(term.selection_text().is_none());
+    assert!(!term.find("not on screen anywhere", true));
+}

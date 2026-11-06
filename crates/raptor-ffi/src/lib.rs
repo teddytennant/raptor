@@ -832,6 +832,17 @@ impl Terminal {
         self.inner.clear_selection()
     }
 
+    /// Select the next match of `query` in the screen and history, scrolling to it;
+    /// `older` searches upward. False when there are no more matches.
+    pub fn find(&self, query: String, older: bool) -> bool {
+        self.inner.find(&query, older)
+    }
+
+    /// Forget the last match, e.g. when the query changes.
+    pub fn reset_find(&self) {
+        self.inner.reset_find()
+    }
+
     pub fn selection_text(&self) -> Option<String> {
         self.inner.selection_text()
     }

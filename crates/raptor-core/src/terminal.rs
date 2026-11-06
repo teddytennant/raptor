@@ -181,6 +181,8 @@ pub struct TerminalSession {
     resize_gen: Arc<AtomicU64>,
     control: AtomicBool,
     forced: Mutex<Option<ColorTheme>>,
+    /// Where the last find matched: absolute row and column.
+    find_pos: Mutex<Option<(u64, u16)>>,
     control_lock: tokio::sync::Mutex<()>,
     server_theme: Mutex<ServerTheme>,
     /// Methods are called from UI threads, so spawn on the engine's runtime explicitly.
@@ -206,6 +208,7 @@ impl TerminalSession {
             resize_gen: Arc::new(AtomicU64::new(0)),
             control: AtomicBool::new(false),
             forced: Mutex::new(None),
+            find_pos: Mutex::new(None),
             control_lock: tokio::sync::Mutex::new(()),
             server_theme: Mutex::new(ServerTheme::default()),
             rt: tokio::runtime::Handle::current(),
@@ -484,6 +487,57 @@ impl TerminalSession {
         ok
     }
 
+    /// Select the next match of `query` (ignoring case) in the screen and history,
+    /// scrolling to it; `older` searches upward. Returns false, leaving the view
+    /// where it was, when there are no more matches.
+    pub fn find(&self, query: &str, older: bool) -> bool {
+        let needle: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
+        if needle.is_empty() {
+            return false;
+        }
+        let mut t = self.term.lock();
+        let from = *self.find_pos.lock();
+        let home = t.scrollbar().offset;
+        loop {
+            let f = t.frame();
+            let top = f.scrollbar.offset;
+            let rows: Vec<usize> = if older { (0..f.lines.len()).rev().collect() } else { (0..f.lines.len()).collect() };
+            for r in rows {
+                let abs = top + r as u64;
+                if from.is_some_and(|(row, _)| if older { abs > row } else { abs < row }) {
+                    continue;
+                }
+                let mut hits = find_in_row(&f.lines[r], &needle);
+                if let Some((row, col)) = from
+                    && row == abs
+                {
+                    hits.retain(|h| if older { h.0 < col } else { h.0 > col });
+                }
+                let Some(&(start, end)) = (if older { hits.last() } else { hits.first() }) else { continue };
+                *self.find_pos.lock() = Some((abs, start));
+                t.select((start, r as u16), (end, r as u16));
+                drop(t);
+                self.dirty();
+                return true;
+            }
+            let page = f.lines.len().saturating_sub(1).max(1) as isize;
+            t.scroll(if older { -page } else { page });
+            if t.scrollbar().offset == top {
+                let now = t.scrollbar().offset;
+                t.scroll(home as isize - now as isize);
+                drop(t);
+                self.dirty();
+                return false;
+            }
+        }
+    }
+
+    /// Forget where the last find matched, e.g. when the query changes.
+    pub fn reset_find(&self) {
+        *self.find_pos.lock() = None;
+        self.clear_selection();
+    }
+
     pub fn clear_selection(&self) {
         self.term.lock().clear_selection();
         self.dirty();
@@ -678,6 +732,43 @@ impl Drop for TerminalSession {
     }
 }
 
+/// Start and end columns of every match of `needle` (lowercase) in a row.
+fn find_in_row(row: &raptor_term::Row, needle: &[char]) -> Vec<(u16, u16)> {
+    // Each lowercase char of the row with the cell its grapheme starts at and covers.
+    let mut chars: Vec<(char, u16, u16)> = Vec::new();
+    let mut next = 0u16;
+    for run in &row.runs {
+        for c in next..run.col {
+            chars.push((' ', c, 1));
+        }
+        let (mut col, mut at) = (run.col, 0usize);
+        for (i, &w) in run.widths.iter().enumerate() {
+            let len = run.lens.get(i).map_or(1, |&l| l as usize);
+            let g = run.text.get(at..at + len).unwrap_or("");
+            for c in g.chars().flat_map(char::to_lowercase) {
+                chars.push((c, col, w.max(1) as u16));
+            }
+            at += len;
+            col += w.max(1) as u16;
+        }
+        next = col;
+    }
+    let mut out = Vec::new();
+    if chars.len() < needle.len() {
+        return out;
+    }
+    for i in 0..=chars.len() - needle.len() {
+        if chars[i..i + needle.len()].iter().map(|c| c.0).eq(needle.iter().copied()) {
+            let (_, col, _) = chars[i];
+            let (_, last, w) = chars[i + needle.len() - 1];
+            if out.last().is_none_or(|&(s, _)| s != col) {
+                out.push((col, last + w - 1));
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -696,5 +787,17 @@ mod tests {
         assert_eq!(t.foreground, Some(Rgb::new(0x10, 0x20, 0x30)));
         assert_eq!(t.cursor, Some(Rgb::new(0xaa, 0xbb, 0xcc)));
         assert_eq!(t.palette, [(1, Rgb::new(0xff, 0, 0))]);
+    }
+
+    #[test]
+    fn finds_in_rows() {
+        let mut t = Terminal::new(40, 3);
+        t.write_vt("ab Raptor 你好 raptor!\r\nnone".as_bytes());
+        let f = t.frame();
+        let q: Vec<char> = "raptor".chars().collect();
+        assert_eq!(find_in_row(&f.lines[0], &q), [(3, 8), (15, 20)], "case-insensitive, after wide chars");
+        let wide: Vec<char> = "你好".chars().collect();
+        assert_eq!(find_in_row(&f.lines[0], &wide), [(10, 13)]);
+        assert!(find_in_row(&f.lines[1], &q).is_empty());
     }
 }
