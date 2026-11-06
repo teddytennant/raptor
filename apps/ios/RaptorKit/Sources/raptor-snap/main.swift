@@ -51,7 +51,7 @@ func withSession<T>(_ model: RaptorModel, _ server: String, _ body: (String, Str
 }
 
 let demo = #"""
-printf '\e[1mRaptor on iOS\e[0m — rendered by Core Text\n\n'; printf '\e[1;35mbold\e[0m \e[3mitalic\e[0m \e[4:3mcurly\e[0m \e[9mstrike\e[0m \e[2mfaint\e[0m \e[7m inverse \e[0m\n'; printf 'wide: 中文字 🦔 ok\n'; printf '┌──────┬──────┐\n│ box  │ draw │\n├──────┼──────┤\n│ ▁▂▃▄ │ ▅▆▇█ │\n└──────┴──────┘\n'; for i in (seq 0 15); printf '\e[38;2;%d;%d;255m█' (math $i \* 16) (math 255 - $i \* 16); end; printf '\e[0m\n'; ls -la /etc | head -8
+printf '\033[1mRaptor on iOS\033[0m, rendered by Core Text\n\n'; printf '\033[1;35mbold\033[0m \033[3mitalic\033[0m \033[4:3mcurly\033[0m \033[9mstrike\033[0m \033[2mfaint\033[0m \033[7m inverse \033[0m\n'; printf 'wide: 中文字 🦔 ok\n'; printf '┌──────┬──────┐\n│ box  │ draw │\n├──────┼──────┤\n│ ▁▂▃▄ │ ▅▆▇█ │\n└──────┴──────┘\n'; printf '\033[30;44m main \033[34;42m\033[30m +3 \033[0;32m\033[0m   \n'; i=0; while [ $i -lt 16 ]; do printf '\033[38;2;%d;%d;255m█' $((i * 16)) $((255 - i * 16)); i=$((i + 1)); done; printf '\033[0m\n'; ls -la /etc | head -8
 """#
 
 @MainActor
@@ -67,6 +67,9 @@ func snapTerminal(_ address: String, _ out: String) {
         tc.takeControl()
         spin(10) { tc.status == .live }
         spin(1.5)
+        // The demo is POSIX sh, whatever the server's login shell is.
+        tc.terminal?.sendText(text: "exec sh\r")
+        spin(1)
         tc.terminal?.sendText(text: "clear; " + demo)
         tc.terminal?.sendKey(key: .enter, ctrl: false, alt: false, shift: false, meta: false)
         spin(3)
