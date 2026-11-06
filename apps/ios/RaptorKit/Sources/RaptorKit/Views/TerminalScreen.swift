@@ -14,6 +14,8 @@ public struct TerminalScreen: View {
     @State private var topInset: CGFloat = 0
     @State private var showPalette = false
     @State private var keyboard = false
+    @State private var find = FindModel()
+    @State private var findHeight: CGFloat = 0
     /// Windows that existed when we asked for a new one; the one that appears next is ours to show.
     @State private var windowsBeforeNew: Set<String>?
     #if os(iOS)
@@ -69,7 +71,7 @@ public struct TerminalScreen: View {
                 tiles(w, chrome: c, session: session)
             } else if let b = blockId {
                 LiveTerminal(serverId: serverId, sessionId: sessionId, blockId: b, theme: model.theme, chrome: c,
-                             insetTop: topInset, controller: slot(b),
+                             insetTop: topInset, insetBottom: findInset, controller: slot(b),
                              onSwipe: { swipe($0, session: session) }) { termColors = ($0, $1) }
                     .id(b)
                     .transition(.asymmetric(insertion: .move(edge: slideEdge), removal: .move(edge: slideEdge == .trailing ? .leading : .trailing)))
@@ -137,6 +139,14 @@ public struct TerminalScreen: View {
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
 
+            #if os(iOS)
+            if find.shown {
+                FindBar(find: find, terminal: controller?.terminal, onClose: closeFind)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { findHeight = $0 }
+                    .frame(maxHeight: .infinity, alignment: .bottom)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+            #endif
         }
         .environment(\.chrome, c)
         .tint(c.accent)
@@ -147,6 +157,7 @@ public struct TerminalScreen: View {
         #endif
         .onPreferenceChange(TopInsetKey.self) { topInset = $0 }
         .animation(.snappy(duration: 0.25), value: squat)
+        .animation(.snappy(duration: 0.25), value: find.shown)
         #if os(iOS)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboard = true }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboard = false }
@@ -177,6 +188,27 @@ public struct TerminalScreen: View {
 
     private var controller: TerminalController? { blockId.flatMap { controllers[$0] } }
 
+    /// Rows the find bar covers at the bottom of the screen.
+    private var findInset: CGFloat { find.shown ? findHeight : 0 }
+
+    private func openFind() {
+        #if os(iOS)
+        if !find.shown { find.typing = TerminalUIView.wantsKeyboard }
+        #endif
+        find.shown = true
+        find.request += 1
+    }
+
+    /// Hide the bar and hand the keyboard back to the terminal if it had it.
+    private func closeFind() {
+        find.shown = false
+        find.miss = false
+        controller?.terminal?.resetFind()
+        #if os(iOS)
+        if find.typing { TerminalUIView.wantsKeyboard = true }
+        #endif
+    }
+
     private func slot(_ id: String) -> Binding<TerminalController?> {
         Binding(get: { controllers[id] }, set: { controllers[id] = $0 })
     }
@@ -189,7 +221,7 @@ public struct TerminalScreen: View {
                 ForEach(w.blocks, id: \.id) { b in
                     let focused = b.id == blockId
                     LiveTerminal(serverId: serverId, sessionId: sessionId, blockId: b.id, theme: model.theme, chrome: c,
-                                 insetTop: 0, controller: slot(b.id), onSwipe: { cycleWindow($0, session: session) },
+                                 insetTop: 0, insetBottom: b.y + b.h > 0.99 ? findInset : 0, controller: slot(b.id), onSwipe: { cycleWindow($0, session: session) },
                                  focused: focused, onFocus: { if blockId != b.id { focus(b.id) } }) { termColors = ($0, $1) }
                         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -281,6 +313,10 @@ public struct TerminalScreen: View {
             toggleFit: { ctl?.toggleControl() },
             hasControl: ctl?.hasControl ?? false,
             palette: { showPalette = true },
+            find: openFind,
+            findStep: { older in
+                if find.shown { find.step(ctl?.terminal, older: older) } else { openFind() }
+            },
             sessions: onSessions,
             settings: onSettings
         )
@@ -301,6 +337,7 @@ public struct TerminalScreen: View {
             add("split-down", "Split Down", "rectangle.split.1x2") { Task { _ = try? await core.split(serverId: srv, sessionId: sid, blockId: b, vertical: true) } }
             add("close-pane", "Close Pane", "xmark.square") { closePane(b, session: session) }
         }
+        add("find", "Find…", "magnifyingglass", keywords: "search scrollback history") { openFind() }
         if let ctl = controller {
             add("fit", ctl.hasControl ? "Use Desktop Size" : "Fit to This Screen", "arrow.up.left.and.arrow.down.right", keywords: "resize size") { ctl.toggleControl() }
             #if os(iOS)
@@ -394,7 +431,7 @@ public struct TerminalScreen: View {
             }
 
             MoreMenu(serverId: serverId, sessionId: sessionId, blockId: blockId, controller: controller, onClosePane: { closePane($0, session: session) },
-                     onNewWindow: { newWindow(session) }) { showPalette = true }
+                     onNewWindow: { newWindow(session) }, onFind: openFind) { showPalette = true }
         }
         .padding(.horizontal, 12)
         .padding(.top, 4)
@@ -490,11 +527,13 @@ private struct MoreMenu: View {
     let controller: TerminalController?
     var onClosePane: (String) -> Void
     var onNewWindow: () -> Void
+    var onFind: () -> Void
     var onPalette: () -> Void
 
     var body: some View {
         Menu {
             Button("Command Palette", systemImage: "command", action: onPalette)
+            Button("Find…", systemImage: "magnifyingglass", action: onFind)
             Button("New Window", systemImage: "plus.square.on.square", action: onNewWindow)
             Divider()
             if let ctl = controller {
@@ -534,6 +573,161 @@ private struct MoreMenu: View {
     }
 }
 
+/// The find bar's query and result, kept while it's closed so it reopens as it was.
+@MainActor
+@Observable
+final class FindModel {
+    var shown = false
+    var query = ""
+    var miss = false
+    /// Bumped on each open, so the field takes the keyboard back.
+    var request = 0
+    /// The terminal had the keyboard when the bar opened.
+    var typing = false
+
+    func step(_ t: Terminal?, older: Bool) {
+        guard !query.isEmpty, let t else { return }
+        miss = !t.find(query: query, older: older)
+    }
+
+    /// The query changed: start over from the bottom of the view, looking upward.
+    func restart(_ t: Terminal?) {
+        t?.resetFind()
+        miss = false
+        step(t, older: true)
+    }
+}
+
+#if os(iOS)
+/// Find in the screen and history, upward as you type. It takes the key bar's
+/// place above the keyboard: Search looks older, Shift-Return newer, Esc closes.
+private struct FindBar: View {
+    let find: FindModel
+    let terminal: Terminal?
+    var onClose: () -> Void
+    @Environment(\.chrome) private var c
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(find.miss ? Palette.error : c.secondary)
+                .frame(width: 34)
+            FindField(find: find, chrome: c, onStep: { find.step(terminal, older: $0) }, onClose: onClose)
+            if find.miss {
+                Text("No match").font(.footnote).foregroundStyle(Palette.error).fixedSize().padding(.horizontal, 6)
+            }
+            Rectangle().fill(c.hairline).frame(width: 1, height: 22).padding(.horizontal, 2)
+            button("chevron.up", "Find older") { find.step(terminal, older: true) }
+            button("chevron.down", "Find newer") { find.step(terminal, older: false) }
+            button("xmark", "Close find", action: onClose)
+        }
+        .padding(.leading, 4)
+        .frame(height: 44)
+        .glass(RoundedRectangle(cornerRadius: 14, style: .continuous), c)
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Palette.error.opacity(find.miss ? 0.6 : 0), lineWidth: 1))
+        .padding(.horizontal, 6)
+        .padding(.top, 4)
+        .padding(.bottom, 6)
+        .onChange(of: find.query) { find.restart(terminal) }
+        .sensoryFeedback(.warning, trigger: find.miss) { _, miss in miss }
+    }
+
+    private func button(_ symbol: String, _ label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol).font(.system(size: 15, weight: .semibold)).foregroundStyle(c.text)
+                .frame(width: 42, height: 42).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+}
+
+/// A UIKit field, so Search can step without the keyboard going away.
+private struct FindField: UIViewRepresentable {
+    let find: FindModel
+    let chrome: Chrome
+    var onStep: (_ older: Bool) -> Void
+    var onClose: () -> Void
+
+    final class Field: UITextField {
+        var onNewer: (() -> Void)?
+        var onEscape: (() -> Void)?
+
+        /// Hardware Esc and Shift-Return, which the field would otherwise eat.
+        private func action(_ p: UIPress) -> (() -> Void)? {
+            guard let k = p.key else { return nil }
+            if k.keyCode == .keyboardEscape { return onEscape }
+            if [.keyboardReturnOrEnter, .keypadEnter].contains(k.keyCode), k.modifierFlags.contains(.shift) { return onNewer }
+            return nil
+        }
+
+        override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+            presses.forEach { action($0)?() }
+            let rest = presses.filter { action($0) == nil }
+            if !rest.isEmpty { super.pressesBegan(rest, with: event) }
+        }
+
+        override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+            let rest = presses.filter { action($0) == nil }
+            if !rest.isEmpty { super.pressesEnded(rest, with: event) }
+        }
+    }
+
+    final class Coordinator: NSObject, UITextFieldDelegate {
+        var parent: FindField
+        var request = 0
+        init(_ parent: FindField) { self.parent = parent }
+
+        @objc func edited(_ f: UITextField) { parent.find.query = f.text ?? "" }
+
+        func textFieldShouldReturn(_ f: UITextField) -> Bool {
+            parent.onStep(true)
+            return false
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeUIView(context: Context) -> Field {
+        let f = Field()
+        f.font = .preferredFont(forTextStyle: .body)
+        f.adjustsFontForContentSizeCategory = true
+        f.returnKeyType = .search
+        f.autocapitalizationType = .none
+        f.autocorrectionType = .no
+        f.spellCheckingType = .no
+        f.smartQuotesType = .no
+        f.smartDashesType = .no
+        f.clearButtonMode = .whileEditing
+        f.accessibilityLabel = "Find"
+        f.delegate = context.coordinator
+        f.addTarget(context.coordinator, action: #selector(Coordinator.edited(_:)), for: .editingChanged)
+        f.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        f.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return f
+    }
+
+    func updateUIView(_ f: Field, context: Context) {
+        context.coordinator.parent = self
+        if f.text != find.query { f.text = find.query }
+        f.textColor = UIColor(find.miss ? Palette.error : chrome.text)
+        f.tintColor = UIColor(chrome.accent)
+        f.keyboardAppearance = chrome.scheme == .dark ? .dark : .light
+        f.attributedPlaceholder = NSAttributedString(string: "Find in terminal", attributes: [.foregroundColor: UIColor(chrome.tertiary)])
+        f.onNewer = { onStep(false) }
+        f.onEscape = onClose
+        if context.coordinator.request != find.request {
+            context.coordinator.request = find.request
+            DispatchQueue.main.async {
+                guard f.becomeFirstResponder() else { return }
+                f.selectedTextRange = f.textRange(from: f.beginningOfDocument, to: f.endOfDocument)
+            }
+        }
+    }
+}
+#endif
+
 /// One live terminal plus its status pill.
 struct LiveTerminal: View {
     @Environment(RaptorModel.self) private var model
@@ -543,6 +737,7 @@ struct LiveTerminal: View {
     let theme: ThemeSpec
     let chrome: Chrome
     let insetTop: CGFloat
+    var insetBottom: CGFloat = 0
     @Binding var controller: TerminalController?
     var onSwipe: (Int) -> Void
     var focused = true
@@ -553,7 +748,7 @@ struct LiveTerminal: View {
     var body: some View {
         ZStack {
             if let ctl = own {
-                TerminalSurface(controller: ctl, fontSize: fontSize, chrome: chrome, insetTop: insetTop,
+                TerminalSurface(controller: ctl, fontSize: fontSize, chrome: chrome, insetTop: insetTop, insetBottom: insetBottom,
                                 appearance: TerminalAppearance(model), onColors: onColors, onSwipe: onSwipe, focused: focused, onFocus: onFocus) {
                     model.core.setSetting(key: "font_size", value: String(Double($0)))
                 }
@@ -596,6 +791,7 @@ struct TerminalSurface: UIViewRepresentable {
     let fontSize: CGFloat
     let chrome: Chrome
     let insetTop: CGFloat
+    let insetBottom: CGFloat
     let appearance: TerminalAppearance
     var onColors: (UInt32, UInt32) -> Void
     var onSwipe: (Int) -> Void
@@ -621,6 +817,7 @@ struct TerminalSurface: UIViewRepresentable {
         }
         v.chrome = chrome
         v.insetTop = insetTop
+        v.insetBottom = insetBottom
         v.onColors = onColors
         v.onSwipePane = onSwipe
         v.onFocus = onFocus
@@ -634,6 +831,7 @@ struct TerminalSurface: NSViewRepresentable {
     let fontSize: CGFloat
     let chrome: Chrome
     let insetTop: CGFloat
+    let insetBottom: CGFloat
     let appearance: TerminalAppearance
     var onColors: (UInt32, UInt32) -> Void
     var onSwipe: (Int) -> Void
@@ -696,6 +894,8 @@ public struct TerminalActions {
     var toggleFit: () -> Void
     var hasControl: Bool
     var palette: () -> Void
+    var find: () -> Void
+    var findStep: (_ older: Bool) -> Void
     var sessions: (() -> Void)?
     var settings: (() -> Void)?
 }
@@ -753,6 +953,10 @@ public struct TerminalMenuCommands: Commands {
         Button("Actual Size") { actions?.fontStep(0) }.keyboardShortcut("0")
         Button(actions?.hasControl == true ? "Use Desktop Size" : "Fit to This Screen") { actions?.toggleFit() }
             .keyboardShortcut("r", modifiers: [.command, .shift])
+        Divider()
+        Button("Find…") { actions?.find() }.keyboardShortcut("f")
+        Button("Find Next") { actions?.findStep(false) }.keyboardShortcut("g")
+        Button("Find Previous") { actions?.findStep(true) }.keyboardShortcut("g", modifiers: [.command, .shift])
         Divider()
         Button("Sessions…") { actions?.sessions?() }.keyboardShortcut("o").disabled(actions?.sessions == nil)
         Button("Command Palette…") { actions?.palette() }.keyboardShortcut("k")

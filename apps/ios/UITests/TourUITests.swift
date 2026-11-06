@@ -276,6 +276,88 @@ final class TourUITests: XCTestCase {
         shot("hw-closed")
     }
 
+    /// Find in scrollback: from the ⋯ menu, ⌘F/⌘G and the palette, then in landscape.
+    /// RAPTOR_FIND names a word the session's history has at least twice.
+    func testFind() throws {
+        open(env["RAPTOR_TEST_SESSION"] ?? "raptor-demo")
+        XCTAssertTrue(app.textViews["Terminal"].firstMatch.waitForExistence(timeout: 15))
+        sleep(2)
+        func item(_ name: String) -> XCUIElement { app.descendants(matching: .any).matching(identifier: name).firstMatch }
+        app.buttons["More"].tap()
+        XCTAssertTrue(item("Find…").waitForExistence(timeout: 3))
+        item("Find…").tap()
+        let field = app.textFields["Find"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        sleep(1)
+        app.typeText(env["RAPTOR_FIND"] ?? "needle")
+        sleep(1)
+        shot("find-typed")
+        app.typeText("\n")
+        sleep(1)
+        shot("find-older")
+        app.typeText("\n")
+        sleep(1)
+        XCTAssertTrue(app.staticTexts["No match"].exists)
+        shot("find-no-more")
+        app.buttons["Find newer"].tap()
+        sleep(1)
+        XCTAssertFalse(app.staticTexts["No match"].exists)
+        shot("find-newer")
+        app.buttons["Close find"].tap()
+        sleep(1)
+        XCTAssertFalse(field.exists)
+        shot("find-closed")
+
+        // With a hardware keyboard the terminal has the keyboard, and gets it back on close.
+        app.textViews["Terminal"].firstMatch.tap()
+        sleep(2)
+        app.typeKey("f", modifierFlags: .command)
+        // The simulator can drop the first hardware key after the soft keyboard comes up.
+        if !field.waitForExistence(timeout: 2) { app.typeKey("f", modifierFlags: .command) }
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        sleep(1)
+        app.typeKey("g", modifierFlags: [.command, .shift])
+        sleep(1)
+        shot("find-hw-older")
+        app.typeKey("g", modifierFlags: .command)
+        sleep(1)
+        XCTAssertTrue(app.staticTexts["No match"].exists)
+        app.typeText("zzzq")
+        sleep(1)
+        XCTAssertTrue(app.staticTexts["No match"].exists)
+        shot("find-hw-miss")
+        app.buttons["Close find"].tap()
+        sleep(1)
+        XCTAssertFalse(field.exists)
+        shot("find-hw-closed")
+
+        app.buttons["More"].tap()
+        item("Command Palette").tap()
+        let search = app.searchFields.firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 3))
+        search.tap()
+        search.typeText("find")
+        let find = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Find…'")).firstMatch
+        XCTAssertTrue(find.waitForExistence(timeout: 3))
+        find.tap()
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        sleep(2)
+        shot("find-palette")
+        XCUIDevice.shared.orientation = .landscapeLeft
+        sleep(2)
+        app.typeText(env["RAPTOR_FIND"] ?? "needle")
+        sleep(1)
+        shot("find-landscape")
+        app.typeText("\n")
+        sleep(1)
+        shot("find-landscape-older")
+        XCUIDevice.shared.orientation = .portrait
+        sleep(2)
+        app.buttons["Close find"].tap()
+        sleep(1)
+        shot("find-done")
+    }
+
     /// Answer an agent from the Needs-you inbox without opening its terminal.
     func testInboxReply() throws {
         app.launchEnvironment["RAPTOR_OPEN"] = nil
