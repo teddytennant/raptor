@@ -167,6 +167,7 @@ public final class TerminalUIView: UIView, UITextInputTraits, UIGestureRecognize
         o.focused = isFirstResponder
         o.cursorVisible = blinkOn || !isFirstResponder || !cursorBlinks
         o.cursorShape = cursorShape
+        o.preedit = kb.marked
         renderer.draw(f, in: ctx, size: bounds.size, options: o)
     }
 
@@ -193,6 +194,15 @@ public final class TerminalUIView: UIView, UITextInputTraits, UIGestureRecognize
                         cellWidthPx: UInt32((renderer.metrics.width * s).rounded()), cellHeightPx: UInt32((renderer.metrics.height * s).rounded()))
     }
 
+    /// The cursor cell in view coordinates.
+    func cursorRect() -> CGRect {
+        let s = scale, m = renderer.metrics
+        let c = frameCache?.cursor
+        let col = CGFloat(c?.col ?? 0), row = CGFloat(c?.row ?? 0)
+        return CGRect(x: padding - panX + col * m.width * s, y: insetTop - offsetY() + padding + row * m.height * s,
+                      width: m.width * s, height: m.height * s)
+    }
+
     private func cell(at p: CGPoint) -> (Int, Int) {
         let s = scale
         let col = Int((p.x - padding + panX) / s / renderer.metrics.width)
@@ -204,6 +214,7 @@ public final class TerminalUIView: UIView, UITextInputTraits, UIGestureRecognize
     // MARK: gestures
 
     @objc private func onTap(_ g: UITapGestureRecognizer) {
+        resetKeyboardDocument()
         if selecting || controller.terminal?.selectionText() != nil {
             controller.terminal?.clearSelection()
             selecting = false
@@ -418,6 +429,7 @@ public final class TerminalUIView: UIView, UITextInputTraits, UIGestureRecognize
     }
 
     public override func resignFirstResponder() -> Bool {
+        resetKeyboardDocument()
         let r = super.resignFirstResponder()
         setNeedsDisplay()
         return r
@@ -431,40 +443,65 @@ public final class TerminalUIView: UIView, UITextInputTraits, UIGestureRecognize
     public var smartDashesType: UITextSmartDashesType = .no
     public var smartInsertDeleteType: UITextSmartInsertDeleteType = .no
     public var keyboardAppearance: UIKeyboardAppearance = .dark
-    public var keyboardType: UIKeyboardType = .asciiCapable
+    public var keyboardType: UIKeyboardType = .default
     public var returnKeyType: UIReturnKeyType = .default
     public var inlinePredictionType: UITextInlinePredictionType = .no
 
     public func insertText(_ text: String) {
+        // An IME's chosen candidate replaces its composition.
+        kb.marked = ""
+        commit(kb.committed + text)
+    }
+
+    public func deleteBackward() {
+        if !kb.committed.isEmpty { kb.committed.removeLast() }
+        sendKey(.backspace)
+    }
+
+    /// Typed text to the terminal: newlines become Enter, and a sticky ctrl or
+    /// alt from the key bar applies to the first character.
+    func type(_ text: String) {
         guard let t = controller.terminal else { return }
         for (i, part) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
-            if i > 0 { send(.enter) }
+            if i > 0 {
+                sendKey(.enter)
+                DispatchQueue.main.async { [weak self] in self?.resetKeyboardDocument() }
+            }
             guard !part.isEmpty else { continue }
             let (ctrl, alt) = modifiers.consume()
             if ctrl || alt {
-                send(.char(c: String(part.prefix(1))), ctrl: ctrl, alt: alt)
+                sendKey(.char(c: String(part.prefix(1))), ctrl: ctrl, alt: alt)
                 if part.count > 1 { t.sendText(text: String(part.dropFirst())) }
+                DispatchQueue.main.async { [weak self] in self?.resetKeyboardDocument() }
             } else {
                 t.sendText(text: String(part))
             }
+            keyBar.refresh()
         }
     }
 
-    public func deleteBackward() { send(.backspace) }
-
+    /// A key from the key bar or a hardware keyboard: the keyboard's document
+    /// no longer matches the line, so start a new one.
     func send(_ k: Key, ctrl: Bool = false, alt: Bool = false, shift: Bool = false, meta: Bool = false) {
+        resetKeyboardDocument()
+        sendKey(k, ctrl: ctrl, alt: alt, shift: shift, meta: meta)
+    }
+
+    private func sendKey(_ k: Key, ctrl: Bool = false, alt: Bool = false, shift: Bool = false, meta: Bool = false) {
         let (sc, sa) = (ctrl || alt) ? (false, false) : modifiers.consume()
         controller.terminal?.sendKey(key: k, ctrl: ctrl || sc, alt: alt || sa, shift: shift, meta: meta)
         keyBar.refresh()
     }
 
     func sendLiteral(_ s: String) {
+        resetKeyboardDocument()
         let (c, a) = modifiers.consume()
         if c || a { controller.terminal?.sendKey(key: .char(c: s), ctrl: c, alt: a, shift: false, meta: false) } else { controller.terminal?.sendText(text: s) }
         keyBar.refresh()
     }
 
     public override func paste(_ sender: Any?) {
+        resetKeyboardDocument()
         if let s = UIPasteboard.general.string { controller.terminal?.paste(text: s) }
     }
 

@@ -84,6 +84,8 @@ public final class TerminalRenderer {
         public var cursorVisible = true
         /// Forced cursor shape from Settings; nil follows the program.
         public var cursorShape: CursorShape?
+        /// Text an input method is still composing, drawn at the cursor.
+        public var preedit = ""
         public init() {}
     }
 
@@ -116,7 +118,9 @@ public final class TerminalRenderer {
             }
         }
 
-        if let c = frame.cursor, o.cursorVisible, frame.scrollOffset + frame.scrollLen >= frame.scrollTotal {
+        if let c = frame.cursor, !o.preedit.isEmpty {
+            drawPreedit(o.preedit, at: c, frame: frame, in: ctx)
+        } else if let c = frame.cursor, o.cursorVisible, frame.scrollOffset + frame.scrollLen >= frame.scrollTotal {
             drawCursor(c, frame: frame, in: ctx, focused: o.focused, shape: o.cursorShape ?? c.shape)
         }
         ctx.restoreGState()
@@ -325,6 +329,29 @@ public final class TerminalRenderer {
         }
     }
 
+    /// An IME composition: underlined over the cells it will take, with a caret
+    /// after it. Shifted left if it would run past the right edge.
+    private func drawPreedit(_ text: String, at c: Cursor, frame: Frame, in ctx: CGContext) {
+        let m = metrics
+        let cells = cellCount(text)
+        let col = max(0, min(Int(c.col), Int(frame.cols) - cells))
+        let top = CGFloat(c.row) * m.height
+        var x = CGFloat(col) * m.width
+        let width = CGFloat(cells) * m.width
+        ctx.setFillColor(cg(frame.background))
+        ctx.fill(CGRect(x: x, y: top, width: width, height: m.height))
+        let fg = cg(frame.foreground)
+        let baseline = top + (m.height - (m.ascent + m.descent)) / 2 + m.ascent
+        for g in text {
+            let w = CGFloat(cellWidth(g)) * m.width
+            drawText(String(g), font: fonts[0], color: fg, x: x, baseline: baseline, in: ctx, fitWidth: w)
+            x += w
+        }
+        ctx.setFillColor(fg)
+        ctx.fill(CGRect(x: CGFloat(col) * m.width, y: top + m.height - 1.5, width: width, height: 1))
+        ctx.fill(CGRect(x: x, y: top, width: 2, height: m.height))
+    }
+
     private func graphemeIndex(_ widths: Data, _ cellOffset: Int) -> Int {
         var c = 0
         for (i, w) in widths.enumerated() {
@@ -335,6 +362,22 @@ public final class TerminalRenderer {
     }
 }
 
+/// Cells a string takes on the grid (East Asian wide characters and emoji take two).
+func cellCount(_ s: String) -> Int {
+    s.reduce(0) { $0 + cellWidth($1) }
+}
+
+func cellWidth(_ c: Character) -> Int {
+    guard let v = c.unicodeScalars.first else { return 1 }
+    if v.properties.isEmojiPresentation { return 2 }
+    switch v.value {
+    case 0x1100...0x115F, 0x2E80...0x303E, 0x3041...0x33FF, 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xA000...0xA4CF,
+         0xAC00...0xD7A3, 0xF900...0xFAFF, 0xFE30...0xFE4F, 0xFF00...0xFF60, 0xFFE0...0xFFE6, 0x20000...0x3FFFD:
+        return 2
+    default:
+        return 1
+    }
+}
 func cg(_ argb: UInt32) -> CGColor {
     CGColor(srgbRed: CGFloat((argb >> 16) & 0xFF) / 255, green: CGFloat((argb >> 8) & 0xFF) / 255, blue: CGFloat(argb & 0xFF) / 255, alpha: 1)
 }

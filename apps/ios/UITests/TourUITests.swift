@@ -77,6 +77,43 @@ final class TourUITests: XCTestCase {
         shot("term-scrolled")
     }
 
+    /// Run with a Japanese Romaji keyboard as the simulator's only keyboard.
+    func testJapaneseInput() throws {
+        open(env["RAPTOR_TEST_SESSION"] ?? "raptor-demo")
+        let terminal = app.textViews["Terminal"]
+        XCTAssertTrue(terminal.waitForExistence(timeout: 15))
+        terminal.tap()
+        sleep(2)
+        // typeText skips the input method, so tap the keys.
+        for ch in "nihongo" { app.keys[String(ch)].tap() }
+        sleep(2)
+        shot("ime-composing")
+        app.keyboards.buttons.allElementsBoundByIndex.last?.tap()
+        sleep(2)
+        shot("ime-committed")
+        app.typeText("\n")
+        sleep(2)
+        shot("ime-ran")
+    }
+
+    /// Quotes and dashes typed on the keyboard must reach the shell as ASCII.
+    func testNoSmartPunctuation() throws {
+        open(env["RAPTOR_TEST_SESSION"] ?? "raptor-demo")
+        let terminal = app.textViews["Terminal"]
+        XCTAssertTrue(terminal.waitForExistence(timeout: 15))
+        terminal.tap()
+        sleep(2)
+        app.keys["more"].tap()
+        for k in ["\"", "a", "\"", "-", "-", "'", "b", "'"] {
+            let key = app.keys[k]
+            if key.exists { key.tap() } else { app.keys["more"].tap(); app.keys[k].tap(); app.keys["more"].tap() }
+        }
+        sleep(1)
+        shot("punctuation")
+        app.typeText("\n")
+        sleep(1)
+    }
+
     func testOtherSessions() throws {
         for s in ["api", "monitor", "editor", "build"] {
             open(s)
