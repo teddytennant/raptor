@@ -540,7 +540,7 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
 
     /** Draw box-drawing, block and braille characters as geometry so they join seamlessly. */
     private fun drawBoxChar(canvas: Canvas, cp: Int, x: Float, top: Float, w: Int): Boolean {
-        if (cp !in 0x2500..0x259F && cp !in 0x2800..0x28FF && cp !in 0xE0B0..0xE0B3) return false
+        if (cp !in 0x2500..0x259F && cp !in 0x2800..0x28FF && cp !in 0xE0B0..0xE0BF) return false
         val cw = cellW * w
         val cx = x + cw / 2
         val cy = top + cellH / 2
@@ -590,6 +590,39 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
                 // Powerline separators, full cell height so prompts join without seams.
                 boxPath.reset()
                 if (cp < 0xE0B2) { boxPath.moveTo(x, top); boxPath.lineTo(r, cy); boxPath.lineTo(x, b) } else { boxPath.moveTo(r, top); boxPath.lineTo(x, cy); boxPath.lineTo(r, b) }
+                line.color = fill.color
+                line.strokeWidth = t
+                line.style = if (cp % 2 == 0) Paint.Style.FILL else Paint.Style.STROKE
+                if (cp % 2 == 0) boxPath.close()
+                canvas.drawPath(boxPath, line)
+            }
+            in 0xE0B4..0xE0B7 -> {
+                // Rounded caps: half an ellipse the height of the cell.
+                boxPath.reset()
+                if (cp < 0xE0B6) {
+                    boxPath.moveTo(x, top)
+                    boxPath.arcTo(x - cw, top, r, b, -90f, 180f, false)
+                } else {
+                    boxPath.moveTo(r, b)
+                    boxPath.arcTo(x, top, r + cw, b, 90f, 180f, false)
+                }
+                line.color = fill.color
+                line.strokeWidth = t
+                line.style = if (cp % 2 == 0) Paint.Style.FILL else Paint.Style.STROKE
+                if (cp % 2 == 0) boxPath.close()
+                canvas.drawPath(boxPath, line)
+            }
+            in 0xE0B8..0xE0BF -> {
+                // Slanted separators: filled triangles, or their diagonal on the odd code points.
+                boxPath.reset()
+                when (cp) {
+                    0xE0B8 -> { boxPath.moveTo(x, top); boxPath.lineTo(r, b); boxPath.lineTo(x, b) }
+                    0xE0BA -> { boxPath.moveTo(r, top); boxPath.lineTo(r, b); boxPath.lineTo(x, b) }
+                    0xE0BC -> { boxPath.moveTo(x, top); boxPath.lineTo(r, top); boxPath.lineTo(x, b) }
+                    0xE0BE -> { boxPath.moveTo(x, top); boxPath.lineTo(r, top); boxPath.lineTo(r, b) }
+                    0xE0B9, 0xE0BF -> { boxPath.moveTo(x, top); boxPath.lineTo(r, b) }
+                    else -> { boxPath.moveTo(r, top); boxPath.lineTo(x, b) }
+                }
                 line.color = fill.color
                 line.strokeWidth = t
                 line.style = if (cp % 2 == 0) Paint.Style.FILL else Paint.Style.STROKE
