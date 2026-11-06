@@ -2,45 +2,27 @@ import AppKit
 import RaptorKit
 import SwiftUI
 
-/// A Raptor window: servers, sessions and the Needs You inbox in the sidebar,
-/// the session's tabs and panes on the right.
+/// A Raptor window: the session switcher and tabs in the title bar, the
+/// session's panes below.
 struct MainView: View {
     @Environment(AppModel.self) private var app
     @Environment(RaptorModel.self) private var model
     @State private var ws: Workspace?
     @SceneStorage("server") private var savedServer = ""
     @SceneStorage("session") private var savedSession = ""
-    @SceneStorage("sidebar") private var sidebarShown = true
-    @State private var columns = NavigationSplitViewVisibility.all
     @State private var editing: Server?
 
     var body: some View {
         let chrome = Chrome(model.theme)
-        NavigationSplitView(columnVisibility: $columns) {
+        VStack(spacing: 0) {
             if let ws {
-                Sidebar(ws: ws, onAddServer: { ws.addingServer = true }, onEditServer: { editing = $0 })
-                    .navigationSplitViewColumnWidth(min: 200, ideal: 250, max: 380)
-            }
-        } detail: {
-            if let ws {
+                TitleBar(ws: ws, onEditServer: { editing = $0 })
                 Detail(ws: ws, onAddServer: { ws.addingServer = true })
             }
         }
+        .ignoresSafeArea(.container, edges: .top)
+        .background(chrome.outer)
         .navigationTitle(ws?.session?.label ?? "Raptor")
-        .navigationSubtitle(ws?.server.map(serverTitle) ?? "")
-        .toolbar {
-            if let ws, ws.session != nil {
-                ToolbarItemGroup(placement: .primaryAction) {
-                    Button { ws.split(vertical: false) } label: { Label("Split Right", systemImage: "rectangle.split.2x1") }
-                        .help("Split right (⌘D)")
-                    Button { ws.split(vertical: true) } label: { Label("Split Down", systemImage: "rectangle.split.1x2") }
-                        .help("Split down (⇧⌘D)")
-                    Button { ws.paletteShown.toggle() } label: { Label("Commands", systemImage: "command") }
-                        .help("Command palette (⇧⌘P)")
-                }
-            }
-        }
-        .toolbarBackground(chrome.bg, for: .windowToolbar)
         .preferredColorScheme(chrome.scheme)
         .tint(chrome.accent)
         .environment(\.chrome, chrome)
@@ -48,7 +30,7 @@ struct MainView: View {
             guard let ws else { return }
             ws.window = window
             window.tabbingMode = .disallowed
-            window.backgroundColor = NSColor(cgColor: cgColor(0xFF00_0000 | chrome.bgHex))
+            window.backgroundColor = NSColor(cgColor: cgColor(0xFF00_0000 | chrome.outerHex))
         })
         .onAppear(perform: start)
         .onChange(of: model.state) { _, _ in
@@ -59,7 +41,6 @@ struct MainView: View {
             savedSession = id ?? ""
             savedServer = ws?.serverId ?? ""
         }
-        .onChange(of: columns) { _, c in sidebarShown = c != .detailOnly }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { n in
             if let ws, (n.object as? NSWindow) === ws.window { app.current = ws }
         }
@@ -74,7 +55,6 @@ struct MainView: View {
             ws = w
             app.current = w
         }
-        columns = sidebarShown ? .all : .detailOnly
         restoreIfNeeded()
     }
 
@@ -138,12 +118,11 @@ private struct Detail: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            chrome.bg.ignoresSafeArea()
-            if model.state.servers.isEmpty {
-                Welcome(onAddServer: onAddServer)
-            } else if let srv = ws.server, let s = ws.session, let w = s.activeWindow {
-                VStack(spacing: 0) {
-                    TabStrip(ws: ws, session: s)
+            ZStack(alignment: .top) {
+                chrome.bg
+                if model.state.servers.isEmpty {
+                    Welcome(onAddServer: onAddServer)
+                } else if let srv = ws.server, let s = ws.session, let w = s.activeWindow {
                     ZStack(alignment: .top) {
                         PaneArea(ws: ws, window: w, focusedId: ws.focusedBlockId, chrome: chrome, version: ws.layoutVersion)
                         if !srv.connectivity.isOnline {
@@ -156,18 +135,21 @@ private struct Detail: View {
                                 .padding(.top, 8).padding(.trailing, 14)
                         }
                     }
+                } else if let srv = ws.server, !srv.connectivity.isOnline {
+                    ServerStatusView(server: srv)
+                } else if let s = ws.session {
+                    EmptySession(ws: ws, session: s)
+                } else {
+                    Placeholder(ws: ws)
                 }
-            } else if let srv = ws.server, !srv.connectivity.isOnline {
-                ServerStatusView(server: srv)
-            } else if let s = ws.session {
-                EmptySession(ws: ws, session: s)
-            } else {
-                Placeholder(ws: ws)
             }
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(chrome.hairline))
+            .padding([.horizontal, .bottom], 6)
             if ws.paletteShown {
                 Color.black.opacity(0.001).onTapGesture { ws.paletteShown = false }
                 CommandPaletteView(ws: ws)
-                    .padding(.top, 70)
+                    .padding(.top, 28)
             }
         }
     }
@@ -200,7 +182,7 @@ private struct Placeholder: View {
         VStack(spacing: 10) {
             Image(systemName: "rectangle.stack").font(.system(size: 36, weight: .light)).foregroundStyle(c.tertiary)
             Text("No session open").font(.title3.weight(.semibold)).foregroundStyle(c.text)
-            Text("Pick a session in the sidebar, or start a new one.").foregroundStyle(c.secondary)
+            Text("Pick one with ⌘O, or start a new one.").foregroundStyle(c.secondary)
             if model.state.servers.contains(where: { $0.connectivity.isOnline }) {
                 Button("New Session") { ws.newSession() }.padding(.top, 4)
             }
@@ -276,92 +258,6 @@ private struct ConnectionBanner: View {
         .background(.regularMaterial, in: Capsule())
         .overlay(Capsule().strokeBorder(c.glassStroke))
         .shadow(color: .black.opacity(0.25), radius: 10, y: 4)
-    }
-}
-
-// MARK: - tabs
-
-/// The session's Rex windows as tabs.
-private struct TabStrip: View {
-    let ws: Workspace
-    let session: Session
-    @Environment(\.chrome) private var c
-
-    var body: some View {
-        HStack(spacing: 0) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 2) {
-                    ForEach(Array(session.windows.enumerated()), id: \.element.id) { i, w in
-                        TabItem(ws: ws, window: w, index: i, active: w.id == session.activeWindow?.id, single: session.windows.count == 1)
-                    }
-                }
-                .padding(.horizontal, 6)
-            }
-            Button { ws.newTab() } label: {
-                Image(systemName: "plus").font(.system(size: 12, weight: .medium)).frame(width: 28, height: 24)
-            }
-            .buttonStyle(.borderless)
-            .foregroundStyle(c.secondary)
-            .help("New tab (⌘T)")
-            .padding(.trailing, 6)
-        }
-        .frame(height: 34)
-        .background(c.surface)
-        .overlay(alignment: .bottom) { Rectangle().fill(c.hairline).frame(height: 1) }
-    }
-}
-
-private struct TabItem: View {
-    let ws: Workspace
-    let window: RexWindow
-    let index: Int
-    let active: Bool
-    let single: Bool
-    @Environment(\.chrome) private var c
-    @State private var hover = false
-
-    private var agent: AgentState? { window.blocks.compactMap { $0.agent?.state }.max { $0.rank < $1.rank } }
-
-    var body: some View {
-        HStack(spacing: 6) {
-            if let a = agent {
-                Circle().fill(Palette.agent(a)).frame(width: 7, height: 7)
-            } else {
-                Text(glyph(window.blocks.first { $0.id == window.focusedBlockId } ?? window.blocks.first))
-                    .font(.system(size: 10, weight: .bold, design: .monospaced)).foregroundStyle(active ? c.accent : c.tertiary)
-            }
-            Text(tabTitle(window)).font(.system(size: 12, weight: active ? .semibold : .regular)).lineLimit(1)
-                .foregroundStyle(active ? c.text : c.secondary)
-            if window.blocks.count > 1 {
-                Text("\(window.blocks.count)").font(.system(size: 10, weight: .medium)).foregroundStyle(c.tertiary)
-            }
-            if index < 9 {
-                Text("⌘\(index + 1)").font(.system(size: 10)).foregroundStyle(c.tertiary).opacity(hover || active ? 1 : 0)
-            }
-            Button { ws.closeTab(window.id) } label: {
-                Image(systemName: "xmark").font(.system(size: 8.5, weight: .bold)).frame(width: 14, height: 14)
-            }
-            .buttonStyle(.borderless)
-            .foregroundStyle(c.secondary)
-            .opacity(hover ? 1 : 0)
-            .help("Close tab")
-        }
-        .padding(.leading, 10).padding(.trailing, 6)
-        .frame(height: 26)
-        .frame(minWidth: 90, maxWidth: 220)
-        .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(active ? c.raised : hover ? c.raised.opacity(0.5) : .clear))
-        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(active ? c.glassStroke : .clear))
-        .contentShape(Rectangle())
-        .onTapGesture { ws.selectTab(window.id) }
-        .onHover { hover = $0 }
-        .contextMenu {
-            Button("Rename Tab…") { ws.renameTab(window.id) }
-            Button("New Tab") { ws.newTab() }
-            Divider()
-            Button("Close Tab", role: .destructive) { ws.closeTab(window.id) }
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(active ? [.isButton, .isSelected] : .isButton)
     }
 }
 

@@ -12,6 +12,9 @@ final class Workspace {
     private(set) var serverId: String?
     private(set) var sessionId: String?
     var paletteShown = false
+    var pickerShown = false
+    var inboxShown = false
+    var fullScreen = false
     var findShown = false
     var findQuery = ""
     var findMiss = false

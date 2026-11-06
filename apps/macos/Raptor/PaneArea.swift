@@ -33,6 +33,9 @@ final class PaneContainerView: NSView {
         self.ws = ws
         super.init(frame: .zero)
         wantsLayer = true
+        layer?.cornerRadius = 10
+        layer?.cornerCurve = .continuous
+        layer?.masksToBounds = true
     }
 
     @available(*, unavailable)

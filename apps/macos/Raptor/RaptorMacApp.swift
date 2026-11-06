@@ -16,7 +16,7 @@ struct RaptorMacApp: App {
                 .frame(minWidth: 520, minHeight: 320)
         }
         .defaultSize(width: 1180, height: 760)
-        .windowToolbarStyle(.unified(showsTitle: true))
+        .windowStyle(.hiddenTitleBar)
         .commands { RaptorCommands(app: app) }
 
         Settings {
@@ -40,8 +40,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         DispatchQueue.main.async {
             // Raptor has no text formatting; drop the empty Format menu SwiftUI leaves behind.
             if let m = NSApp.mainMenu, let i = m.items.firstIndex(where: { $0.title == "Format" }) { m.removeItem(at: i) }
-            // NavigationSplitView files a second sidebar toggle under Help; View already has one.
-            if let help = NSApp.mainMenu?.items.last?.submenu, let i = help.items.firstIndex(where: { $0.title == "Toggle Sidebar" }) { help.removeItem(at: i) }
         }
         #if DEBUG
         Automation.start()

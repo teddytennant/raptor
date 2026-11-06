@@ -10,7 +10,6 @@ struct RaptorCommands: Commands {
 
     var body: some Commands {
         let _ = app.openMainWindow = { openWindow(id: "main") }
-        SidebarCommands()
         CommandGroup(replacing: .appInfo) {
             Button("About Raptor") { showAbout() }
         }
@@ -20,6 +19,9 @@ struct RaptorCommands: Commands {
             Button("New Session") { ws?.newSession() }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
             Button("Add Server…") { ws?.addingServer = true }
+            Divider()
+            Button("Switch Session…") { ws?.pickerShown.toggle() }
+                .keyboardShortcut("o")
             Divider()
             Button("Split Right") { ws?.split(vertical: false) }
                 .keyboardShortcut("d")
@@ -55,6 +57,8 @@ struct RaptorCommands: Commands {
         CommandGroup(after: .toolbar) {
             Button("Command Palette…") { ws?.paletteShown.toggle() }
                 .keyboardShortcut("p", modifiers: [.command, .shift])
+            Button("Needs You…") { ws?.inboxShown.toggle() }
+                .keyboardShortcut("i", modifiers: [.command, .shift])
             Button("Zoom Pane") { ws?.toggleZoom() }
                 .keyboardShortcut(.return, modifiers: [.command, .shift])
             Divider()

@@ -154,6 +154,9 @@ public struct Chrome: Equatable, Sendable {
     public var secondary: Color { Color(hex: blend(textHex | 0xFF00_0000, bgHex | 0xFF00_0000, 0.38) & 0xFFFFFF) }
     public var tertiary: Color { Color(hex: blend(textHex | 0xFF00_0000, bgHex | 0xFF00_0000, 0.58) & 0xFFFFFF) }
     public var scheme: ColorScheme { light ? .light : .dark }
+    /// A shade darker than the terminals: the title bar and the margin the panes sit in.
+    public var outerHex: UInt32 { blend(bgHex | 0xFF00_0000, 0xFF00_0000, light ? 0.06 : 0.3) & 0xFFFFFF }
+    public var outer: Color { Color(hex: outerHex) }
 }
 
 private struct ChromeKey: EnvironmentKey {
