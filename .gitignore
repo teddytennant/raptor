@@ -18,3 +18,4 @@ apps/ios/Raptor.xcodeproj/
 apps/macos/RaptorMac.xcodeproj/
 xcuserdata/
 DerivedData/
+/result
