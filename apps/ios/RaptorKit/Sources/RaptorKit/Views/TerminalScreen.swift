@@ -82,6 +82,7 @@ public struct TerminalScreen: View {
                 } actions: {
                     Button("New Window") { newWindow(session) }
                         .buttonStyle(.borderedProminent)
+                        .foregroundStyle(c.bg)
                     Button("End Session", role: .destructive) {
                         Task { try? await model.core.destroySession(serverId: serverId, sessionId: sessionId) }
                     }
@@ -94,7 +95,7 @@ public struct TerminalScreen: View {
                 } description: {
                     Text(error)
                 } actions: {
-                    Button("Try Again") { model.core.reconnect(serverId: serverId) }.buttonStyle(.borderedProminent)
+                    Button("Try Again") { model.core.reconnect(serverId: serverId) }.buttonStyle(.borderedProminent).foregroundStyle(c.bg)
                 }
                 .foregroundStyle(c.text)
                 .tint(c.accent)

@@ -333,7 +333,9 @@ final class TourUITests: XCTestCase {
     func testOtherSessions() throws {
         for s in ["api", "monitor", "editor", "build"] {
             open(s)
-            XCTAssertTrue(app.textViews["Terminal"].waitForExistence(timeout: 15))
+            // "monitor" has no windows left: it shows an empty state instead.
+            let ready = s == "monitor" ? app.staticTexts["No windows"] : app.textViews["Terminal"]
+            XCTAssertTrue(ready.waitForExistence(timeout: 15))
             sleep(4)
             shot("session-\(s)")
             app.terminate()
