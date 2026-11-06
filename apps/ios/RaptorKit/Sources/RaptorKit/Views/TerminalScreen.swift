@@ -348,15 +348,21 @@ private struct PaneMap: View {
                 ForEach(window.blocks, id: \.id) { b in
                     let tint = b.agent.flatMap { $0.state == .idle ? nil : Palette.agent($0.state) }
                     RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .fill(b.id == selected ? c.accent.opacity(0.6) : (tint?.opacity(0.55) ?? c.key))
+                        .fill(b.id == selected ? c.accent.opacity(0.75) : (tint?.opacity(0.55) ?? c.text.opacity(0.18)))
                         .frame(width: max(2, b.w * g.size.width - 2), height: max(2, b.h * g.size.height - 2))
                         .offset(x: b.x * g.size.width + 1, y: b.y * g.size.height + 1)
                         .onTapGesture { onPick(b.id) }
+                        .accessibilityElement()
+                        .accessibilityLabel(runningName(b) ?? "Shell")
+                        .accessibilityValue(b.agent.map { $0.label } ?? "")
+                        .accessibilityAddTraits(b.id == selected ? [.isButton, .isSelected] : .isButton)
+                        .accessibilityAction { onPick(b.id) }
                 }
             }
         }
         .padding(4)
         .glass(RoundedRectangle(cornerRadius: 10, style: .continuous), c)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel("Panes")
     }
 }
