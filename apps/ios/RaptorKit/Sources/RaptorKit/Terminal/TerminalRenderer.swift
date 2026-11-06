@@ -118,7 +118,9 @@ public final class TerminalRenderer {
             }
             ctx.setShouldAntialias(true)
             for run in line.runs where !run.text.allSatisfy({ $0 == " " }) {
-                var color = readable(run.fg, on: run.bg ?? frame.background, fallback: frame.foreground)
+                // Only rescue text a theme made unreadable; colors a program paired on purpose
+                // (powerline, half-block art) stay as they are.
+                var color = run.bg == nil ? readable(run.fg, on: frame.background, fallback: frame.foreground) : run.fg
                 if run.style & styleFaint != 0 { color = blend(color, frame.background, 0.5) }
                 let f = font(bold: run.style & styleBold != 0, italic: run.style & styleItalic != 0)
                 drawRun(run, font: f, color: cg(color), at: CGPoint(x: CGFloat(run.col) * m.width, y: top), in: ctx)
