@@ -94,6 +94,13 @@ struct RootView: View {
         .onChange(of: model.state.servers.count) { _, n in
             if n > 0 { Notifier.requestAuthorizationIfNeeded() }
         }
+        // Looking at a pane answers its notifications; the badge counts what's left.
+        .onChange(of: model.focus) { _, f in
+            if let f, let b = f.blockId { UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [f.serverId + b]) }
+        }
+        .onChange(of: model.state.attention.filter { $0.block.agent?.state.urgent == true }.count) { _, n in
+            UNUserNotificationCenter.current().setBadgeCount(n)
+        }
         // Test/automation hook: RAPTOR_OPEN=<session label> opens it once it loads.
         .task {
             guard let want = ProcessInfo.processInfo.environment["RAPTOR_OPEN"] else { return }

@@ -14,11 +14,12 @@ final class TourUITests: XCTestCase {
     }
 
     private func shot(_ name: String) {
-        let png = app.screenshot().pngRepresentation
+        let screen = XCUIScreen.main.screenshot()
+        let png = screen.pngRepresentation
         if let dir = env["RAPTOR_SHOTS"] {
             try? png.write(to: URL(fileURLWithPath: dir).appendingPathComponent("\(name).png"))
         }
-        let a = XCTAttachment(screenshot: app.screenshot())
+        let a = XCTAttachment(screenshot: screen)
         a.name = name
         a.lifetime = .keepAlways
         add(a)
@@ -112,6 +113,45 @@ final class TourUITests: XCTestCase {
         shot("punctuation")
         app.typeText("\n")
         sleep(1)
+    }
+
+    /// Needs an agent in session "api" that goes blocked during the test (the
+    /// driver answers it from outside). Allows notifications on first run.
+    func testNotificationDeepLink() throws {
+        app.launchEnvironment = ["RAPTOR_OPEN": "raptor-demo"]
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        app.launch()
+        let allow = springboard.buttons["Allow"]
+        if allow.waitForExistence(timeout: 8) { allow.tap() }
+        XCTAssertTrue(app.textViews["Terminal"].waitForExistence(timeout: 15))
+        let banner = springboard.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS 'needs you'")).firstMatch
+        XCTAssertTrue(banner.waitForExistence(timeout: 90), "no notification")
+        shot("notify-banner")
+        banner.tap()
+        sleep(3)
+        shot("notify-opened")
+        XCTAssertTrue(app.staticTexts["api"].exists, "didn't open the agent's session")
+    }
+
+    /// Same setup as testNotificationDeepLink: answer from the notification itself.
+    func testNotificationReply() throws {
+        app.launchEnvironment = ["RAPTOR_OPEN": "raptor-demo"]
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        app.launch()
+        XCTAssertTrue(app.textViews["Terminal"].waitForExistence(timeout: 15))
+        let banner = springboard.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS 'needs you'")).firstMatch
+        XCTAssertTrue(banner.waitForExistence(timeout: 90), "no notification")
+        banner.press(forDuration: 2)
+        let reply = springboard.buttons["Reply"]
+        shot("notify-expanded")
+        XCTAssertTrue(reply.waitForExistence(timeout: 5), "no Reply action")
+        shot("notify-actions")
+        reply.tap()
+        sleep(1)
+        springboard.typeText("from-notification")
+        springboard.buttons["Send"].tap()
+        sleep(3)
+        shot("notify-replied")
     }
 
     func testOtherSessions() throws {

@@ -20,9 +20,15 @@ public struct TerminalScreen: View {
     var onSessions: (() -> Void)?
     var onOpen: ((Focus) -> Void)?
     var onSettings: (() -> Void)?
+    /// Bumped by the app each time it asks for `requestedBlock` (a notification
+    /// for a pane in this session, say), even if it asked for it before.
+    let request: Int
+    let requestedBlock: String?
 
-    public init(serverId: String, sessionId: String, blockId: String?, onSessions: (() -> Void)? = nil, onOpen: ((Focus) -> Void)? = nil,
-                onSettings: (() -> Void)? = nil) {
+    public init(serverId: String, sessionId: String, blockId: String?, request: Int = 0, onSessions: (() -> Void)? = nil,
+                onOpen: ((Focus) -> Void)? = nil, onSettings: (() -> Void)? = nil) {
+        self.request = request
+        self.requestedBlock = blockId
         self.onSessions = onSessions
         self.onOpen = onOpen
         self.onSettings = onSettings
@@ -127,6 +133,12 @@ public struct TerminalScreen: View {
         .onChange(of: session) { pick(model.session(serverId, sessionId)) }
         .onChange(of: sessionId) { blockId = nil; windowId = nil; pick(model.session(serverId, sessionId)) }
         .onChange(of: blockId) { model.focus = Focus(serverId: serverId, sessionId: sessionId, blockId: blockId) }
+        .onChange(of: request) {
+            guard let b = requestedBlock, b != blockId, let w = session?.windows.first(where: { $0.blocks.contains { $0.id == b } }) else { return }
+            windowId = w.id
+            blockId = b
+            Task { try? await model.core.focusBlock(serverId: serverId, sessionId: sessionId, blockId: b) }
+        }
         .onDisappear { model.focus = nil }
         .focusedSceneValue(\.terminalActions, actions(session: session))
         .sheet(isPresented: $showPalette) {
