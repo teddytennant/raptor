@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 use raptor_client::{ConnEvent, ConnectOptions, Connection, Endpoint};
-use raptor_proto::{AgentState, Event, ProgramStatus, SessionEvent, SessionSummary, SessionView, TerminalEvent};
+use raptor_proto::{AgentState, Event, Process, ProgramStatus, SessionEvent, SessionSummary, SessionView, TerminalEvent};
 use tokio::sync::{Notify, watch};
 
 use crate::state::*;
@@ -484,8 +484,8 @@ impl ServerEntry {
                 if let Some(p) = p.as_ref().and_then(|v| v.get("pwd")).and_then(Value::as_str) {
                     meta.pwd = p.to_owned();
                 }
-                if let Some(name) = pr.as_ref().and_then(|v| v.pointer("/foreground/name")).and_then(Value::as_str) {
-                    meta.process = name.to_owned();
+                if let Some(p) = pr.as_ref().and_then(|v| v.get("foreground")).and_then(|f| serde_json::from_value::<Process>(f.clone()).ok()) {
+                    meta.process = p.label();
                 }
                 if let Some(code) = pr.as_ref().and_then(|v| v.pointer("/last_exit/exit_code")).and_then(Value::as_i64)
                     && pr.as_ref().and_then(|v| v.get("child")).is_none_or(Value::is_null) {
@@ -600,7 +600,7 @@ impl ServerEntry {
                 TerminalEvent::PwdChanged { pwd } => meta.pwd = pwd,
                 TerminalEvent::ProcessChanged { foreground } => {
                     if let Some(p) = foreground {
-                        meta.process = p.name;
+                        meta.process = p.label();
                         meta.exited = None;
                     }
                 }

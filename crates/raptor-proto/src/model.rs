@@ -220,6 +220,20 @@ pub struct Process {
     pub user: Option<String>,
     #[serde(default)]
     pub cwd: Option<String>,
+    #[serde(default)]
+    pub argv0: Option<String>,
+    /// For an interpreter (node, python), the script it runs.
+    #[serde(default)]
+    pub script: Option<String>,
+}
+
+impl Process {
+    /// The name to show: the script an interpreter runs, else how the process
+    /// names itself, else its executable (Rex's own advice).
+    pub fn label(&self) -> String {
+        let base = |s: &str| s.rsplit('/').next().unwrap_or(s).trim_start_matches('-').to_owned();
+        [&self.script, &self.argv0].into_iter().flatten().map(|s| base(s)).find(|s| !s.is_empty()).unwrap_or_else(|| self.name.clone())
+    }
 }
 
 /// Events from a terminal block.
