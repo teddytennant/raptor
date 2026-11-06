@@ -188,10 +188,14 @@ fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?,
         var showPalette by remember { mutableStateOf(false) }
         var slideDir by remember { mutableIntStateOf(1) }
         val panes = session?.windows.orEmpty().flatMap { w -> w.blocks.map { w.id to it.id } }
+        // The terminal view keeps the first swipe callback it was given, so
+        // read the session as it is now, not as it was then.
+        val sessionNow by rememberUpdatedState(session)
         // Swipe left/right moves between tabs (windows), landing on each tab's
         // focused pane. With a single tab, it cycles that tab's panes instead.
         fun swipe(dir: Int) {
-            val wins = session?.windows.orEmpty()
+            val wins = sessionNow?.windows.orEmpty()
+            val panes = wins.flatMap { w -> w.blocks.map { w.id to it.id } }
             if (wins.size > 1) {
                 val i = wins.indexOfFirst { it.id == windowId }.coerceAtLeast(0)
                 val w = wins[(i + dir + wins.size) % wins.size]
