@@ -128,9 +128,10 @@ class RaptorApplication : Application() {
             else -> n.title
         }
         val notif = NotificationCompat.Builder(this, if (agent) CHANNEL_AGENTS else CHANNEL_PROGRAMS)
-            .setSmallIcon(R.drawable.ic_foreground)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(n.body)
+            .setSubText(state.value.servers.firstOrNull { it.id == n.serverId }?.sessions?.firstOrNull { it.id == n.sessionId }?.label)
             .setStyle(NotificationCompat.BigTextStyle().bigText(n.body))
             .setCategory(if (agent) NotificationCompat.CATEGORY_STATUS else NotificationCompat.CATEGORY_EVENT)
             .setPriority(if (n.kind == NotificationKind.AGENT_BLOCKED) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT)
@@ -150,13 +151,13 @@ class RaptorApplication : Application() {
                 val replyPi = PendingIntent.getBroadcast(this@RaptorApplication, id, replyIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE)
                 val input = androidx.core.app.RemoteInput.Builder(ReplyReceiver.KEY_REPLY).setLabel("Type a reply").build()
                 addAction(
-                    NotificationCompat.Action.Builder(R.drawable.ic_foreground, "Reply", replyPi)
+                    NotificationCompat.Action.Builder(R.drawable.ic_notification, "Reply", replyPi)
                         .addRemoteInput(input)
                         .setAllowGeneratedReplies(false)
                         .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_REPLY)
                         .build(),
                 )
-                addAction(NotificationCompat.Action.Builder(R.drawable.ic_foreground, "Open", pi).build())
+                addAction(NotificationCompat.Action.Builder(R.drawable.ic_notification, "Open", pi).build())
             }
             .build()
         NotificationManagerCompat.from(this).notify(id, notif)

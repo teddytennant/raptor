@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Themed icon layer: one color, the eye cut out. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M33,40 L47,54 L33,68 L38,73 L57,54 L38,35 Z" />
+    <path android:fillColor="#FFFFFFFF" android:fillType="evenOdd"
+        android:pathData="M58,66 C58,58 64,52 72,52 C76,52 79,53 82,56 L88,59 C89,60 89,61 88,62 L83,64 C82,69 77,73 71,73 L62,73 C60,73 58,71 58,69 Z M76,58 m-1.8,0 a1.8,1.8 0 1,0 3.6,0 a1.8,1.8 0 1,0 -3.6,0 Z" />
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M68,52 C67,48 69,46 71,47 C72,48 72,50 71,52 Z" />
+</vector>
