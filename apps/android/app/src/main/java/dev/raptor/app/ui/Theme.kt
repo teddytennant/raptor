@@ -8,6 +8,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
@@ -181,6 +184,17 @@ fun RaptorTheme(chrome: Chrome, content: @Composable () -> Unit) {
         outlineVariant = chrome.hairline,
         error = Color(0xFFF2667A),
     )
+    // Status and navigation bar icons follow the chrome: dark on light themes.
+    val view = LocalView.current
+    if (!view.isInEditMode) SideEffect {
+        var c = view.context
+        while (c is android.content.ContextWrapper && c !is android.app.Activity) c = c.baseContext
+        val window = (c as? android.app.Activity)?.window ?: return@SideEffect
+        WindowCompat.getInsetsController(window, view).run {
+            isAppearanceLightStatusBars = chrome.light
+            isAppearanceLightNavigationBars = chrome.light
+        }
+    }
     CompositionLocalProvider(LocalChrome provides chrome, LocalStatus provides status(chrome)) {
         MaterialTheme(colorScheme = scheme, typography = AppTypography, content = content)
     }
