@@ -110,16 +110,23 @@ private struct SessionSwitcher: View {
 private struct TabPills: View {
     let ws: Workspace
     let session: Session
+    @State private var shown: String?
 
     var body: some View {
         let active = session.activeWindow?.id
         ViewThatFits(in: .horizontal) {
             row(active)
-            ScrollViewReader { proxy in
-                ScrollView(.horizontal, showsIndicators: false) { row(active) }
-                    .onAppear { DispatchQueue.main.async { proxy.scrollTo(active) } }
-                    .onChange(of: active) { _, id in withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id) } }
-            }
+            ScrollView(.horizontal, showsIndicators: false) { row(active).scrollTargetLayout() }
+                .scrollPosition(id: $shown, anchor: .center)
+                .mask {
+                    HStack(spacing: 0) {
+                        LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .trailing).frame(width: 14)
+                        Color.black
+                        LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing).frame(width: 14)
+                    }
+                }
+                .onAppear { shown = active }
+                .onChange(of: active) { _, id in withAnimation(.easeOut(duration: 0.2)) { shown = id } }
         }
     }
 
