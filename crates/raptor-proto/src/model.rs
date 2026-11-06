@@ -299,6 +299,8 @@ pub enum Event {
     Session { session_id: String, event: SessionEvent },
     HostsChanged,
     KeymapChanged,
+    /// A client changed its label or info: `client` as `client.inspect` describes it.
+    ClientChanged(Value),
     Other(EventBody),
 }
 
@@ -334,6 +336,10 @@ impl Event {
             "session_moved" => Event::SessionMoved { session_id: s("session_id") },
             "hosts_changed" => Event::HostsChanged,
             "keymap_changed" => Event::KeymapChanged,
+            "client_changed" => match p.get("client") {
+                Some(c) => Event::ClientChanged(c.clone()),
+                None => Event::Other(body),
+            },
             "session_event" => {
                 let session_id = s("session_id");
                 match p.get("event").and_then(|e| serde_json::from_value::<EventBody>(e.clone()).ok()) {

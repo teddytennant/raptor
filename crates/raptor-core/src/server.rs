@@ -536,6 +536,16 @@ impl ServerEntry {
                 });
             }
             Event::Session { session_id, event } => self.apply_session(conn, session_id, event, sink),
+            Event::ClientChanged(client) => {
+                let Some(id) = client.get("client_id").and_then(Value::as_str) else { return };
+                let d = describe_client(&client);
+                for s in self.model.lock().sessions.values_mut() {
+                    if let Some(c) = s.clients.get_mut(id) {
+                        c.clone_from(&d);
+                    }
+                }
+                sink.changed();
+            }
             _ => {}
         }
     }
@@ -559,13 +569,18 @@ impl ServerEntry {
                 sink.changed();
             }
             SessionEvent::ClientConnected { client_id, display } => {
+                // Listed right away; the inspect reply only fills in its name, and
+                // only if it hasn't left by then (the CLI comes and goes in a blink).
+                if let Some(s) = self.model.lock().sessions.get_mut(&session_id) {
+                    s.clients.insert(client_id.clone(), describe_client(&json!({"principal": {"display": display}})));
+                }
+                sink.changed();
                 let (this, conn, sink, sid) = (self.clone(), conn.clone(), sink.clone(), session_id.clone());
-                let _ = display;
                 tokio::spawn(async move {
                     if let Ok(v) = conn.call("client.inspect", json!({"client_id": client_id})).await {
                         let d = describe_client(v.get("client").unwrap_or(&v));
-                        if let Some(s) = this.model.lock().sessions.get_mut(&sid) {
-                            s.clients.insert(client_id, d);
+                        if let Some(c) = this.model.lock().sessions.get_mut(&sid).and_then(|s| s.clients.get_mut(&client_id)) {
+                            *c = d;
                         }
                         sink.changed();
                     }
