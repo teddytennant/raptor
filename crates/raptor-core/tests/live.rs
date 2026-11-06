@@ -290,7 +290,7 @@ fn agent_status_bell_and_exit() {
     term.send_key(Key::Enter, false, false, false, false);
     assert!(wait(10, || kinds(NotificationKind::AgentDone) == 1), "{:?}", l.notes.0.lock());
     term.send_key(Key::Enter, false, false, false, false);
-    assert!(wait(10, || l.block(&l.bid).is_some_and(|b| b.agent.is_none())), "status clears when the program ends");
+    assert!(wait(10, || l.block(&l.bid).and_then(|b| b.agent).is_some_and(|a| a.state == AgentState::Done)));
 
     l.type_line(&term, "printf '\\a'; sleep 0.5; printf '\\a'");
     assert!(wait(10, || kinds(NotificationKind::Bell) >= 1));
@@ -453,12 +453,18 @@ fn network_loss_resumes_byte_exact() {
     // Output keeps coming while we're away; all of it must arrive, once.
     let side = l.side();
     let (sid, bid) = (l.sid.clone(), l.bid.clone());
-    l.raptor.block_on(async move { side.write(&sid, &bid, "for i in 1 2 3 4 5; do echo away-$i; done\r").await.unwrap() });
+    l.raptor.block_on(async move { side.write(&sid, &bid, "printf 'away-%s\\n' 1 2 3 4 5\r").await.unwrap() });
     assert!(wait(10, || l.raptor.state().server(&l.id).unwrap().connectivity != Connectivity::Online));
     std::thread::sleep(Duration::from_secs(1));
     proxy.restore();
 
-    assert!(wait(20, || screen(&term).contains("\naway-5\n")), "{}", screen(&term));
+    assert!(
+        wait(20, || screen(&term).contains("\naway-5\n")),
+        "{}\n{:?} {:?}",
+        screen(&term),
+        tl.statuses.lock(),
+        l.raptor.state().server(&l.id).unwrap().connectivity
+    );
     let s = screen(&term);
     for i in 1..=5 {
         assert_eq!(s.matches(&format!("\naway-{i}\n")).count(), 1, "{s}");
@@ -470,3 +476,4 @@ fn network_loss_resumes_byte_exact() {
     assert!(after.contains(&TerminalStatus::Reconnecting), "{after:?}");
     assert!(!after.contains(&TerminalStatus::Connecting), "stream restarted instead of resuming: {after:?}");
 }
+
