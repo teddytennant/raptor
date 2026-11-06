@@ -14,6 +14,7 @@ final class Workspace {
     var paletteShown = false
     var findShown = false
     var addingServer = false
+    var replying: AttentionItem?
     var renaming: RenameRequest?
     var confirm: ConfirmRequest?
     var error: String?

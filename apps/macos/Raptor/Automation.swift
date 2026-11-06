@@ -167,6 +167,16 @@ enum Automation {
                 DispatchQueue.main.async { log("auth \(s.authorizationStatus.rawValue) alert \(s.alertSetting.rawValue)") }
             }
             return "ok notes"
+        case "preview":
+            guard let a = AppModel.shared.model.state.attention.first(where: { $0.block.agent?.state == .blocked }) else { return "err none blocked" }
+            let core = AppModel.shared.model.core
+            Task {
+                do {
+                    let t = try await core.previewText(serverId: a.serverId, sessionId: a.sessionId, blockId: a.block.id)
+                    log("preview \(t.count) chars: \(t.suffix(200).debugDescription)")
+                } catch { log("preview error \(describe(error))") }
+            }
+            return "ok preview"
         case "row":
             guard let r = Int(rest), let f = AppModel.shared.current?.focusedTerminal?.frameCache, f.lines.indices.contains(r) else { return "err row n" }
             return f.lines[r].runs.map { run in
@@ -312,7 +322,7 @@ enum Automation {
 
     private static func dump(_ w: NSWindow) -> String {
         let ws = AppModel.shared.current
-        var out = ["window \(w.windowNumber) \(Int(w.frame.width))x\(Int(w.frame.height)) key=\(w.isKeyWindow) title=\(w.title)"]
+        var out = ["window \(w.windowNumber) \(Int(w.frame.width))x\(Int(w.frame.height)) key=\(w.isKeyWindow) fullscreenable=\(w.collectionBehavior.contains(.fullScreenPrimary)) title=\(w.title)"]
         out.append("responder \(w.firstResponder.map { String(describing: type(of: $0)) } ?? "nil")")
         out.append("session \(ws?.session?.label ?? "-") tab \(ws?.activeWindow.map(tabTitle) ?? "-") tabs \(ws?.session?.windows.count ?? 0)")
         if let aw = ws?.activeWindow {

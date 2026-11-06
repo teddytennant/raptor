@@ -391,9 +391,11 @@ private struct WorkspaceDialogs: ViewModifier {
         let renaming = Binding(get: { ws?.renaming }, set: { ws?.renaming = $0 })
         let confirming = Binding(get: { ws?.confirm != nil }, set: { if !$0 { ws?.confirm = nil } })
         let failed = Binding(get: { ws?.error != nil }, set: { if !$0 { ws?.error = nil } })
+        let replying = Binding(get: { ws?.replying.map(ReplyTarget.init) }, set: { ws?.replying = $0?.item })
         content
             .sheet(isPresented: adding) { ServerSheet(editing: nil) }
             .sheet(item: renaming) { RenameSheet(request: $0) }
+            .sheet(item: replying) { ReplySheet(item: $0.item) }
             .alert(ws?.confirm?.title ?? "", isPresented: confirming, presenting: ws?.confirm) { c in
                 Button(c.action, role: .destructive) { c.run() }
                 Button("Cancel", role: .cancel) {}
@@ -406,4 +408,9 @@ private struct WorkspaceDialogs: ViewModifier {
                 Text(ws?.error ?? "")
             }
     }
+}
+
+private struct ReplyTarget: Identifiable {
+    let item: AttentionItem
+    var id: String { item.block.id }
 }

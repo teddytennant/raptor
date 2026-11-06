@@ -40,6 +40,12 @@ struct CommandPaletteView: View {
             Item(id: "reconnect", title: "Reconnect All Servers", subtitle: "Servers", symbol: "arrow.clockwise", shortcut: "⇧⌘R") { app.reconnectAll() },
             Item(id: "settings", title: "Settings…", subtitle: "Raptor", symbol: "gearshape", shortcut: "⌘,") { openSettings() },
         ]
+        for a in model.state.attention where a.block.agent?.state == .blocked {
+            let name = a.block.agent.map { $0.title.isEmpty ? $0.app : $0.title } ?? a.block.name
+            out.insert(Item(id: "reply-\(a.block.id)", title: "Reply to \(name)", subtitle: a.block.agent?.message ?? "Needs you", symbol: "arrowshape.turn.up.left") {
+                ws.replying = a
+            }, at: 0)
+        }
         for t in Themes.all where t.id != model.themeId {
             out.append(Item(id: "theme-\(t.id)", title: "Theme: \(t.name)", subtitle: "Appearance", symbol: "paintpalette") { app.setTheme(t.id) })
         }

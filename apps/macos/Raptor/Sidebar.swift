@@ -7,7 +7,6 @@ struct Sidebar: View {
     var onEditServer: (Server) -> Void
     @Environment(RaptorModel.self) private var model
     @Environment(\.chrome) private var c
-    @State private var replying: AttentionItem?
 
     private var selection: Binding<String?> {
         Binding(
@@ -31,7 +30,7 @@ struct Sidebar: View {
                             .onTapGesture { open(item) }
                             .contextMenu {
                                 Button("Show") { open(item) }
-                                Button("Reply…") { replying = item }
+                                Button("Reply…") { ws.replying = item }
                             }
                     }
                 }
@@ -66,17 +65,11 @@ struct Sidebar: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal, 14).padding(.vertical, 9)
         }
-        .sheet(item: Binding(get: { replying.map(ReplyTarget.init) }, set: { replying = $0?.item })) { ReplySheet(item: $0.item) }
     }
 
     private func open(_ item: AttentionItem) {
         ws.open(serverId: item.serverId, sessionId: item.sessionId, windowId: item.windowId, blockId: item.block.id)
     }
-}
-
-private struct ReplyTarget: Identifiable {
-    let item: AttentionItem
-    var id: String { item.block.id }
 }
 
 private struct ServerHeader: View {
@@ -213,12 +206,15 @@ struct ReplySheet: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(item.block.agent?.title.isEmpty == false ? item.block.agent!.title : item.block.name).font(.headline)
             if let m = item.block.agent?.message, !m.isEmpty { Text(m).foregroundStyle(.secondary) }
-            ScrollView {
-                Text(preview).font(.system(size: 11, design: .monospaced)).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+            if !preview.isEmpty {
+                ScrollView {
+                    Text(preview).font(.system(size: 11, design: .monospaced)).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+                }
+                .defaultScrollAnchor(.bottom)
+                .frame(height: 160)
+                .padding(8)
+                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
             }
-            .frame(height: 160)
-            .padding(8)
-            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
             TextField("Reply, e.g. 1 or y", text: $text).textFieldStyle(.roundedBorder).onSubmit(send)
             if let error { Text(error).font(.caption).foregroundStyle(Palette.error) }
             HStack {
@@ -231,7 +227,9 @@ struct ReplySheet: View {
         .frame(width: 460)
         .task {
             let t = try? await model.core.previewText(serverId: item.serverId, sessionId: item.sessionId, blockId: item.block.id)
-            preview = (t ?? "").split(separator: "\n", omittingEmptySubsequences: false).suffix(14).joined(separator: "\n")
+            var lines = (t ?? "").split(separator: "\n", omittingEmptySubsequences: false)
+            while let last = lines.last, last.allSatisfy(\.isWhitespace) { lines.removeLast() }
+            preview = lines.suffix(14).joined(separator: "\n")
         }
     }
 
