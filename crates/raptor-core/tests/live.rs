@@ -216,6 +216,8 @@ fn typing_keys_and_unicode() {
 
     // Ctrl+C interrupts, and typing right after it lands after it.
     l.type_line(&term, "sleep 30");
+    // A ^C that reaches the shell before sleep starts also flushes the typed-ahead line.
+    assert!(wait(10, || l.block(&l.bid).is_some_and(|b| b.process == "sleep")), "{:?}", l.block(&l.bid));
     term.send_key(Key::Char('c'), true, false, false, false);
     l.type_line(&term, "echo after-ctrl-c");
     assert!(wait(10, || screen(&term).contains("after-ctrl-c\n")), "{}", screen(&term));
@@ -247,7 +249,7 @@ fn bracketed_paste() {
     let Some(l) = Live::new() else { return };
     let (term, _) = l.open(&l.bid);
     l.type_line(&term, "printf '\\033[?2004h'; command cat -v");
-    std::thread::sleep(Duration::from_millis(300));
+    assert!(wait(10, || l.block(&l.bid).is_some_and(|b| b.process == "cat")), "{:?}", l.block(&l.bid));
     term.paste("pasted text");
     term.send_key(Key::Enter, false, false, false, false);
     assert!(wait(10, || screen(&term).contains("^[[200~pasted text^[[201~")), "{}", screen(&term));
@@ -350,8 +352,8 @@ fn palette_actions() {
     l.type_line(&term, "echo before-clear");
     assert!(wait(10, || screen(&term).contains("before-clear\n")));
     // The inbox's preview reads the server's copy of the screen.
-    let preview = l.raptor.block_on(l.raptor.preview_text(&l.id, &l.sid, &l.bid, 64 * 1024)).unwrap();
-    assert!(preview.contains("\nbefore-clear"), "{preview:?}");
+    let preview = || l.raptor.block_on(l.raptor.preview_text(&l.id, &l.sid, &l.bid, 64 * 1024)).unwrap();
+    assert!(wait(5, || preview().contains("\nbefore-clear")), "{:?}", preview());
     let actions = l.raptor.block_on(l.raptor.palette_actions(&l.id)).unwrap();
     let clear = actions.iter().find(|a| a.name == "com.superlogical.terminal.clear").expect("clear action");
     l.raptor.block_on(l.raptor.run_action(&l.id, &l.sid, Some(&l.bid), &clear.name)).unwrap();
@@ -520,7 +522,7 @@ fn take_then_release_quickly() {
     }
     std::thread::sleep(Duration::from_millis(1500));
     assert!(!term.has_control());
-    assert!(l.block(&l.bid).is_some_and(|b| !b.owned_by_me), "{:?}", l.block(&l.bid));
+    assert!(wait(5, || l.block(&l.bid).is_some_and(|b| !b.owned_by_me)), "{:?}", l.block(&l.bid));
     term.take_control();
     assert!(wait(10, || l.block(&l.bid).is_some_and(|b| b.owned_by_me)), "{:?}", l.block(&l.bid));
 }
