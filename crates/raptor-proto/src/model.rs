@@ -114,6 +114,29 @@ impl Window {
         out
     }
 
+    /// Every split in the tiled layer as (split, its rect, first block before, first block after).
+    pub fn tiled_splits(&self) -> Vec<(&Split, [f64; 4], String, String)> {
+        fn first(n: &LayoutNode) -> Option<String> {
+            n.block_id.clone().or_else(|| n.split.as_ref().and_then(|s| first(&s.before)))
+        }
+        fn walk<'a>(n: &'a LayoutNode, out: &mut Vec<(&'a Split, [f64; 4], String, String)>) {
+            if let Some(s) = &n.split {
+                if let (Some(b), Some(a)) = (first(&s.before), first(&s.after)) {
+                    out.push((s, n.rect, b, a));
+                }
+                walk(&s.before, out);
+                walk(&s.after, out);
+            }
+        }
+        let mut out = Vec::new();
+        for l in self.layers.iter().filter(|l| l.kind == "tiled") {
+            if let Some(n) = &l.layout {
+                walk(n, &mut out);
+            }
+        }
+        out
+    }
+
     pub fn block(&self, id: &str) -> Option<&Block> {
         self.layers.iter().flat_map(|l| &l.blocks).find(|b| b.block_id.as_deref() == Some(id))
     }

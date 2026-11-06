@@ -462,6 +462,30 @@ impl Raptor {
         self.run(server_id, move |c| Box::pin(async move { c.zoom_block(&s, &b).await })).await
     }
 
+    /// Put a window before another in the session's order (or last, with `None`).
+    pub async fn move_window(&self, server_id: &str, session_id: &str, window_id: &str, before_window_id: Option<&str>) -> Result<(), CoreError> {
+        let mut p = json!({"session_id": session_id, "window_id": window_id});
+        if let Some(b) = before_window_id {
+            p["before_window_id"] = json!(b);
+        }
+        self.run(server_id, move |c| Box::pin(async move { c.call("session.move_window", p).await.map(drop) })).await
+    }
+
+    /// Move the border of the split between two blocks to `ratio` of its space.
+    pub async fn resize_pane(
+        &self,
+        server_id: &str,
+        session_id: &str,
+        vertical: bool,
+        before_block_id: &str,
+        after_block_id: &str,
+        ratio: f64,
+    ) -> Result<(), CoreError> {
+        let p = json!({"session_id": session_id, "direction": if vertical { "vertical" } else { "horizontal" },
+            "before_block_id": before_block_id, "after_block_id": after_block_id, "ratio": ratio.clamp(0.02, 0.98)});
+        self.run(server_id, move |c| Box::pin(async move { c.call("session.resize_pane", p).await.map(drop) })).await
+    }
+
     /// Plain text of a block's screen (for previews and the agent inbox).
     pub async fn preview_text(&self, server_id: &str, session_id: &str, block_id: &str, max_bytes: u64) -> Result<String, CoreError> {
         let (s, b) = (session_id.to_owned(), block_id.to_owned());

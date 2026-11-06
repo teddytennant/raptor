@@ -183,6 +183,17 @@ impl ServerEntry {
                                     focused_block_id: w.focused_block_id.clone(),
                                     zoomed_block_id: w.zoomed_block_id.clone(),
                                     blocks,
+                                    splits: w
+                                        .tiled_splits()
+                                        .into_iter()
+                                        .map(|(sp, rect, before_block_id, after_block_id)| SplitState {
+                                            vertical: sp.direction == "vertical",
+                                            ratio: sp.ratio,
+                                            rect,
+                                            before_block_id,
+                                            after_block_id,
+                                        })
+                                        .collect(),
                                 }
                             })
                             .collect()
