@@ -184,6 +184,10 @@ pub fn open(ui: &Shared) {
         }
     };
     let (l, vr) = (list.clone(), visible_rows.clone());
+    let d = dialog.clone();
+    search.connect_stop_search(move |_| {
+        d.close();
+    });
     search.connect_search_changed(move |_| {
         l.invalidate_filter();
         l.invalidate_headers();
