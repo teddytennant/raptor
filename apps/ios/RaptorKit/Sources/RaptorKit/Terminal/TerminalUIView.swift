@@ -13,6 +13,21 @@ public final class TerminalUIView: UIView, UITextInputTraits, UIGestureRecognize
     public var onSwipePane: ((Int) -> Void)?
     /// Took the keyboard (a tap, a shortcut): the pane the user is working in.
     public var onFocus: (() -> Void)?
+    /// Whether the user is typing: a pane or window that replaces this one takes
+    /// the keyboard over instead of dropping it.
+    static var wantsKeyboard = false
+    private var leaving = false
+
+    public override func willMove(toWindow newWindow: UIWindow?) {
+        super.willMove(toWindow: newWindow)
+        leaving = newWindow == nil
+    }
+
+    /// Called when this pane becomes the one the user works in.
+    public func takeKeyboardIfTyping() {
+        guard Self.wantsKeyboard, window != nil, !isFirstResponder else { return }
+        DispatchQueue.main.async { [weak self] in _ = self?.becomeFirstResponder() }
+    }
 
     private var frameCache: Frame?
     private let padding: CGFloat = 6
@@ -476,7 +491,10 @@ public final class TerminalUIView: UIView, UITextInputTraits, UIGestureRecognize
 
     public override func becomeFirstResponder() -> Bool {
         let r = super.becomeFirstResponder()
-        if r { onFocus?() }
+        if r {
+            Self.wantsKeyboard = true
+            onFocus?()
+        }
         blink(r)
         setNeedsDisplay()
         return r
@@ -485,6 +503,7 @@ public final class TerminalUIView: UIView, UITextInputTraits, UIGestureRecognize
     public override func resignFirstResponder() -> Bool {
         resetKeyboardDocument()
         let r = super.resignFirstResponder()
+        if r, !leaving { Self.wantsKeyboard = false }
         blink(false)
         setNeedsDisplay()
         return r

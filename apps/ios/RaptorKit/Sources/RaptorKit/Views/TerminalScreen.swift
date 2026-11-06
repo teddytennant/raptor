@@ -178,7 +178,7 @@ public struct TerminalScreen: View {
                     let focused = b.id == blockId
                     LiveTerminal(serverId: serverId, sessionId: sessionId, blockId: b.id, theme: model.theme, chrome: c,
                                  insetTop: 0, controller: slot(b.id), onSwipe: { cycleWindow($0, session: session) },
-                                 onFocus: { if blockId != b.id { focus(b.id) } }) { termColors = ($0, $1) }
+                                 focused: focused, onFocus: { if blockId != b.id { focus(b.id) } }) { termColors = ($0, $1) }
                         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)
                             .strokeBorder(focused ? c.accent.opacity(0.7) : c.hairline, lineWidth: focused ? 1.5 : 1))
@@ -533,6 +533,7 @@ struct LiveTerminal: View {
     let insetTop: CGFloat
     @Binding var controller: TerminalController?
     var onSwipe: (Int) -> Void
+    var focused = true
     var onFocus: (() -> Void)? = nil
     var onColors: (UInt32, UInt32) -> Void
     @State private var own: TerminalController?
@@ -541,7 +542,7 @@ struct LiveTerminal: View {
         ZStack {
             if let ctl = own {
                 TerminalSurface(controller: ctl, fontSize: fontSize, chrome: chrome, insetTop: insetTop,
-                                appearance: TerminalAppearance(model), onColors: onColors, onSwipe: onSwipe, onFocus: onFocus) {
+                                appearance: TerminalAppearance(model), onColors: onColors, onSwipe: onSwipe, focused: focused, onFocus: onFocus) {
                     model.core.setSetting(key: "font_size", value: String(Double($0)))
                 }
                 if let text = ctl.status.banner {
@@ -586,6 +587,7 @@ struct TerminalSurface: UIViewRepresentable {
     let appearance: TerminalAppearance
     var onColors: (UInt32, UInt32) -> Void
     var onSwipe: (Int) -> Void
+    var focused: Bool
     var onFocus: (() -> Void)?
     var onFontSize: (CGFloat) -> Void
 
@@ -610,6 +612,7 @@ struct TerminalSurface: UIViewRepresentable {
         v.onColors = onColors
         v.onSwipePane = onSwipe
         v.onFocus = onFocus
+        if focused { v.takeKeyboardIfTyping() }
     }
 }
 #else
@@ -622,6 +625,7 @@ struct TerminalSurface: NSViewRepresentable {
     let appearance: TerminalAppearance
     var onColors: (UInt32, UInt32) -> Void
     var onSwipe: (Int) -> Void
+    var focused: Bool
     var onFocus: (() -> Void)?
     var onFontSize: (CGFloat) -> Void
 
