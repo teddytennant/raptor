@@ -533,6 +533,9 @@ impl TermView {
                 me.drag_scrollbar(y);
                 return;
             }
+            if button == 1 && n == 1 && mods.contains(gdk::ModifierType::CONTROL_MASK) && me.open_link(c, r) {
+                return;
+            }
             if me.reporting(mods) {
                 let name = button_name(button);
                 let mut st = me.state.borrow_mut();
@@ -701,6 +704,18 @@ impl TermView {
         self.area.add_controller(scroll);
     }
 
+    /// Ctrl+click on a URL opens it.
+    fn open_link(&self, col: u16, row: u16) -> bool {
+        let Some(s) = self.session() else { return false };
+        s.select_line(row);
+        let line = s.selection_text().unwrap_or_default();
+        s.clear_selection();
+        let Some(url) = url_at(&line, col as usize) else { return false };
+        let root = self.area.root().and_downcast::<gtk::Window>();
+        gtk::UriLauncher::new(&url).launch(root.as_ref(), None::<&gtk::gio::Cancellable>, |_| {});
+        true
+    }
+
     /// X11-style: whatever is selected is in the primary selection.
     fn copy_primary(&self) {
         let Some(t) = self.session().and_then(|s| s.selection_text()) else { return };
@@ -798,6 +813,27 @@ fn thumb(sb: &Scrollbar, h: f64) -> (f64, f64) {
     (PAD + (track - thumb) * sb.offset as f64 / range, thumb)
 }
 
+/// The http(s) or file URL covering column `col` of a line, if any.
+fn url_at(line: &str, col: usize) -> Option<String> {
+    let chars: Vec<char> = line.chars().collect();
+    let stop = |c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '`' | '|');
+    let mut start = col.min(chars.len().checked_sub(1)?);
+    if stop(chars[start]) {
+        return None;
+    }
+    while start > 0 && !stop(chars[start - 1]) {
+        start -= 1;
+    }
+    let mut end = start;
+    while end < chars.len() && !stop(chars[end]) {
+        end += 1;
+    }
+    let word: String = chars[start..end].iter().collect();
+    let begin = ["https://", "http://", "file://"].iter().filter_map(|p| word.find(p)).min()?;
+    let url = word[begin..].trim_end_matches(['.', ',', ';', ':', ')', ']', '}', '!', '?']);
+    (url.len() > 8).then(|| url.to_owned())
+}
+
 fn rounded(cr: &gtk::cairo::Context, x: f64, y: f64, w: f64, h: f64) {
     let r = w / 2.0;
     cr.new_sub_path();
@@ -825,6 +861,17 @@ fn latin(ctl: &gtk::EventControllerKey, code: u32) -> Option<char> {
         .into_iter()
         .filter(|(k, _)| k.level() == 0)
         .find_map(|(_, kv)| kv.to_unicode().filter(|c| c.is_ascii_graphic()))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn finds_urls() {
+        let l = "see (https://example.com/a?b=1). or http://x.io";
+        assert_eq!(super::url_at(l, 10).as_deref(), Some("https://example.com/a?b=1"));
+        assert_eq!(super::url_at(l, 2), None);
+        assert_eq!(super::url_at(l, 44).as_deref(), Some("http://x.io"));
+    }
 }
 
 fn named(k: gdk::Key) -> Option<Key> {
