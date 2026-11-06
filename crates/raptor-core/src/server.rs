@@ -13,6 +13,9 @@ use tokio::sync::{Notify, watch};
 use crate::state::*;
 use crate::store::Profile;
 
+/// A connection that lasted this long was healthy; losing it isn't the server's fault.
+const STABLE_AFTER: Duration = Duration::from_secs(10);
+
 #[derive(Default)]
 pub(crate) struct BlockMeta {
     pub title: String,
@@ -275,32 +278,37 @@ impl ServerEntry {
             let mut opts = sink.client_options();
             opts.reconnect_token = token.take();
             let started = Instant::now();
-            match Connection::connect(&endpoint, opts).await {
+            let error = match Connection::connect(&endpoint, opts).await {
                 Ok((conn, events)) => {
-                    backoff = Duration::from_millis(500);
                     token = conn.reconnect_token().map(str::to_owned);
                     let rtt = started.elapsed().as_millis().min(60_000) as u32;
                     match self.clone().serve(conn, events, &sink, rtt, &mut stop, &mut token).await {
                         Served::Stopped => return,
                         Served::Lost(reason) => {
                             tracing::info!("connection to {address} lost: {reason}");
-                            self.set_connectivity(Connectivity::Offline { error: reason, retry_in_ms: 0 }, &*sink);
-                            // Reconnect right away once; the server keeps us for 60s.
-                            continue;
+                            // After a connection that held up, reconnect right away (the
+                            // server keeps us for 60s). One that failed soon after it opened
+                            // backs off like a failed connect, or a server that accepts and
+                            // then drops us would be hammered in a tight loop.
+                            if started.elapsed() > STABLE_AFTER {
+                                backoff = Duration::from_millis(500);
+                                self.set_connectivity(Connectivity::Offline { error: reason, retry_in_ms: 0 }, &*sink);
+                                continue;
+                            }
+                            reason
                         }
                     }
                 }
-                Err(e) => {
-                    let retry = backoff;
-                    backoff = (backoff * 2).min(Duration::from_secs(30));
-                    self.set_connectivity(Connectivity::Offline { error: friendly(&e), retry_in_ms: retry.as_millis() as u64 }, &*sink);
-                    tokio::select! {
-                        _ = tokio::time::sleep(retry) => {}
-                        _ = self.wake.notified() => { backoff = Duration::from_millis(500); }
-                        _ = fg.changed() => {}
-                        _ = stop.changed() => return,
-                    }
-                }
+                Err(e) => friendly(&e),
+            };
+            let retry = backoff;
+            backoff = (backoff * 2).min(Duration::from_secs(30));
+            self.set_connectivity(Connectivity::Offline { error, retry_in_ms: retry.as_millis() as u64 }, &*sink);
+            tokio::select! {
+                _ = tokio::time::sleep(retry) => {}
+                _ = self.wake.notified() => { backoff = Duration::from_millis(500); }
+                _ = fg.changed() => {}
+                _ = stop.changed() => return,
             }
         }
     }
