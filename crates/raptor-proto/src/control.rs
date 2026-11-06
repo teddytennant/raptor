@@ -140,7 +140,7 @@ mod tests {
             api_min_revision: crate::API_MIN_REVISION,
         };
         let s = serde_json::to_string(&m).unwrap();
-        assert_eq!(s, r#"{"type":"hello","client":{"kind":"app","name":"Raptor"},"api_revision":9,"api_min_revision":8}"#);
+        assert_eq!(s, r#"{"type":"hello","client":{"kind":"app","name":"Raptor"},"api_revision":10,"api_min_revision":8}"#);
     }
 
     #[test]

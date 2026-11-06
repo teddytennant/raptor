@@ -529,6 +529,8 @@ fn take_then_release_quickly() {
 fn floating_layers_minimize() {
     let Some(l) = Live::new() else { return };
     let side = l.side();
+    let w = side.welcome();
+    assert_eq!(w.api_revision, w.api_server_revision.min(raptor_client::proto::API_REVISION), "newest shared revision");
     let sid = l.sid.clone();
     let float = l.raptor.block_on(async move {
         let v = side
