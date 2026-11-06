@@ -264,14 +264,25 @@ public final class TerminalRenderer {
 
     /// Box drawing and blocks as geometry so lines meet exactly at cell edges.
     private func drawBox(_ cp: UInt32, x: CGFloat, top: CGFloat, cells: CGFloat, color: CGColor, in ctx: CGContext) -> Bool {
-        let w = metrics.width * cells
-        let h = metrics.height
-        let cx = x + w / 2, cy = top + h / 2
-        let r = x + w, b = top + h
+        // Edges on device pixels, so blocks and lines meet their neighbours with no seam.
+        func snap(_ p: CGPoint) -> CGPoint {
+            let d = ctx.convertToDeviceSpace(p)
+            return ctx.convertToUserSpace(CGPoint(x: d.x.rounded(), y: d.y.rounded()))
+        }
+        let px = abs(ctx.convertToUserSpace(CGSize(width: 1, height: 1)).width)
+        func fill(_ rect: CGRect) {
+            let a = snap(rect.origin), z = snap(CGPoint(x: rect.maxX, y: rect.maxY))
+            ctx.fill(CGRect(x: a.x, y: a.y, width: max(z.x - a.x, px), height: max(z.y - a.y, px)))
+        }
+        let tl = snap(CGPoint(x: x, y: top)), br = snap(CGPoint(x: x + metrics.width * cells, y: top + metrics.height))
+        let x = tl.x, top = tl.y, r = br.x, b = br.y
+        let w = r - x, h = b - top
+        let mid = snap(CGPoint(x: x + w / 2, y: top + h / 2))
+        let cx = mid.x, cy = mid.y
         let t: CGFloat = 1, T: CGFloat = 2
         ctx.setFillColor(color)
-        func hl(_ a: CGFloat, _ z: CGFloat, _ th: CGFloat = t) { ctx.fill(CGRect(x: a, y: cy - th / 2, width: z - a, height: th)) }
-        func vl(_ a: CGFloat, _ z: CGFloat, _ th: CGFloat = t) { ctx.fill(CGRect(x: cx - th / 2, y: a, width: th, height: z - a)) }
+        func hl(_ a: CGFloat, _ z: CGFloat, _ th: CGFloat = t) { fill(CGRect(x: a, y: cy - th / 2, width: z - a, height: th)) }
+        func vl(_ a: CGFloat, _ z: CGFloat, _ th: CGFloat = t) { fill(CGRect(x: cx - th / 2, y: a, width: th, height: z - a)) }
         switch cp {
         case 0x2500: hl(x, r)
         case 0x2501: hl(x, r, T)
@@ -310,8 +321,8 @@ public final class TerminalRenderer {
         case 0x2575: vl(top, cy + t / 2)
         case 0x2576: hl(cx - t / 2, r)
         case 0x2577: vl(cy - t / 2, b)
-        case 0x2550: ctx.fill(CGRect(x: x, y: cy - T, width: w, height: t)); ctx.fill(CGRect(x: x, y: cy + T - t, width: w, height: t))
-        case 0x2551: ctx.fill(CGRect(x: cx - T, y: top, width: t, height: h)); ctx.fill(CGRect(x: cx + T - t, y: top, width: t, height: h))
+        case 0x2550: fill(CGRect(x: x, y: cy - T, width: w, height: t)); fill(CGRect(x: x, y: cy + T - t, width: w, height: t))
+        case 0x2551: fill(CGRect(x: cx - T, y: top, width: t, height: h)); fill(CGRect(x: cx + T - t, y: top, width: t, height: h))
         case 0x2554, 0x2557, 0x255A, 0x255D:
             // Double corners: two nested corners on the double lines' tracks.
             let right = cp == 0x2554 || cp == 0x255A, down = cp == 0x2554 || cp == 0x2557
@@ -346,21 +357,21 @@ public final class TerminalRenderer {
             ctx.clip(to: CGRect(x: x, y: top, width: w, height: h))
             ctx.fillEllipse(in: CGRect(x: cp == 0xE0B4 ? x - w : x, y: top, width: w * 2, height: h))
             ctx.restoreGState()
-        case 0x2580: ctx.fill(CGRect(x: x, y: top, width: w, height: h / 2))
-        case 0x2584: ctx.fill(CGRect(x: x, y: cy, width: w, height: h / 2))
-        case 0x2588: ctx.fill(CGRect(x: x, y: top, width: w, height: h))
-        case 0x258C: ctx.fill(CGRect(x: x, y: top, width: w / 2, height: h))
-        case 0x2590: ctx.fill(CGRect(x: cx, y: top, width: w / 2, height: h))
+        case 0x2580: fill(CGRect(x: x, y: top, width: w, height: h / 2))
+        case 0x2584: fill(CGRect(x: x, y: cy, width: w, height: h / 2))
+        case 0x2588: fill(CGRect(x: x, y: top, width: w, height: h))
+        case 0x258C: fill(CGRect(x: x, y: top, width: w / 2, height: h))
+        case 0x2590: fill(CGRect(x: cx, y: top, width: w / 2, height: h))
         case 0x2591, 0x2592, 0x2593:
             ctx.saveGState()
             ctx.setAlpha(cp == 0x2591 ? 0.25 : cp == 0x2592 ? 0.5 : 0.75)
-            ctx.fill(CGRect(x: x, y: top, width: w, height: h))
+            fill(CGRect(x: x, y: top, width: w, height: h))
             ctx.restoreGState()
         case 0x2581...0x2587:
             let f = CGFloat(cp - 0x2580) / 8
-            ctx.fill(CGRect(x: x, y: b - h * f, width: w, height: h * f))
+            fill(CGRect(x: x, y: b - h * f, width: w, height: h * f))
         case 0x2589...0x258F:
-            ctx.fill(CGRect(x: x, y: top, width: w * CGFloat(0x2590 - cp) / 8, height: h))
+            fill(CGRect(x: x, y: top, width: w * CGFloat(0x2590 - cp) / 8, height: h))
         default: return false
         }
         return true
