@@ -93,6 +93,7 @@ object Prefs {
     const val CURSOR = "cursor_style"
     const val BLINK = "cursor_blink"
     const val SMART_KEYBOARD = "smart_keyboard"
+    const val BACKGROUND_WATCH = "background_watch"
 
     fun string(key: String): String? = RaptorApplication.instance.core.setting(key)?.takeIf { it.isNotEmpty() }
     fun setString(key: String, v: String) {
@@ -347,7 +348,7 @@ fun SettingsScreen(onClose: () -> Unit, onAddServer: () -> Unit, onEditServer: (
                 Divider()
                 Toggle("Voice, swipe and CJK input", Prefs.SMART_KEYBOARD, default = false) { RaptorApplication.instance.appearance.value++ }
             }
-            Section("Notifications") {
+            Section("Notifications", footer = "While an agent is working or waiting for you, Raptor stays connected after you leave so it can tell you when it needs you. A quiet notification shows while it does.") {
                 // Re-checked on every resume, so coming back from system settings updates it.
                 var allowed by remember { mutableStateOf(true) }
                 LifecycleResumeEffect(Unit) {
@@ -370,6 +371,8 @@ fun SettingsScreen(onClose: () -> Unit, onAddServer: () -> Unit, onEditServer: (
                 Toggle("A program exits", Prefs.NOTIFY_EXIT, default = false)
                 Divider()
                 Toggle("Programs send a notification", Prefs.NOTIFY_PROGRAM)
+                Divider()
+                Toggle("Stay connected while agents work", Prefs.BACKGROUND_WATCH)
             }
             Section("Servers") {
                 for ((i, srv) in state.servers.withIndex()) {

@@ -155,6 +155,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        RaptorApplication.instance.stopWatching()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        if (!isChangingConfigurations) RaptorApplication.instance.maybeWatch()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleIntent(intent)
