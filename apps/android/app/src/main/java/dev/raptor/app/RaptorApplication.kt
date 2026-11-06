@@ -98,6 +98,15 @@ class RaptorApplication : Application() {
         })
         _state.value = core.state()
         core.setting("theme")?.let { themeId.value = it }
+        // A network came back (or Wi-Fi took over from cellular): retry offline
+        // servers now instead of waiting out their backoff.
+        getSystemService(android.net.ConnectivityManager::class.java).registerDefaultNetworkCallback(object : android.net.ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: android.net.Network) {
+                for (srv in core.state().servers) {
+                    if (srv.connectivity !is uniffi.raptor_ffi.Connectivity.Online) core.reconnect(srv.id)
+                }
+            }
+        })
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
                 inForeground = true
