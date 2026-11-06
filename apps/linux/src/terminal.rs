@@ -559,7 +559,6 @@ impl TermView {
                             let anchor = me.state.borrow().sel_anchor;
                             if mods.contains(gdk::ModifierType::SHIFT_MASK)
                                 && let Some(a) = anchor
-                                && s.selection_text().is_some()
                             {
                                 s.select_range(a, (c, r));
                             } else {
@@ -775,7 +774,7 @@ impl TermView {
         );
         self.root.insert_action_group("term", Some(&group));
         let pop = gtk::PopoverMenu::from_model(Some(&menu));
-        pop.set_parent(&self.area);
+        pop.set_parent(&self.root);
         pop.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
         pop.set_has_arrow(false);
         pop.set_halign(gtk::Align::Start);
