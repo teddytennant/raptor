@@ -130,6 +130,7 @@ internal fun detail(b: Block?): String {
 /** What's running, in words a person would use. Shells and junk names (some tools
  *  rename their process to a version number) fall back to the terminal title. */
 internal fun runningName(b: Block): String? {
+    b.agent?.app?.takeIf { it.isNotBlank() }?.let { return it }
     val shells = setOf("bash", "zsh", "fish", "sh", "nu", "dash", "ksh", "tcsh", "login")
     val p = b.process.trim()
     val junk = p.isEmpty() || p.none { it.isLetter() } || p in shells

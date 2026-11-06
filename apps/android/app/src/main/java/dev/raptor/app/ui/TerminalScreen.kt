@@ -112,7 +112,7 @@ import uniffi.raptor_ffi.Window
 
 /** A short glyph for what a pane is running, shown on tiles and in the dock. */
 fun glyph(b: Block?): String {
-    val p = (b?.process ?: "").lowercase()
+    val p = (b?.agent?.app?.takeIf { it.isNotBlank() } ?: b?.process ?: "").lowercase()
     return when {
         b == null -> ">_"
         p.isEmpty() || p in setOf("bash", "zsh", "fish", "sh", "nu", "dash", "ksh", "login") -> ">_"
@@ -363,6 +363,8 @@ private fun TitleBlock(block: Block?, session: Session?, modifier: Modifier, onC
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(session?.label ?: "", color = Ink.tertiary, fontSize = 12.sp, maxLines = 1)
+            val agent = block?.agent?.takeIf { it.state != AgentState.IDLE }
+            if (agent != null) Text(" · " + agentLabel(agent), color = LocalStatus.current.agent(agent.state), fontSize = 12.sp, maxLines = 1)
             Icon(Icons.Default.KeyboardArrowDown, null, tint = Ink.tertiary, modifier = Modifier.size(14.dp))
         }
     }
