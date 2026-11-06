@@ -65,6 +65,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
@@ -94,11 +96,12 @@ fun SessionList(
     onAddServer: () -> Unit,
     onEditServer: (Server) -> Unit,
     modifier: Modifier = Modifier,
+    bottomPadding: androidx.compose.ui.unit.Dp = 24.dp,
 ) {
     val app = RaptorApplication.instance
     val state by app.state.collectAsState()
     val needs = state.attention.filter { it.block.agent?.state == AgentState.BLOCKED || it.block.agent?.state == AgentState.ERROR }
-    LazyColumn(modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = 24.dp)) {
+    LazyColumn(modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = bottomPadding)) {
         if (state.servers.isEmpty()) item(key = "empty") { EmptyState(onAddServer) }
         if (needs.isNotEmpty()) {
             item(key = "needs") { Header("Needs you") }
@@ -112,7 +115,7 @@ fun SessionList(
 
 @Composable
 private fun Header(text: String, trailing: @Composable (() -> Unit)? = null) {
-    Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 20.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().padding(start = 32.dp, end = 8.dp, top = 18.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(text.uppercase(), style = MaterialTheme.typography.labelMedium, color = Ink.tertiary, modifier = Modifier.weight(1f))
         trailing?.invoke()
     }
@@ -127,6 +130,7 @@ internal fun detail(b: Block?): String {
 /** What's running, in words a person would use. Shells and junk names (some tools
  *  rename their process to a version number) fall back to the terminal title. */
 internal fun runningName(b: Block): String? {
+    b.agent?.app?.takeIf { it.isNotBlank() }?.let { return it }
     val shells = setOf("bash", "zsh", "fish", "sh", "nu", "dash", "ksh", "tcsh", "login")
     val p = b.process.trim()
     val junk = p.isEmpty() || p.none { it.isLetter() } || p in shells
@@ -329,8 +333,8 @@ private fun NeedsRow(item: AttentionItem, onOpen: () -> Unit) {
     Column(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .clip(RoundedCornerShape(14.dp))
             .background(Ink.surface)
             .combinedClickable(onClick = onOpen)
             .padding(14.dp),
@@ -367,7 +371,7 @@ private fun NeedsRow(item: AttentionItem, onOpen: () -> Unit) {
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
-            IconButton(onClick = { send() }, enabled = reply.isNotEmpty()) {
+            IconButton(onClick = { send() }, enabled = reply.isNotEmpty(), modifier = Modifier.semantics { contentDescription = "Send reply" }) {
                 SendGlyph(if (reply.isNotEmpty()) Ink.accent else Ink.tertiary, 24.dp)
             }
         }

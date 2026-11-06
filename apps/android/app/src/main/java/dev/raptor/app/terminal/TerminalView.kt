@@ -12,6 +12,7 @@ import android.text.InputType
 import android.view.ActionMode
 import android.view.GestureDetector
 import android.view.HapticFeedbackConstants
+import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.Menu
 import android.view.MenuItem
@@ -41,6 +42,49 @@ private const val STYLE_FAINT = 1 shl 2
 private const val STYLE_STRIKE = 1 shl 3
 private const val STYLE_OVERLINE = 1 shl 4
 private const val STYLE_SELECTED = 1 shl 5
+
+/**
+ * Lines for U+2500..U+254F and U+2574..U+257F, four chars per code point: up,
+ * right, down, left, each 0 (none), 1 (light) or 2 (heavy). Dots mean "use the font".
+ */
+private const val BOX_LINES =
+    "0101020210102020................................0110021001200220001100120021002211001200210022001001100220012002111012102110112021202210122022201011101220111021202120121022202201110112021102120121012202210222110111021201120221012102220122021111111212111212211111212121211222111122122122121222212222212222................"
+private const val BOX_HALF = "000110000100001000022000020000200201102001022010"
+private const val QUADRANTS = "481D97B26E"
+
+private fun boxLines(cp: Int): String? {
+    val s = when (cp) {
+        in 0x2500..0x254F -> BOX_LINES.substring((cp - 0x2500) * 4, (cp - 0x2500) * 4 + 4)
+        in 0x2574..0x257F -> BOX_HALF.substring((cp - 0x2574) * 4, (cp - 0x2574) * 4 + 4)
+        else -> return null
+    }
+    return s.takeIf { it[0] != '.' }
+}
+
+/** Whether the cell ending at [end] and the next one are parts of one emoji. */
+private fun joinsNext(s: String, start: Int, end: Int): Boolean {
+    val next = s.codePointAt(end)
+    if (next in 0x1F3FB..0x1F3FF || s.codePointBefore(end) == 0x200D) return true
+    return end - start == 2 && s.codePointAt(start) in 0x1F1E6..0x1F1FF && next in 0x1F1E6..0x1F1FF
+}
+
+/**
+ * End of the cell that starts at [i]: one code point plus whatever the terminal
+ * attaches to it (combining marks, joiners, variation selectors). The core
+ * gives each other code point its own cell, emoji modifiers and flags included.
+ */
+private fun cellEnd(s: String, i: Int): Int {
+    var end = i + Character.charCount(s.codePointAt(i))
+    while (end < s.length) {
+        val cp = s.codePointAt(end)
+        val t = Character.getType(cp)
+        val attaches = t == Character.NON_SPACING_MARK.toInt() || t == Character.ENCLOSING_MARK.toInt() ||
+            t == Character.COMBINING_SPACING_MARK.toInt() || cp == 0x200D || cp in 0xFE00..0xFE0F || cp in 0xE0100..0xE01EF
+        if (!attaches) break
+        end += Character.charCount(cp)
+    }
+    return end
+}
 
 /** Sticky modifiers from the on-screen key bar, applied to the next key typed. */
 class Modifiers {
@@ -129,9 +173,32 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
         override fun run() {
             blinkOn = !blinkOn
             invalidate()
-            postDelayed(this, 530)
+            if (shouldBlink()) postDelayed(this, 530) else blinkOn = true
         }
     }
+
+    private fun shouldBlink() =
+        blinkAllowed && hasFocus() && hasWindowFocus() && windowVisibility == VISIBLE && frame?.cursor?.blinking == true
+
+    /** Show the cursor solid and start blinking again, as after a keypress. */
+    private fun restartBlink() {
+        removeCallbacks(blink)
+        if (!blinkOn) invalidate()
+        blinkOn = true
+        if (shouldBlink()) postDelayed(blink, 530)
+    }
+
+    /** A frame arrived while we weren't visible; draw it when we are. */
+    private var stale = false
+
+    /** Text the keyboard is still composing (CJK, voice, handwriting): drawn at the cursor, sent when committed. */
+    private var composing = ""
+        set(v) {
+            if (field != v) {
+                field = v
+                invalidate()
+            }
+        }
 
     // Selection.
     private var selecting = false
@@ -155,6 +222,17 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
     }
 
     /** Font, line spacing and cursor from Settings; applies to the open terminal. */
+    /**
+     * Raw keys (the default) or a keyboard that can compose: voice typing, swipe,
+     * CJK. Composing keyboards also bring their own habits, like a period on double space.
+     */
+    var smartKeyboard = false
+        set(v) {
+            if (field == v) return
+            field = v
+            context.getSystemService(InputMethodManager::class.java).restartInput(this)
+        }
+
     fun applyAppearance(fontId: String?, lineHeight: Float, cursor: String?, blink: Boolean) {
         typefaces = TermFonts.byId(fontId).typefaces(context)
         this.lineHeight = lineHeight.coerceIn(1.0f, 1.6f)
@@ -165,6 +243,7 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
             else -> null
         }
         blinkAllowed = blink
+        restartBlink()
         updateMetrics()
         pushDeviceGrid()
         requestLayout()
@@ -181,6 +260,10 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
         val s = scale()
         val visible = height - insetTop - insetBottom
         val contentH = f.rows.toInt() * cellH * s + padding * 2
+        // A fitted grid shorter than the view is waiting for the server to grow it
+        // (the keyboard just closed): keep its bottom row where it was, so the
+        // prompt doesn't jump up and back down.
+        if (control && contentH < visible - cellH) return contentH - visible
         if (contentH <= visible) return 0f
         val anchorRow = (f.cursor?.row?.toInt() ?: (f.rows.toInt() - 1)) + 1
         val needBottom = anchorRow * cellH * s + padding * 2
@@ -217,12 +300,19 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
     /** Called on the next vsync after the core says a frame is ready. */
     fun refresh() {
         val t = terminal ?: return
+        // In the background, skip the work: output can stream for hours.
+        if (windowVisibility != VISIBLE) {
+            stale = true
+            return
+        }
+        stale = false
         val f = t.frame()
         val prev = frame
         frame = f
         if (prev == null || prev.background != f.background || prev.foreground != f.foreground) {
             onColors?.invoke(f.background.toInt(), f.foreground.toInt())
         }
+        if (prev?.cursor?.blinking != f.cursor?.blinking) restartBlink()
         invalidate()
     }
 
@@ -235,9 +325,22 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
     var insetBottom = 0f
         set(v) { field = v; pushDeviceGrid(); invalidate() }
 
-    override fun onAttachedToWindow() {
-        super.onAttachedToWindow()
-        postDelayed(blink, 530)
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        if (visibility == VISIBLE && stale) refresh()
+        restartBlink()
+    }
+
+    override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
+        super.onWindowFocusChanged(hasWindowFocus)
+        restartBlink()
+    }
+
+    override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: android.graphics.Rect?) {
+        super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
+        if (!gainFocus) composing = ""
+        restartBlink()
+        invalidate()
     }
 
     override fun onDetachedFromWindow() {
@@ -346,6 +449,10 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
 
         f.cursor?.let { c ->
             if (f.scrollOffset + f.scrollLen < f.scrollTotal) return@let // scrolled into history
+            if (composing.isNotEmpty()) {
+                drawComposing(canvas, c.col.toInt() * cellW, c.row.toInt() * cellH, bg, f.cursorColor?.toInt() ?: fgDefault)
+                return@let
+            }
             if (blinkAllowed && c.blinking && !blinkOn && hasFocus()) return@let
             val shape = cursorOverride ?: c.shape
             val cx = c.col.toInt() * cellW
@@ -389,80 +496,155 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
     }
 
     private fun drawRunText(canvas: Canvas, s: String, widths: ByteArray, x0: Float, y: Float) {
-        // Fast path: every grapheme is one narrow cell and one UTF-16 unit.
-        if (s.length == widths.size && widths.all { it.toInt() == 1 }) {
-            if (s.all { it.code < 0x2500 || it.code > 0x259F }) {
-                canvas.drawText(s, x0, y, text)
-                return
-            }
+        // Fast path: Latin text the terminal font covers, one cell per char.
+        if (s.length == widths.size && s.all { it.code < 0x250 }) {
+            canvas.drawText(s, x0, y, text)
+            return
         }
-        // Place each grapheme on its cell so fallback fonts can't drift off the grid.
+        // Place each cell's text on its own column so fallback fonts can't drift off the grid.
         var col = 0
         var i = 0
         var g = 0
         while (i < s.length) {
-            val cp = s.codePointAt(i)
-            var end = i + Character.charCount(cp)
-            // Absorb combining marks / ZWJ sequences into this grapheme.
-            while (end < s.length) {
-                val next = s.codePointAt(end)
-                val t = Character.getType(next)
-                if (t == Character.NON_SPACING_MARK.toInt() || t == Character.ENCLOSING_MARK.toInt() || next == 0x200D || next == 0xFE0F || (end > 0 && s.codePointBefore(end) == 0x200D)) {
-                    end += Character.charCount(next)
-                } else break
+            var end = cellEnd(s, i)
+            var w = widths.getOrNull(g++)?.toInt() ?: 1
+            // Emoji the core splits over several cells (families, skin tones, flags) still draw as one picture.
+            while (end < s.length && joinsNext(s, i, end)) {
+                w += widths.getOrNull(g++)?.toInt() ?: 1
+                end = cellEnd(s, end)
             }
-            val w = widths.getOrNull(g)?.toInt() ?: 1
             val x = x0 + col * cellW
-            if (!drawBoxChar(canvas, cp, x, y - baseline, w)) canvas.drawText(s, i, end, x, y, text)
+            if (!drawBoxChar(canvas, s.codePointAt(i), x, y - baseline, w)) drawCell(canvas, s, i, end, x, y, w)
             col += w
             i = end
-            g++
         }
     }
 
-    /** Draw box-drawing and block characters as geometry so lines join seamlessly. */
+    /** Draws one cell's text, shrinking glyphs that are too wide for it (emoji in a narrow cell, symbols from fallback fonts). */
+    private fun drawCell(canvas: Canvas, s: String, start: Int, end: Int, x: Float, y: Float, cells: Int) {
+        if (end == start + 1 && s[start] == ' ') return
+        val room = cellW * cells
+        val w = text.measureText(s, start, end)
+        if (w <= room * 1.05f) {
+            canvas.drawText(s, start, end, if (cells > 1) x + (room - w) / 2 else x, y, text)
+            return
+        }
+        canvas.save()
+        val k = room / w
+        canvas.scale(k, k, x, y - baseline + cellH / 2)
+        canvas.drawText(s, start, end, x, y, text)
+        canvas.restore()
+    }
+
+    private val boxPath = android.graphics.Path()
+
+    /** Draw box-drawing, block and braille characters as geometry so they join seamlessly. */
     private fun drawBoxChar(canvas: Canvas, cp: Int, x: Float, top: Float, w: Int): Boolean {
-        if (cp !in 0x2500..0x259F) return false
+        if (cp !in 0x2500..0x259F && cp !in 0x2800..0x28FF && cp !in 0xE0B0..0xE0B3) return false
         val cw = cellW * w
         val cx = x + cw / 2
         val cy = top + cellH / 2
-        fill.color = text.color
-        val t = max(1f, (density * 0.9f).roundToInt().toFloat())
-        val T = t * 2
-        fun h(x1: Float, x2: Float, th: Float = t) = canvas.drawRect(x1, cy - th / 2, x2, cy + th / 2, fill)
-        fun v(y1: Float, y2: Float, th: Float = t) = canvas.drawRect(cx - th / 2, y1, cx + th / 2, y2, fill)
         val r = x + cw
         val b = top + cellH
+        fill.color = text.color
+        val t = max(1f, (density * 0.9f).roundToInt().toFloat())
+        val lines = boxLines(cp)
+        if (lines != null) {
+            fun th(c: Char) = when (c) { '1' -> t; '2' -> t * 2; else -> 0f }
+            val (up, right, down, left) = lines.map(::th)
+            val hv = max(up, down) / 2
+            val hh = max(left, right) / 2
+            if (left > 0) canvas.drawRect(x, cy - left / 2, cx + hv, cy + left / 2, fill)
+            if (right > 0) canvas.drawRect(cx - hv, cy - right / 2, r, cy + right / 2, fill)
+            if (up > 0) canvas.drawRect(cx - up / 2, top, cx + up / 2, cy + hh, fill)
+            if (down > 0) canvas.drawRect(cx - down / 2, cy - hh, cx + down / 2, b, fill)
+            return true
+        }
+        // Double lines: two light strokes with a light-stroke gap.
+        val a = t / 2
+        val o = t * 1.5f
+        fun rect(l: Float, tp: Float, rt: Float, bt: Float) = canvas.drawRect(l, tp, rt, bt, fill)
         when (cp) {
-            0x2500 -> h(x, r); 0x2501 -> h(x, r, T)
-            0x2502 -> v(top, b); 0x2503 -> v(top, b, T)
-            0x250C, 0x256D -> { h(cx - t / 2, r); v(cy - t / 2, b) }
-            0x2510, 0x256E -> { h(x, cx + t / 2); v(cy - t / 2, b) }
-            0x2514, 0x2570 -> { h(cx - t / 2, r); v(top, cy + t / 2) }
-            0x2518, 0x256F -> { h(x, cx + t / 2); v(top, cy + t / 2) }
-            0x251C -> { v(top, b); h(cx, r) }
-            0x2524 -> { v(top, b); h(x, cx) }
-            0x252C -> { h(x, r); v(cy, b) }
-            0x2534 -> { h(x, r); v(top, cy) }
-            0x253C -> { h(x, r); v(top, b) }
-            0x2550 -> { canvas.drawRect(x, cy - T, r, cy - T + t, fill); canvas.drawRect(x, cy + T - t, r, cy + T, fill) }
-            0x2551 -> { canvas.drawRect(cx - T, top, cx - T + t, b, fill); canvas.drawRect(cx + T - t, top, cx + T, b, fill) }
-            0x2580 -> canvas.drawRect(x, top, r, cy, fill)
-            0x2584 -> canvas.drawRect(x, cy, r, b, fill)
-            0x2588 -> canvas.drawRect(x, top, r, b, fill)
-            0x258C -> canvas.drawRect(x, top, cx, b, fill)
-            0x2590 -> canvas.drawRect(cx, top, r, b, fill)
-            0x2591, 0x2592, 0x2593 -> {
-                val a = fill.alpha
-                fill.alpha = when (cp) { 0x2591 -> 64; 0x2592 -> 128; else -> 192 }
-                canvas.drawRect(x, top, r, b, fill)
-                fill.alpha = a
+            0x2550 -> { rect(x, cy - o, r, cy - a); rect(x, cy + a, r, cy + o) }
+            0x2551 -> { rect(cx - o, top, cx - a, b); rect(cx + a, top, cx + o, b) }
+            0x2554 -> { rect(cx - o, cy - o, r, cy - a); rect(cx - o, cy - o, cx - a, b); rect(cx + a, cy + a, r, cy + o); rect(cx + a, cy + a, cx + o, b) }
+            0x2557 -> { rect(x, cy - o, cx + o, cy - a); rect(cx + a, cy - o, cx + o, b); rect(x, cy + a, cx - a, cy + o); rect(cx - o, cy + a, cx - a, b) }
+            0x255A -> { rect(cx - o, cy + a, r, cy + o); rect(cx - o, top, cx - a, cy + o); rect(cx + a, cy - o, r, cy - a); rect(cx + a, top, cx + o, cy - a) }
+            0x255D -> { rect(x, cy + a, cx + o, cy + o); rect(cx + a, top, cx + o, cy + o); rect(x, cy - o, cx - a, cy - a); rect(cx - o, top, cx - a, cy - a) }
+            in 0x256D..0x2570 -> {
+                // Rounded corners.
+                val rad = min(cw, cellH) / 2
+                boxPath.reset()
+                when (cp) {
+                    0x256D -> { boxPath.moveTo(cx, b); boxPath.lineTo(cx, cy + rad); boxPath.arcTo(cx, cy, cx + 2 * rad, cy + 2 * rad, 180f, 90f, false); boxPath.lineTo(r, cy) }
+                    0x256E -> { boxPath.moveTo(x, cy); boxPath.lineTo(cx - rad, cy); boxPath.arcTo(cx - 2 * rad, cy, cx, cy + 2 * rad, 270f, 90f, false); boxPath.lineTo(cx, b) }
+                    0x256F -> { boxPath.moveTo(cx, top); boxPath.lineTo(cx, cy - rad); boxPath.arcTo(cx - 2 * rad, cy - 2 * rad, cx, cy, 0f, 90f, false); boxPath.lineTo(x, cy) }
+                    else -> { boxPath.moveTo(cx, top); boxPath.lineTo(cx, cy - rad); boxPath.arcTo(cx, cy - 2 * rad, cx + 2 * rad, cy, 180f, -90f, false); boxPath.lineTo(r, cy) }
+                }
+                line.color = fill.color
+                line.style = Paint.Style.STROKE
+                line.strokeWidth = t
+                canvas.drawPath(boxPath, line)
             }
-            in 0x2581..0x2587 -> canvas.drawRect(x, b - cellH * (cp - 0x2580) / 8f, r, b, fill)
-            in 0x2589..0x258F -> canvas.drawRect(x, top, x + cw * (0x2590 - cp) / 8f, b, fill)
+            in 0xE0B0..0xE0B3 -> {
+                // Powerline separators, full cell height so prompts join without seams.
+                boxPath.reset()
+                if (cp < 0xE0B2) { boxPath.moveTo(x, top); boxPath.lineTo(r, cy); boxPath.lineTo(x, b) } else { boxPath.moveTo(r, top); boxPath.lineTo(x, cy); boxPath.lineTo(r, b) }
+                line.color = fill.color
+                line.strokeWidth = t
+                line.style = if (cp % 2 == 0) Paint.Style.FILL else Paint.Style.STROKE
+                if (cp % 2 == 0) boxPath.close()
+                canvas.drawPath(boxPath, line)
+            }
+            0x2580 -> rect(x, top, r, cy)
+            0x2588 -> rect(x, top, r, b)
+            0x2590 -> rect(cx, top, r, b)
+            0x2594 -> rect(x, top, r, top + cellH / 8)
+            0x2595 -> rect(r - cw / 8, top, r, b)
+            0x2591, 0x2592, 0x2593 -> {
+                val alpha = fill.alpha
+                fill.alpha = when (cp) { 0x2591 -> 64; 0x2592 -> 128; else -> 192 }
+                rect(x, top, r, b)
+                fill.alpha = alpha
+            }
+            in 0x2581..0x2587 -> rect(x, b - cellH * (cp - 0x2580) / 8f, r, b)
+            in 0x2589..0x258F -> rect(x, top, x + cw * (0x2590 - cp) / 8f, b)
+            in 0x2596..0x259F -> {
+                // Quadrants: bits are upper left, upper right, lower left, lower right.
+                val q = QUADRANTS[cp - 0x2596].digitToInt(16)
+                if (q and 1 != 0) rect(x, top, cx, cy)
+                if (q and 2 != 0) rect(cx, top, r, cy)
+                if (q and 4 != 0) rect(x, cy, cx, b)
+                if (q and 8 != 0) rect(cx, cy, r, b)
+            }
+            in 0x2800..0x28FF -> {
+                // Braille: two columns of four dots (used by graphs in btop and friends).
+                val bits = cp - 0x2800
+                val dot = min(cw / 4, cellH / 8) * 0.8f
+                for (i in 0 until 8) {
+                    if (bits and (1 shl i) == 0) continue
+                    val c = if (i in 3..5 || i == 7) 1 else 0
+                    val rw = when (i) { 6, 7 -> 3; in 3..5 -> i - 3; else -> i }
+                    canvas.drawCircle(x + cw * (1 + 2 * c) / 4, top + cellH * (1 + 2 * rw) / 8, dot, fill)
+                }
+            }
             else -> return false
         }
         return true
+    }
+
+    private fun drawComposing(canvas: Canvas, x: Float, top: Float, bg: Int, fg: Int) {
+        text.typeface = typefaces[0]
+        text.color = fg
+        val w = text.measureText(composing)
+        fill.color = bg
+        canvas.drawRect(x, top, x + w, top + cellH, fill)
+        canvas.drawText(composing, x, top + baseline, text)
+        line.color = fg
+        line.strokeWidth = max(1f, density)
+        canvas.drawLine(x, top + cellH - density, x + w, top + cellH - density, line)
+        fill.color = fg
+        canvas.drawRect(x + w, top, x + w + 2 * density, top + cellH, fill)
     }
 
     private fun drawCurly(canvas: Canvas, x0: Float, x1: Float, y: Float) {
@@ -509,9 +691,9 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
         var i = 0
         var g = 0
         while (i < s.length) {
-            val n = Character.charCount(s.codePointAt(i))
-            if (g == index) return s.substring(i, i + n)
-            i += n
+            val end = cellEnd(s, i)
+            if (g == index) return s.substring(i, end)
+            i = end
             g++
         }
         return ""
@@ -563,14 +745,15 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
             return true
         }
 
+        // Long-press selects the word under your finger (drag to extend), and
+        // anywhere it offers the menu, so Paste is always one gesture away.
         override fun onLongPress(e: MotionEvent) {
             val (c, r) = cellAt(e.x, e.y)
-            if (terminal?.selectWord(c.toUShort(), r.toUShort()) == true) {
-                performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                selecting = true
-                selAnchor = c to r
-                startSelectionMode()
-            }
+            terminal?.selectWord(c.toUShort(), r.toUShort())
+            selecting = true
+            selAnchor = c to r
+            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            startSelectionMode()
         }
 
         override fun onScroll(e1: MotionEvent?, e2: MotionEvent, dx: Float, dy: Float): Boolean {
@@ -665,6 +848,7 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
             return true
         }
         if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+            if (selecting) actionMode?.invalidate()
             selecting = false
         }
         if (!scaleDetector.isInProgress) gestures.onTouchEvent(event)
@@ -673,19 +857,23 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
 
     private fun startSelectionMode() {
         if (actionMode != null) {
+            actionMode?.invalidate()
             actionMode?.invalidateContentRect()
             return
         }
         actionMode = startActionMode(object : ActionMode.Callback2() {
             override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
                 menu.add(0, 1, 0, android.R.string.copy)
-                menu.add(0, 3, 1, "Copy All")
-                menu.add(0, 2, 2, android.R.string.paste)
-                menu.add(0, 3, 2, android.R.string.selectAll)
+                menu.add(0, 2, 1, android.R.string.paste)
+                menu.add(0, 3, 2, "Copy All")
                 return true
             }
 
-            override fun onPrepareActionMode(mode: ActionMode, menu: Menu) = false
+            override fun onPrepareActionMode(mode: ActionMode, menu: Menu): Boolean {
+                menu.findItem(1).isVisible = terminal?.selectionText()?.isNotEmpty() == true
+                menu.findItem(2).isVisible = context.getSystemService(ClipboardManager::class.java).hasPrimaryClip()
+                return true
+            }
 
             override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean {
                 when (item.itemId) {
@@ -730,26 +918,79 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
 
     override fun onCheckIsTextEditor() = true
 
+    // Screen readers get the visible screen as text.
+    override fun onInitializeAccessibilityNodeInfo(info: android.view.accessibility.AccessibilityNodeInfo) {
+        super.onInitializeAccessibilityNodeInfo(info)
+        info.className = "android.widget.EditText"
+        info.isEditable = true
+        info.hintText = "Terminal"
+        info.text = frame?.lines?.joinToString("\n") { l ->
+            buildString {
+                for (r in l.runs) {
+                    while (length < r.col.toInt()) append(' ')
+                    append(r.text)
+                }
+            }.trimEnd()
+        }?.trimEnd()
+    }
+
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
-        // Visible-password text gives raw characters from most IMEs (no autocorrect,
-        // no composing), which is what a shell wants.
-        outAttrs.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        // Visible-password text gets raw characters from most keyboards: no autocorrect,
+        // no composing, a number row. The smart mode lets them compose.
+        outAttrs.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or
+            if (smartKeyboard) 0 else InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN or EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_ACTION_NONE
+        outAttrs.initialSelStart = 0
+        outAttrs.initialSelEnd = 0
+        composing = ""
         return object : BaseInputConnection(this, false) {
             override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
+                composing = ""
                 typeText(text.toString())
                 return true
             }
 
             override fun setComposingText(text: CharSequence, newCursorPosition: Int): Boolean {
-                // Some keyboards compose anyway; commit as they go so nothing is lost.
+                composing = text.toString()
                 return true
             }
 
-            override fun finishComposingText(): Boolean = true
+            override fun setComposingRegion(start: Int, end: Int): Boolean = true
+
+            // Keyboards rewrite what they just typed (Gboard's period on double space).
+            override fun replaceText(start: Int, end: Int, text: CharSequence, newCursorPosition: Int, textAttribute: android.view.inputmethod.TextAttribute?): Boolean {
+                composing = ""
+                repeat(end - start) { key(Key.Backspace) }
+                typeText(text.toString())
+                return true
+            }
+
+            override fun finishComposingText(): Boolean {
+                val c = composing
+                composing = ""
+                if (c.isNotEmpty()) typeText(c)
+                return true
+            }
+
+            // We never report text around the cursor, so keyboards send backspace as a key
+            // on an empty line; when they do delete text they think is there, pass it on.
+            override fun getTextBeforeCursor(n: Int, flags: Int): CharSequence = ""
+
+            override fun getTextAfterCursor(n: Int, flags: Int): CharSequence = ""
+
+            // A shell prompt is never the start of a sentence: no auto-capitals.
+            override fun getCursorCapsMode(reqModes: Int): Int = 0
 
             override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
-                repeat(max(1, beforeLength)) { key(Key.Backspace) }
+                repeat(beforeLength) { key(Key.Backspace) }
+                repeat(afterLength) { key(Key.Delete) }
+                return true
+            }
+
+            override fun deleteSurroundingTextInCodePoints(beforeLength: Int, afterLength: Int) = deleteSurroundingText(beforeLength, afterLength)
+
+            override fun performEditorAction(actionCode: Int): Boolean {
+                key(Key.Enter)
                 return true
             }
 
@@ -762,6 +1003,7 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
 
     private fun typeText(s: String) {
         val t = terminal ?: return
+        restartBlink()
         for (part in s.split('\n').withIndex()) {
             if (part.index > 0) key(Key.Enter)
             val str = part.value
@@ -778,17 +1020,28 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
 
     fun key(k: Key, ctrl: Boolean = false, alt: Boolean = false, shift: Boolean = false) {
         val t = terminal ?: return
+        restartBlink()
         val (sc, sa) = if (!ctrl && !alt) modifiers.consume() else (false to false)
         t.sendKey(k, ctrl || sc, alt || sa, shift, false)
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean = handleKey(keyCode, event) || super.onKeyDown(keyCode, event)
 
+    /** A dead key (accent) waiting for the letter it goes on. */
+    private var deadAccent = 0
+
     private fun handleKey(keyCode: Int, e: KeyEvent): Boolean {
+        val t = terminal ?: return false
         val ctrl = e.isCtrlPressed
         val alt = e.isAltPressed
         val shift = e.isShiftPressed
         val meta = e.isMetaPressed
+        restartBlink()
+        // Hardware-keyboard shortcuts that belong to the app, not the shell.
+        if (ctrl && shift && keyCode == KeyEvent.KEYCODE_V) { pasteClipboard(); return true }
+        if (ctrl && shift && keyCode == KeyEvent.KEYCODE_C) { t.selectionText()?.let(::copy); return true }
+        if (ctrl && shift && keyCode == KeyEvent.KEYCODE_P) { onPalette?.invoke(); return true }
+        if (ctrl && keyCode == KeyEvent.KEYCODE_TAB) { onSwipePane?.invoke(if (shift) -1 else 1); return true }
         val k: Key? = when (keyCode) {
             KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> Key.Enter
             KeyEvent.KEYCODE_TAB -> Key.Tab
@@ -809,23 +1062,32 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
         }
         if (k != null) {
             val (sc, sa) = modifiers.consume()
-            terminal?.sendKey(k, ctrl || sc, alt || sa, shift, meta)
+            t.sendKey(k, ctrl || sc, alt || sa, shift, meta)
             return true
         }
-        // Hardware-keyboard shortcuts that belong to the app, not the shell.
-        if (ctrl && shift && keyCode == KeyEvent.KEYCODE_V) { pasteClipboard(); return true }
-        if (ctrl && shift && keyCode == KeyEvent.KEYCODE_P) { onPalette?.invoke(); return true }
-        if (ctrl && keyCode == KeyEvent.KEYCODE_TAB) { onSwipePane?.invoke(if (shift) -1 else 1); return true }
-        if (ctrl && shift && keyCode == KeyEvent.KEYCODE_C) { terminal?.selectionText()?.let(::copy); return true }
-        val uc = e.getUnicodeChar(e.metaState and (KeyEvent.META_CTRL_MASK or KeyEvent.META_ALT_MASK).inv())
-        if (uc != 0) {
-            val ch = String(Character.toChars(uc))
-            val (sc, sa) = modifiers.consume()
-            if (ctrl || alt || sc || sa) terminal?.sendKey(Key.Char(ch), ctrl || sc, alt || sa, false, meta)
-            else terminal?.sendText(ch)
+        val noMods = e.metaState and (KeyEvent.META_CTRL_MASK or KeyEvent.META_ALT_MASK or KeyEvent.META_META_MASK).inv()
+        var uc = e.getUnicodeChar(noMods)
+        // AltGr (right Alt) types characters on many layouts; send those as text.
+        if (e.metaState and KeyEvent.META_ALT_RIGHT_ON != 0 && !ctrl) {
+            val altGr = e.getUnicodeChar(e.metaState and (KeyEvent.META_CTRL_MASK or KeyEvent.META_META_MASK).inv())
+            if (altGr != 0 && altGr != uc) {
+                t.sendText(String(Character.toChars(altGr)))
+                return true
+            }
+        }
+        if (uc and KeyCharacterMap.COMBINING_ACCENT != 0) {
+            deadAccent = uc and KeyCharacterMap.COMBINING_ACCENT_MASK
             return true
         }
-        return false
+        if (uc == 0) return false
+        if (deadAccent != 0) {
+            KeyEvent.getDeadChar(deadAccent, uc).takeIf { it != 0 }?.let { uc = it }
+            deadAccent = 0
+        }
+        val ch = String(Character.toChars(uc))
+        val (sc, sa) = modifiers.consume()
+        if (ctrl || alt || meta || sc || sa) t.sendKey(Key.Char(ch), ctrl || sc, alt || sa, false, meta) else t.sendText(ch)
+        return true
     }
 
     fun showKeyboard() {

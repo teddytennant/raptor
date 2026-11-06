@@ -8,6 +8,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
@@ -127,14 +130,15 @@ data class StatusColors(
     }
 }
 
+// Light themes get deeper shades so status text keeps its contrast.
 private fun status(c: Chrome) = StatusColors(
-    online = Color(0xFF5EE0A8),
-    connecting = Color(0xFFE8B54A),
+    online = Color(if (c.light) 0xFF14855A else 0xFF5EE0A8),
+    connecting = Color(if (c.light) 0xFF9A6A00 else 0xFFE8B54A),
     offline = c.tertiary,
-    working = Color(0xFF6CB6FF),
-    blocked = Color(0xFFF2A93B),
-    done = Color(0xFF5EE0A8),
-    error = Color(0xFFF2667A),
+    working = Color(if (c.light) 0xFF1F6FC4 else 0xFF6CB6FF),
+    blocked = Color(if (c.light) 0xFFA85A00 else 0xFFF2A93B),
+    done = Color(if (c.light) 0xFF14855A else 0xFF5EE0A8),
+    error = Color(if (c.light) 0xFFC42B45 else 0xFFF2667A),
     idle = c.tertiary,
     surfaceRaised = c.raised,
     hairline = c.hairline,
@@ -181,6 +185,17 @@ fun RaptorTheme(chrome: Chrome, content: @Composable () -> Unit) {
         outlineVariant = chrome.hairline,
         error = Color(0xFFF2667A),
     )
+    // Status and navigation bar icons follow the chrome: dark on light themes.
+    val view = LocalView.current
+    if (!view.isInEditMode) SideEffect {
+        var c = view.context
+        while (c is android.content.ContextWrapper && c !is android.app.Activity) c = c.baseContext
+        val window = (c as? android.app.Activity)?.window ?: return@SideEffect
+        WindowCompat.getInsetsController(window, view).run {
+            isAppearanceLightStatusBars = chrome.light
+            isAppearanceLightNavigationBars = chrome.light
+        }
+    }
     CompositionLocalProvider(LocalChrome provides chrome, LocalStatus provides status(chrome)) {
         MaterialTheme(colorScheme = scheme, typography = AppTypography, content = content)
     }

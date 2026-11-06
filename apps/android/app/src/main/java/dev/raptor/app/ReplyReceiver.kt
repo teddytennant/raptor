@@ -27,7 +27,7 @@ class ReplyReceiver : BroadcastReceiver() {
             // Replace the notification with a quiet confirmation (Android expects the
             // reply UI to be updated, or it keeps spinning).
             val done = NotificationCompat.Builder(context, RaptorApplication.CHANNEL_AGENTS)
-                .setSmallIcon(R.drawable.ic_foreground)
+                .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(if (ok) "Sent" else "Couldn't send reply")
                 .setContentText(text)
                 .setColor(0xFF34D399.toInt())

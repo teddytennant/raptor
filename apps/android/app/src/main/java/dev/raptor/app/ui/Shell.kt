@@ -3,7 +3,22 @@ package dev.raptor.app.ui
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.ui.text.withStyle
+import androidx.activity.BackEventCompat
+import androidx.compose.material3.TextButton
+import androidx.core.app.NotificationManagerCompat
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.PredictiveBackHandler
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.runtime.key
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.res.colorResource
+import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -77,6 +92,8 @@ object Prefs {
     const val LINE_HEIGHT = "line_height"
     const val CURSOR = "cursor_style"
     const val BLINK = "cursor_blink"
+    const val SMART_KEYBOARD = "smart_keyboard"
+    const val BACKGROUND_WATCH = "background_watch"
 
     fun string(key: String): String? = RaptorApplication.instance.core.setting(key)?.takeIf { it.isNotEmpty() }
     fun setString(key: String, v: String) {
@@ -116,10 +133,9 @@ fun SessionSheet(
         Box(Modifier.padding(top = 8.dp, bottom = 4.dp).size(width = 40.dp, height = 4.dp).clip(RoundedCornerShape(2.dp)).background(Ink.tertiary.copy(alpha = 0.5f)))
     }) {
         Column(Modifier.fillMaxWidth().navigationBarsPadding()) {
-            Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 4.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("Sessions", color = Ink.text, fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                 GlassCircle(size = 40.dp, onClick = { close(onSettings) }) { Icon(Icons.Default.Settings, "Settings", tint = Ink.text, modifier = Modifier.size(20.dp)) }
-                Spacer(Modifier.width(8.dp))
                 GlassCircle(size = 40.dp, onClick = { close(onAddServer) }) { Icon(Icons.Default.Add, "Add server", tint = Ink.accent, modifier = Modifier.size(22.dp)) }
             }
             SessionList(
@@ -133,12 +149,70 @@ fun SessionSheet(
     }
 }
 
+/** Every server and session: the phone's home screen, and the sidebar on tablets. */
+@Composable
+fun Home(current: Focus?, onOpen: (Focus) -> Unit, onAddServer: () -> Unit, onEditServer: (Server) -> Unit, onSettings: () -> Unit, modifier: Modifier = Modifier) {
+    Column(modifier.background(Ink.bg).statusBarsPadding()) {
+        Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Sessions", color = Ink.text, fontSize = 28.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            GlassCircle(onClick = onSettings) { Icon(Icons.Default.Settings, "Settings", tint = Ink.text, modifier = Modifier.size(20.dp)) }
+            GlassCircle(onClick = onAddServer) { Icon(Icons.Default.Add, "Add server", tint = Ink.accent, modifier = Modifier.size(22.dp)) }
+        }
+        SessionList(
+            current = current,
+            onOpenSession = { s, ses, b -> onOpen(Focus(s, ses, b)) },
+            onAddServer = onAddServer,
+            onEditServer = onEditServer,
+            bottomPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 24.dp,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+/**
+ * The open terminal over the home screen. Back (with the predictive gesture)
+ * shrinks the terminal away to reveal the session list underneath.
+ */
+@Composable
+fun BackToHome(current: Focus?, onBack: () -> Unit, home: @Composable () -> Unit, terminal: @Composable (Focus) -> Unit) {
+    var progress by remember { mutableFloatStateOf(0f) }
+    var fromLeft by remember { mutableStateOf(true) }
+    PredictiveBackHandler(enabled = current != null) { events ->
+        try {
+            events.collect {
+                progress = it.progress
+                fromLeft = it.swipeEdge == BackEventCompat.EDGE_LEFT
+            }
+            onBack()
+        } finally {
+            progress = 0f
+        }
+    }
+    Box(Modifier.fillMaxSize().background(Ink.bg)) {
+        if (current == null || progress > 0f) home()
+        if (current != null) key(current) {
+            Box(
+                Modifier.fillMaxSize().graphicsLayer {
+                    val scale = 1f - 0.1f * progress
+                    scaleX = scale
+                    scaleY = scale
+                    translationX = (if (fromLeft) 1 else -1) * size.width * 0.05f * progress
+                    shape = RoundedCornerShape(32.dp * progress)
+                    clip = progress > 0f
+                },
+            ) { terminal(current) }
+        }
+    }
+}
+
 /** First launch: nothing to open yet. */
 @Composable
 fun Welcome(onAddServer: () -> Unit) {
     Column(Modifier.fillMaxSize().background(Ink.bg).statusBarsPadding().navigationBarsPadding().padding(horizontal = 28.dp), verticalArrangement = Arrangement.Center) {
-        Icon(Icons.Default.Terminal, null, tint = Ink.accent, modifier = Modifier.size(40.dp))
-        Spacer(Modifier.height(20.dp))
+        Box(Modifier.size(64.dp).clip(RoundedCornerShape(16.dp)).background(colorResource(dev.raptor.app.R.color.ic_bg))) {
+            Image(painterResource(dev.raptor.app.R.drawable.ic_foreground), null, Modifier.requiredSize(108.dp).align(Alignment.Center).scale(64f / 72f))
+        }
+        Spacer(Modifier.height(24.dp))
         Text("Raptor", color = Ink.text, fontSize = 34.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(10.dp))
         Text(
@@ -184,7 +258,7 @@ fun SettingsScreen(onClose: () -> Unit, onAddServer: () -> Unit, onEditServer: (
     }
 
     Column(Modifier.fillMaxSize().background(Ink.bg).statusBarsPadding()) {
-        Box(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 10.dp)) {
+        Box(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 6.dp), contentAlignment = Alignment.CenterStart) {
             GlassCircle(size = 40.dp, onClick = onClose) {
                 Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "Back", tint = Ink.text, modifier = Modifier.size(26.dp))
             }
@@ -268,10 +342,28 @@ fun SettingsScreen(onClose: () -> Unit, onAddServer: () -> Unit, onEditServer: (
                 Toggle("Blinking cursor", Prefs.BLINK) { RaptorApplication.instance.appearance.value++ }
                 Divider()
                 Toggle("Fit to this screen when opening", Prefs.FIT_ON_OPEN)
-                Divider()
-                Toggle("Key bar above the keyboard", Prefs.KEY_BAR)
             }
-            Section("Notifications") {
+            Section("Keyboard", footer = "Off, the keyboard sends exactly the keys you press. On, it can compose: voice typing, swipe, and Chinese, Japanese and Korean input, along with habits like a period after two spaces.") {
+                Toggle("Key bar above the keyboard", Prefs.KEY_BAR)
+                Divider()
+                Toggle("Voice, swipe and CJK input", Prefs.SMART_KEYBOARD, default = false) { RaptorApplication.instance.appearance.value++ }
+            }
+            Section("Notifications", footer = "While an agent is working or waiting for you, Raptor stays connected after you leave so it can tell you when it needs you. A quiet notification shows while it does.") {
+                // Re-checked on every resume, so coming back from system settings updates it.
+                var allowed by remember { mutableStateOf(true) }
+                LifecycleResumeEffect(Unit) {
+                    allowed = NotificationManagerCompat.from(context).areNotificationsEnabled()
+                    onPauseOrDispose {}
+                }
+                if (!allowed) {
+                    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 6.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Notifications are off for Raptor", color = LocalStatus.current.blocked, fontSize = 16.sp, modifier = Modifier.weight(1f))
+                        TextButton(onClick = {
+                            context.startActivity(Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName))
+                        }) { Text("Turn On", color = Ink.accent, fontWeight = FontWeight.SemiBold, fontSize = 16.sp) }
+                    }
+                    Divider()
+                }
                 Toggle("An agent needs you", Prefs.NOTIFY_BLOCKED)
                 Divider()
                 Toggle("An agent finishes", Prefs.NOTIFY_DONE)
@@ -279,6 +371,8 @@ fun SettingsScreen(onClose: () -> Unit, onAddServer: () -> Unit, onEditServer: (
                 Toggle("A program exits", Prefs.NOTIFY_EXIT, default = false)
                 Divider()
                 Toggle("Programs send a notification", Prefs.NOTIFY_PROGRAM)
+                Divider()
+                Toggle("Stay connected while agents work", Prefs.BACKGROUND_WATCH)
             }
             Section("Servers") {
                 for ((i, srv) in state.servers.withIndex()) {

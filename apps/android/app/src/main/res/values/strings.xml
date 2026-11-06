@@ -5,4 +5,6 @@
     <string name="channel_agents_desc">When an agent needs you or finishes</string>
     <string name="channel_programs">Terminal notifications</string>
     <string name="channel_programs_desc">Bells, exits, and notifications from programs</string>
+    <string name="channel_watch">Watching agents</string>
+    <string name="channel_watch_desc">Shown while Raptor stays connected in the background for a working agent</string>
 </resources>

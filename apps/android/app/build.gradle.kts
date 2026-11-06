@@ -13,6 +13,11 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
+        // Ship only the ABIs scripts/build-android.sh built a core for; libraries
+        // like JNA bring others, which would install and then crash at launch.
+        ndk {
+            abiFilters += file("src/main/jniLibs").listFiles { f -> f.isDirectory }?.map { it.name }.orEmpty()
+        }
     }
 
     buildTypes {

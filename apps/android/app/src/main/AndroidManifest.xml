@@ -5,6 +5,8 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
 
     <!-- Rex servers on a tailnet are usually plain HTTP on 100.x addresses;
          WireGuard already encrypts that traffic. -->
@@ -36,5 +38,9 @@
             </intent-filter>
         </activity>
         <receiver android:name=".ReplyReceiver" android:exported="false" />
+        <service
+            android:name=".AgentWatchService"
+            android:exported="false"
+            android:foregroundServiceType="remoteMessaging" />
     </application>
 </manifest>

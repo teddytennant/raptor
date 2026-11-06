@@ -48,6 +48,37 @@ class RaptorApplication : Application() {
         core.setSetting("theme", id)
     }
 
+    /** True while [AgentWatchService] holds the connection open in the background. */
+    @Volatile var watching = false
+        private set
+
+    fun watching(on: Boolean) {
+        watching = on
+        if (!inForeground) core.setForeground(on)
+    }
+
+    /**
+     * Called as the app leaves the screen, while it may still start a foreground
+     * service: keep listening if an agent is busy and Settings allow it.
+     */
+    fun maybeWatch() {
+        if (!dev.raptor.app.ui.Prefs.flag(dev.raptor.app.ui.Prefs.BACKGROUND_WATCH)) return
+        if (AgentWatchService.activeAgents(state.value) == 0) return
+        if (runCatching { AgentWatchService.start(this) }.isSuccess) watching = true
+    }
+
+    private fun notificationId(serverId: String, blockId: String) = (serverId + blockId).hashCode()
+
+    /** You're looking at this pane now; its notification has done its job. */
+    fun clearNotification(serverId: String, blockId: String) = NotificationManagerCompat.from(this).cancel(notificationId(serverId, blockId))
+
+    /** Back on screen: the app holds the connection itself again. */
+    fun stopWatching() {
+        if (!watching) return
+        watching = false
+        AgentWatchService.end(this)
+    }
+
     /** Deep link requested by tapping a notification. */
     val pendingOpen = MutableStateFlow<Focus?>(null)
     /** A raptor://open link waiting for its server's sessions to load: (session, server?). */
@@ -67,6 +98,12 @@ class RaptorApplication : Application() {
         })
         _state.value = core.state()
         core.setting("theme")?.let { themeId.value = it }
+        // A network came back, or Wi-Fi took over from cellular: check every
+        // connection now, so dead sockets resume in seconds and offline servers
+        // retry without waiting out their backoff.
+        getSystemService(android.net.ConnectivityManager::class.java).registerDefaultNetworkCallback(object : android.net.ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: android.net.Network) = core.verifyConnections()
+        })
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
                 inForeground = true
@@ -75,7 +112,7 @@ class RaptorApplication : Application() {
 
             override fun onStop(owner: LifecycleOwner) {
                 inForeground = false
-                core.setForeground(false)
+                core.setForeground(watching)
             }
         })
     }
@@ -85,6 +122,11 @@ class RaptorApplication : Application() {
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_AGENTS, getString(R.string.channel_agents), NotificationManager.IMPORTANCE_HIGH).apply {
                 description = getString(R.string.channel_agents_desc)
+            },
+        )
+        nm.createNotificationChannel(
+            NotificationChannel(CHANNEL_WATCH, getString(R.string.channel_watch), NotificationManager.IMPORTANCE_MIN).apply {
+                description = getString(R.string.channel_watch_desc)
             },
         )
         nm.createNotificationChannel(
@@ -119,7 +161,7 @@ class RaptorApplication : Application() {
             putExtra(EXTRA_SESSION, n.sessionId)
             putExtra(EXTRA_BLOCK, n.blockId)
         }
-        val id = (n.serverId + n.blockId).hashCode()
+        val id = notificationId(n.serverId, n.blockId)
         val pi = PendingIntent.getActivity(this, id, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val title = when (n.kind) {
             NotificationKind.AGENT_BLOCKED -> "${n.title} needs you"
@@ -128,9 +170,10 @@ class RaptorApplication : Application() {
             else -> n.title
         }
         val notif = NotificationCompat.Builder(this, if (agent) CHANNEL_AGENTS else CHANNEL_PROGRAMS)
-            .setSmallIcon(R.drawable.ic_foreground)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(n.body)
+            .setSubText(state.value.servers.firstOrNull { it.id == n.serverId }?.sessions?.firstOrNull { it.id == n.sessionId }?.label)
             .setStyle(NotificationCompat.BigTextStyle().bigText(n.body))
             .setCategory(if (agent) NotificationCompat.CATEGORY_STATUS else NotificationCompat.CATEGORY_EVENT)
             .setPriority(if (n.kind == NotificationKind.AGENT_BLOCKED) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT)
@@ -150,13 +193,13 @@ class RaptorApplication : Application() {
                 val replyPi = PendingIntent.getBroadcast(this@RaptorApplication, id, replyIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE)
                 val input = androidx.core.app.RemoteInput.Builder(ReplyReceiver.KEY_REPLY).setLabel("Type a reply").build()
                 addAction(
-                    NotificationCompat.Action.Builder(R.drawable.ic_foreground, "Reply", replyPi)
+                    NotificationCompat.Action.Builder(R.drawable.ic_notification, "Reply", replyPi)
                         .addRemoteInput(input)
                         .setAllowGeneratedReplies(false)
                         .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_REPLY)
                         .build(),
                 )
-                addAction(NotificationCompat.Action.Builder(R.drawable.ic_foreground, "Open", pi).build())
+                addAction(NotificationCompat.Action.Builder(R.drawable.ic_notification, "Open", pi).build())
             }
             .build()
         NotificationManagerCompat.from(this).notify(id, notif)
@@ -167,6 +210,7 @@ class RaptorApplication : Application() {
             private set
         const val CHANNEL_AGENTS = "agents"
         const val CHANNEL_PROGRAMS = "programs"
+        const val CHANNEL_WATCH = "watch"
         const val EXTRA_SERVER = "server"
         const val EXTRA_SESSION = "session"
         const val EXTRA_BLOCK = "block"

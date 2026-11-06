@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -83,10 +84,17 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.max
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import dev.raptor.app.Focus
@@ -105,7 +113,7 @@ import uniffi.raptor_ffi.Window
 
 /** A short glyph for what a pane is running, shown on tiles and in the dock. */
 fun glyph(b: Block?): String {
-    val p = (b?.process ?: "").lowercase()
+    val p = (b?.agent?.app?.takeIf { it.isNotBlank() } ?: b?.process ?: "").lowercase()
     return when {
         b == null -> ">_"
         p.isEmpty() || p in setOf("bash", "zsh", "fish", "sh", "nu", "dash", "ksh", "login") -> ">_"
@@ -161,6 +169,7 @@ fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?,
 
     DisposableEffect(serverId, sid, blockId) {
         app.focus = Focus(serverId, sid, blockId)
+        blockId?.let { app.clearNotification(serverId, it) }
         onDispose { app.focus = null }
     }
 
@@ -170,7 +179,8 @@ fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?,
     val chrome = if (theme.ansi == null && tc != null) Chrome.of(Color(tc.first), Color(tc.second), Color(theme.accent)) else Chrome.of(theme)
 
     RaptorTheme(chrome) {
-        val ime = WindowInsets.isImeVisible
+        // Follows the keyboard frame by frame, so the key bar leaves with it.
+        val ime = WindowInsets.ime.getBottom(LocalDensity.current) > 0
         val density = LocalDensity.current
         var topH by remember { mutableIntStateOf(0) }
         var bottomH by remember { mutableIntStateOf(0) }
@@ -178,10 +188,14 @@ fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?,
         var showPalette by remember { mutableStateOf(false) }
         var slideDir by remember { mutableIntStateOf(1) }
         val panes = session?.windows.orEmpty().flatMap { w -> w.blocks.map { w.id to it.id } }
+        // The terminal view keeps the first swipe callback it was given, so
+        // read the session as it is now, not as it was then.
+        val sessionNow by rememberUpdatedState(session)
         // Swipe left/right moves between tabs (windows), landing on each tab's
         // focused pane. With a single tab, it cycles that tab's panes instead.
         fun swipe(dir: Int) {
-            val wins = session?.windows.orEmpty()
+            val wins = sessionNow?.windows.orEmpty()
+            val panes = wins.flatMap { w -> w.blocks.map { w.id to it.id } }
             if (wins.size > 1) {
                 val i = wins.indexOfFirst { it.id == windowId }.coerceAtLeast(0)
                 val w = wins[(i + dir + wins.size) % wins.size]
@@ -250,11 +264,11 @@ fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?,
                     // live rows start exactly below it and never hide under it.
                     .onSizeChanged { topH = it.height }
                     .statusBarsPadding()
-                    .padding(top = 4.dp, bottom = 8.dp),
+                    .padding(bottom = 4.dp),
             ) {
-                Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                     GlassCircle(onClick = onSessions) { Icon(Icons.AutoMirrored.Filled.List, "Sessions", tint = Ink.text, modifier = Modifier.size(22.dp)) }
-                    Spacer(Modifier.width(10.dp))
+                    Spacer(Modifier.width(6.dp))
                     Tile(glyph(block), Modifier.size(32.dp))
                     Spacer(Modifier.width(10.dp))
                     TitleBlock(block, session, Modifier.weight(1f), onClick = onSessions)
@@ -327,7 +341,10 @@ fun Modifier.glass(shape: Shape): Modifier = this.clip(shape).background(Ink.gla
 
 @Composable
 fun GlassCircle(size: Dp = 40.dp, onClick: () -> Unit, content: @Composable () -> Unit) {
-    Box(Modifier.size(size).glass(CircleShape).clickable(onClick = onClick), contentAlignment = Alignment.Center) { content() }
+    // Drawn at [size], touched at 48dp.
+    Box(Modifier.size(max(size, 48.dp)).clip(CircleShape).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
+        Box(Modifier.size(size).glass(CircleShape), contentAlignment = Alignment.Center) { content() }
+    }
 }
 
 /** A rounded tile with a glyph for the running program. */
@@ -352,6 +369,8 @@ private fun TitleBlock(block: Block?, session: Session?, modifier: Modifier, onC
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(session?.label ?: "", color = Ink.tertiary, fontSize = 12.sp, maxLines = 1)
+            val agent = block?.agent?.takeIf { it.state != AgentState.IDLE }
+            if (agent != null) Text(" · " + agentLabel(agent), color = LocalStatus.current.agent(agent.state), fontSize = 12.sp, maxLines = 1)
             Icon(Icons.Default.KeyboardArrowDown, null, tint = Ink.tertiary, modifier = Modifier.size(14.dp))
         }
     }
@@ -505,6 +524,8 @@ private fun LiveTerminal(
         control = term != null && Prefs.flag(Prefs.FIT_ON_OPEN)
         view.control = control
         // Don't pop the keyboard on open: look first, tap the terminal to type.
+        // Take focus though, so a hardware keyboard types straight away.
+        view.post { view.requestFocus() }
         onDispose {
             choreographer.removeFrameCallback(frameCb)
             view.terminal = null
@@ -523,6 +544,7 @@ private fun LiveTerminal(
             Prefs.string(Prefs.CURSOR),
             Prefs.flag(Prefs.BLINK),
         )
+        view.smartKeyboard = Prefs.flag(Prefs.SMART_KEYBOARD, default = false)
         app.core.setting("font_size")?.toFloatOrNull()?.let { if (it != view.fontSize) view.fontSize = it }
     }
 
@@ -632,28 +654,29 @@ private fun StatusOverlay(status: TerminalStatus, modifier: Modifier) {
     }
 }
 
-private data class BarKey(val label: String, val key: Key? = null, val text: String? = null, val repeat: Boolean = false)
+private data class BarKey(val label: String, val key: Key? = null, val text: String? = null, val repeat: Boolean = false, val spoken: String = label)
 
 private val mainKeys = listOf(
-    BarKey("esc", Key.Escape),
-    BarKey("tab", Key.Tab),
-    BarKey("ctrl"),
-    BarKey("alt"),
-    BarKey("←", Key.Left, repeat = true),
-    BarKey("↓", Key.Down, repeat = true),
-    BarKey("↑", Key.Up, repeat = true),
-    BarKey("→", Key.Right, repeat = true),
+    BarKey("esc", Key.Escape, spoken = "Escape"),
+    BarKey("tab", Key.Tab, spoken = "Tab"),
+    BarKey("ctrl", spoken = "Control"),
+    BarKey("alt", spoken = "Alt"),
+    BarKey("←", Key.Left, repeat = true, spoken = "Left arrow"),
+    BarKey("↓", Key.Down, repeat = true, spoken = "Down arrow"),
+    BarKey("↑", Key.Up, repeat = true, spoken = "Up arrow"),
+    BarKey("→", Key.Right, repeat = true, spoken = "Right arrow"),
 )
 
 private val moreKeys = listOf(
-    BarKey("|", text = "|"),
-    BarKey("~", text = "~"),
-    BarKey("/", text = "/"),
-    BarKey("-", text = "-"),
-    BarKey("`", text = "`"),
-    BarKey("home", Key.Home),
-    BarKey("end", Key.End),
-    BarKey("pgup", Key.PageUp, repeat = true),
+    BarKey("|", text = "|", spoken = "Pipe"),
+    BarKey("~", text = "~", spoken = "Tilde"),
+    BarKey("/", text = "/", spoken = "Slash"),
+    BarKey("-", text = "-", spoken = "Dash"),
+    BarKey("`", text = "`", spoken = "Backtick"),
+    BarKey("home", Key.Home, spoken = "Home"),
+    BarKey("end", Key.End, spoken = "End"),
+    BarKey("pgup", Key.PageUp, repeat = true, spoken = "Page up"),
+    BarKey("pgdn", Key.PageDown, repeat = true, spoken = "Page down"),
 )
 
 /** Terminal keys on a glass strip right above the soft keyboard. Two pages, no scrolling. */
@@ -687,21 +710,23 @@ private fun KeyBar(view: TerminalView, mods: Modifiers) {
         }
     }
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp).glass(RoundedCornerShape(14.dp)).height(44.dp).padding(4.dp),
-        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp).glass(RoundedCornerShape(14.dp)).height(48.dp).padding(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         for (k in if (more) moreKeys else mainKeys) {
             val on = (k.label == "ctrl" && mods.ctrl) || (k.label == "alt" && mods.alt)
             val locked = (k.label == "ctrl" && mods.ctrlLocked) || (k.label == "alt" && mods.altLocked)
             BarButton(
                 label = k.label,
+                spoken = k.spoken,
+                selected = if (k.key == null && k.text == null) on || locked else null,
                 background = when { locked -> Ink.accent; on -> Ink.accent.copy(alpha = 0.3f); else -> Color.Transparent },
                 foreground = if (locked) Ink.bg else Ink.text,
                 repeat = k.repeat,
                 modifier = Modifier.weight(1f),
             ) { press(k) }
         }
-        BarButton(label = if (more) "abc" else "•••", background = Color.Transparent, foreground = Ink.secondary, modifier = Modifier.weight(1f)) {
+        BarButton(label = if (more) "abc" else "•••", spoken = if (more) "Main keys" else "More keys", background = Color.Transparent, foreground = Ink.secondary, modifier = Modifier.weight(1f)) {
             hv.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
             more = !more
         }
@@ -709,7 +734,7 @@ private fun KeyBar(view: TerminalView, mods: Modifiers) {
 }
 
 @Composable
-private fun BarButton(label: String, background: Color, foreground: Color, modifier: Modifier, repeat: Boolean = false, onPress: () -> Unit) {
+private fun BarButton(label: String, spoken: String, background: Color, foreground: Color, modifier: Modifier, repeat: Boolean = false, selected: Boolean? = null, onPress: () -> Unit) {
     var down by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val downColor = Ink.keyDown
@@ -718,6 +743,12 @@ private fun BarButton(label: String, background: Color, foreground: Color, modif
             .fillMaxSize()
             .clip(RoundedCornerShape(9.dp))
             .background(if (down) downColor else background)
+            .clearAndSetSemantics {
+                contentDescription = spoken
+                role = Role.Button
+                selected?.let { this.selected = it }
+                onClick { onPress(); true }
+            }
             .pointerInput(repeat) {
                 detectTapGestures(onPress = {
                     down = true
