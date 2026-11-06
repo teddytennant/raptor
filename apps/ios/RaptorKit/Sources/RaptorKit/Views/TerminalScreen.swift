@@ -15,6 +15,8 @@ public struct TerminalScreen: View {
     @State private var topInset: CGFloat = 0
     @State private var showPalette = false
     @State private var keyboard = false
+    /// Windows that existed when we asked for a new one; the one that appears next is ours to show.
+    @State private var windowsBeforeNew: Set<String>?
     @Environment(\.verticalSizeClass) private var vsize
     @State private var slideEdge: Edge = .trailing
     /// Set by the app root: the left button and the title open the session
@@ -69,7 +71,7 @@ public struct TerminalScreen: View {
                 } description: {
                     Text("Everything in \(session.label) has exited.")
                 } actions: {
-                    Button("New Window") { Task { try? await model.core.newWindow(serverId: serverId, sessionId: sessionId) } }
+                    Button("New Window") { newWindow(session) }
                         .buttonStyle(.borderedProminent)
                     Button("End Session", role: .destructive) {
                         Task { try? await model.core.destroySession(serverId: serverId, sessionId: sessionId) }
@@ -108,7 +110,7 @@ public struct TerminalScreen: View {
                         Haptics.select()
                         Task { try? await model.core.focusWindow(serverId: serverId, sessionId: sessionId, windowId: w.id) }
                     } onNew: {
-                        Task { try? await model.core.newWindow(serverId: serverId, sessionId: sessionId) }
+                        newWindow(session)
                     }
                 }
             }
@@ -139,6 +141,12 @@ public struct TerminalScreen: View {
         #endif
         .onAppear { pick(session) }
         .onChange(of: session) { pick(model.session(serverId, sessionId)) }
+        .onChange(of: session?.windows.map(\.id)) { _, ids in
+            guard let before = windowsBeforeNew, let id = ids?.first(where: { !before.contains($0) }),
+                  let w = session?.windows.first(where: { $0.id == id }) else { return }
+            windowsBeforeNew = nil
+            showWindow(w, edge: .trailing)
+        }
         .onChange(of: sessionId) { blockId = nil; windowId = nil; pick(model.session(serverId, sessionId)) }
         .onChange(of: blockId) { model.focus = Focus(serverId: serverId, sessionId: sessionId, blockId: blockId) }
         .onChange(of: request) {
@@ -220,6 +228,11 @@ public struct TerminalScreen: View {
         Task { try? await model.core.focusWindow(serverId: serverId, sessionId: sessionId, windowId: w.id) }
     }
 
+    private func newWindow(_ session: Session?) {
+        windowsBeforeNew = Set(session?.windows.map(\.id) ?? [])
+        Task { try? await model.core.newWindow(serverId: serverId, sessionId: sessionId) }
+    }
+
     /// The next (+1) or previous (-1) pane, crossing into other windows.
     private func cyclePane(_ dir: Int, session: Session?) {
         let all = panes(session)
@@ -238,7 +251,7 @@ public struct TerminalScreen: View {
     private func actions(session: Session?) -> TerminalActions {
         let core = model.core, srv = serverId, sid = sessionId, ctl = controller
         return TerminalActions(
-            newWindow: { Task { try? await core.newWindow(serverId: srv, sessionId: sid) } },
+            newWindow: { newWindow(session) },
             split: { vertical in
                 guard let b = blockId else { return }
                 Task { _ = try? await core.split(serverId: srv, sessionId: sid, blockId: b, vertical: vertical) }
@@ -270,7 +283,7 @@ public struct TerminalScreen: View {
         }
         add("next-pane", "Next Tab", "arrow.right.square", keywords: "switch window pane") { swipe(1, session: session) }
         add("prev-pane", "Previous Tab", "arrow.left.square", keywords: "switch window pane") { swipe(-1, session: session) }
-        add("new-window", "New Window", "plus.square.on.square") { Task { try? await core.newWindow(serverId: srv, sessionId: sid) } }
+        add("new-window", "New Window", "plus.square.on.square") { newWindow(session) }
         if let b = bid {
             add("split-right", "Split Right", "rectangle.split.2x1") { Task { _ = try? await core.split(serverId: srv, sessionId: sid, blockId: b, vertical: false) } }
             add("split-down", "Split Down", "rectangle.split.1x2") { Task { _ = try? await core.split(serverId: srv, sessionId: sid, blockId: b, vertical: true) } }
@@ -368,7 +381,8 @@ public struct TerminalScreen: View {
                 .frame(width: 54, height: 38)
             }
 
-            MoreMenu(serverId: serverId, sessionId: sessionId, blockId: blockId, controller: controller, onClosePane: { closePane($0, session: session) }) { showPalette = true }
+            MoreMenu(serverId: serverId, sessionId: sessionId, blockId: blockId, controller: controller, onClosePane: { closePane($0, session: session) },
+                     onNewWindow: { newWindow(session) }) { showPalette = true }
         }
         .padding(.horizontal, 12)
         .padding(.top, 4)
@@ -463,14 +477,13 @@ private struct MoreMenu: View {
     let blockId: String?
     let controller: TerminalController?
     var onClosePane: (String) -> Void
+    var onNewWindow: () -> Void
     var onPalette: () -> Void
 
     var body: some View {
         Menu {
             Button("Command Palette", systemImage: "command", action: onPalette)
-            Button("New Window", systemImage: "plus.square.on.square") {
-                Task { try? await model.core.newWindow(serverId: serverId, sessionId: sessionId) }
-            }
+            Button("New Window", systemImage: "plus.square.on.square", action: onNewWindow)
             Divider()
             if let ctl = controller {
                 Button(ctl.hasControl ? "Use Desktop Size" : "Fit to This Screen",
