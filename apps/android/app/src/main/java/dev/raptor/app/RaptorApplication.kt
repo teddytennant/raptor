@@ -76,7 +76,7 @@ class RaptorApplication : Application() {
     fun stopWatching() {
         if (!watching) return
         watching = false
-        stopService(android.content.Intent(this, AgentWatchService::class.java))
+        AgentWatchService.end(this)
     }
 
     /** Deep link requested by tapping a notification. */

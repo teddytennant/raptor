@@ -26,15 +26,26 @@ import uniffi.raptor_ffi.AppState
  */
 class AgentWatchService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var collecting = false
 
     override fun onBind(intent: Intent?) = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val app = RaptorApplication.instance
+        // Every start must reach startForeground, even one the app has already
+        // taken back (you returned before the service got going), or Android
+        // kills the app.
         show(activeAgents(app.state.value))
-        scope.launch {
-            app.state.map(::activeAgents).distinctUntilChanged().collect { n ->
-                if (n == 0) stop() else show(n)
+        if (!app.watching) {
+            stop()
+            return START_NOT_STICKY
+        }
+        if (!collecting) {
+            collecting = true
+            scope.launch {
+                app.state.map(::activeAgents).distinctUntilChanged().collect { n ->
+                    if (n == 0) stop() else show(n)
+                }
             }
         }
         return START_NOT_STICKY
@@ -76,5 +87,8 @@ class AgentWatchService : Service() {
         }
 
         fun start(context: Context) = ContextCompat.startForegroundService(context, Intent(context, AgentWatchService::class.java))
+
+        /** Ends the service through onStartCommand, which is safe even before it has started. */
+        fun end(context: Context) = context.startService(Intent(context, AgentWatchService::class.java))
     }
 }
