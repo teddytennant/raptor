@@ -1276,6 +1276,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
  "uuid",
 ]
@@ -1301,6 +1302,7 @@ dependencies = [
  "pangocairo",
  "raptor-core",
  "raptor-term",
+ "serde_json",
  "tracing",
  "unicode-segmentation",
 ]

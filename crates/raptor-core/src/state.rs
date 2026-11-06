@@ -108,20 +108,21 @@ pub struct WindowState {
     pub focused_block_id: Option<String>,
     pub zoomed_block_id: Option<String>,
     pub blocks: Vec<BlockState>,
-    /// Borders between tiled blocks, for drawing and dragging dividers.
+    /// The tiled layout's borders, outermost first.
     pub splits: Vec<SplitState>,
 }
 
-/// One split in a window's tiled layout. `rect` is the split's whole area
-/// (fractions of the window); the border sits at `ratio` across it.
+/// A border in a window's tiled layout, so a desktop UI can drag it.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SplitState {
-    pub vertical: bool,
-    pub ratio: f64,
+    /// The whole split, `[x, y, w, h]` within the window, as fractions.
     pub rect: [f64; 4],
-    /// A block on each side, which is how `resize_pane` names the split.
-    pub before_block_id: String,
-    pub after_block_id: String,
+    /// Side by side (a vertical border) rather than one above the other.
+    pub horizontal: bool,
+    pub ratio: f64,
+    /// A block on each side; together they name this split to `resize_pane`.
+    pub before: String,
+    pub after: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -135,6 +136,10 @@ pub struct BlockState {
     /// `[x, y, w, h]` within the window, as fractions.
     pub rect: [f64; 4],
     pub floating: bool,
+    /// The layer holding the block, for `Raptor::set_layer_minimized`.
+    pub layer_id: String,
+    /// Its floating layer is minimized: the block runs but isn't drawn.
+    pub minimized: bool,
     pub owner: Option<String>,
     pub owned_by_me: bool,
     pub exited: Option<i32>,

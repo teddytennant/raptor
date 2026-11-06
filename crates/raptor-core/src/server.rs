@@ -7,11 +7,17 @@ use std::time::{Duration, Instant};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 use raptor_client::{ConnEvent, ConnectOptions, Connection, Endpoint};
-use raptor_proto::{AgentState, Event, ProgramStatus, SessionEvent, SessionSummary, SessionView, TerminalEvent};
+use raptor_proto::{AgentState, Event, Process, ProgramStatus, SessionEvent, SessionSummary, SessionView, TerminalEvent};
 use tokio::sync::{Notify, watch};
 
 use crate::state::*;
 use crate::store::Profile;
+
+/// How long the server has to answer [`ServerEntry::verify`].
+const VERIFY_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// A connection that lasted this long was healthy; losing it isn't the server's fault.
+const STABLE_AFTER: Duration = Duration::from_secs(10);
 
 #[derive(Default)]
 pub(crate) struct BlockMeta {
@@ -47,6 +53,9 @@ pub(crate) struct SessionModel {
     pub summary: SessionSummary,
     pub view: Option<SessionView>,
     pub clients: HashMap<String, String>,
+    /// A `session.view` read is in flight; `refresh_again` asks for one more after it.
+    pub refreshing: bool,
+    pub refresh_again: bool,
 }
 
 #[derive(Default)]
@@ -70,6 +79,8 @@ pub(crate) struct ServerEntry {
     pub model: Mutex<ServerModel>,
     pub wake: Notify,
     pub stop: watch::Sender<bool>,
+    /// Bumped by [`ServerEntry::verify`]; open terminals check their streams too.
+    pub probe: watch::Sender<u64>,
     /// Open terminals, for routing block events (clipboard) to them.
     pub terminals: Mutex<HashMap<String, std::sync::Weak<crate::terminal::TerminalSession>>>,
 }
@@ -90,6 +101,7 @@ impl ServerEntry {
             model: Mutex::new(ServerModel::default()),
             wake: Notify::new(),
             stop: watch::channel(false).0,
+            probe: watch::channel(0).0,
             terminals: Mutex::new(HashMap::new()),
         })
     }
@@ -98,8 +110,29 @@ impl ServerEntry {
         self.profile.lock().id.clone()
     }
 
-    pub(crate) fn forget_connection(&self) {
-        self.conn.lock().take();
+    /// The system woke or the network changed: a socket that looks open may be
+    /// dead, and the ping timeout would take most of a minute to say so. Ask
+    /// the server something small now; if it doesn't answer quickly, drop the
+    /// socket and resume on a new one.
+    pub fn verify(self: &Arc<Self>) {
+        self.probe.send_modify(|n| *n += 1);
+        let Some(c) = self.connection() else {
+            self.wake.notify_one();
+            return;
+        };
+        tokio::spawn(async move {
+            let answered = tokio::time::timeout(VERIFY_TIMEOUT, c.call("server.version", json!({}))).await;
+            if !matches!(answered, Ok(Ok(_))) {
+                c.abort();
+            }
+        });
+    }
+
+    /// Drop the live connection as a lost network would; the supervisor resumes it.
+    pub(crate) fn drop_connection(&self) {
+        if let Some(c) = self.conn.lock().take() {
+            c.abort();
+        }
     }
 
     pub fn connection(&self) -> Option<Connection> {
@@ -161,6 +194,8 @@ impl ServerEntry {
                                             process: meta.map(|m| m.process.clone()).unwrap_or_default(),
                                             rect: pl.map(|p| p.rect).unwrap_or([0.0, 0.0, 1.0, 1.0]),
                                             floating: pl.is_some_and(|p| p.floating),
+                                            layer_id: pl.map(|p| p.layer_id.clone()).unwrap_or_default(),
+                                            minimized: pl.is_some_and(|p| p.minimized),
                                             owned_by_me: me.is_some() && b.owner == me,
                                             // An owner that's no longer connected (e.g. the CLI that created
                                             // the session) shouldn't stop us taking the size. Only judge once
@@ -183,17 +218,7 @@ impl ServerEntry {
                                     focused_block_id: w.focused_block_id.clone(),
                                     zoomed_block_id: w.zoomed_block_id.clone(),
                                     blocks,
-                                    splits: w
-                                        .tiled_splits()
-                                        .into_iter()
-                                        .map(|(sp, rect, before_block_id, after_block_id)| SplitState {
-                                            vertical: sp.direction == "vertical",
-                                            ratio: sp.ratio,
-                                            rect,
-                                            before_block_id,
-                                            after_block_id,
-                                        })
-                                        .collect(),
+                                    splits: splits(w),
                                 }
                             })
                             .collect()
@@ -261,11 +286,11 @@ impl ServerEntry {
             if *stop.borrow() {
                 return;
             }
-            // Don't hold sockets open while a phone app is in the background.
+            // Don't hold sockets open while a phone app is in the background. Drop
+            // them without a close frame: the server then keeps this client (and
+            // its terminal streams) for a minute, so coming back is a quick resume.
             while !*fg.borrow() {
-                if let Some(c) = self.conn.lock().take() {
-                    c.close();
-                }
+                self.drop_connection();
                 self.set_connectivity(Connectivity::Idle, &*sink);
                 tokio::select! {
                     _ = fg.changed() => {}
@@ -282,34 +307,42 @@ impl ServerEntry {
             };
             self.set_connectivity(Connectivity::Connecting, &*sink);
             let mut opts = sink.client_options();
-            opts.reconnect_token = token.take();
+            // Keep the token until a connection replaces it: a try that fails
+            // (network still down) must not turn the next one into a new client.
+            opts.reconnect_token = token.clone();
             let started = Instant::now();
-            match Connection::connect(&endpoint, opts).await {
+            let error = match Connection::connect(&endpoint, opts).await {
                 Ok((conn, events)) => {
-                    backoff = Duration::from_millis(500);
                     token = conn.reconnect_token().map(str::to_owned);
                     let rtt = started.elapsed().as_millis().min(60_000) as u32;
-                    match self.clone().serve(conn, events, &sink, rtt, &mut stop, &mut token).await {
+                    match self.clone().serve(conn, events, &sink, rtt, &mut stop, &mut fg).await {
                         Served::Stopped => return,
+                        Served::Background => continue,
                         Served::Lost(reason) => {
                             tracing::info!("connection to {address} lost: {reason}");
-                            self.set_connectivity(Connectivity::Offline { error: reason, retry_in_ms: 0 }, &*sink);
-                            // Reconnect right away once; the server keeps us for 60s.
-                            continue;
+                            // After a connection that held up, reconnect right away (the
+                            // server keeps us for 60s). One that failed soon after it opened
+                            // backs off like a failed connect, or a server that accepts and
+                            // then drops us would be hammered in a tight loop.
+                            if started.elapsed() > STABLE_AFTER {
+                                backoff = Duration::from_millis(500);
+                                self.set_connectivity(Connectivity::Offline { error: reason, retry_in_ms: 0 }, &*sink);
+                                continue;
+                            }
+                            reason
                         }
                     }
                 }
-                Err(e) => {
-                    let retry = backoff;
-                    backoff = (backoff * 2).min(Duration::from_secs(30));
-                    self.set_connectivity(Connectivity::Offline { error: friendly(&e), retry_in_ms: retry.as_millis() as u64 }, &*sink);
-                    tokio::select! {
-                        _ = tokio::time::sleep(retry) => {}
-                        _ = self.wake.notified() => { backoff = Duration::from_millis(500); }
-                        _ = fg.changed() => {}
-                        _ = stop.changed() => return,
-                    }
-                }
+                Err(e) => friendly(&e),
+            };
+            let retry = backoff;
+            backoff = (backoff * 2).min(Duration::from_secs(30));
+            self.set_connectivity(Connectivity::Offline { error, retry_in_ms: retry.as_millis() as u64 }, &*sink);
+            tokio::select! {
+                _ = tokio::time::sleep(retry) => {}
+                _ = self.wake.notified() => { backoff = Duration::from_millis(500); }
+                _ = fg.changed() => {}
+                _ = stop.changed() => return,
             }
         }
     }
@@ -321,29 +354,48 @@ impl ServerEntry {
         sink: &Arc<dyn Sink>,
         rtt: u32,
         stop: &mut watch::Receiver<bool>,
-        token: &mut Option<String>,
+        fg: &mut watch::Receiver<bool>,
     ) -> Served {
-        let boot = match conn.bootstrap(Some(&[]), None).await {
+        // Attach the sessions we already know in the same round trip (a reconnect),
+        // then any others, before telling anyone we're online: until a session is
+        // attached the server refuses input and data tickets for it.
+        let known = self.model.lock().order.clone();
+        let boot = match conn.bootstrap(Some(&known), None).await {
             Ok(b) => b,
             Err(e) => return Served::Lost(friendly(&e)),
         };
-        // Time a tiny call for a true round-trip figure (connect time includes TLS etc.).
-        let t = Instant::now();
-        let version = conn.call("server.version", json!({})).await.ok();
-        let rtt = (t.elapsed().as_millis() as u32).min(rtt.max(1));
-        let account =
-            conn.call("server.whoami", json!({})).await.ok().and_then(|v| v.get("account").and_then(Value::as_str).map(str::to_owned));
+        let mut views: Vec<(String, SessionView)> =
+            boot.attached().into_iter().map(|a| (a.session.session_id.clone(), a.view.clone())).collect();
+        let others: Vec<String> =
+            boot.sessions().iter().map(|s| s.session_id.clone()).filter(|id| !views.iter().any(|(v, _)| v == id)).collect();
+        let timed_version = async {
+            // Time a tiny call for a true round-trip figure (connect time includes TLS etc.).
+            let t = Instant::now();
+            let v = conn.call("server.version", json!({})).await.ok();
+            (v, t.elapsed().as_millis() as u32)
+        };
+        let ((version, call_rtt), account, attached) = tokio::join!(
+            timed_version,
+            conn.call("server.whoami", json!({})),
+            futures_util::future::join_all(others.iter().map(|id| conn.attach(id))),
+        );
+        for (id, r) in others.into_iter().zip(attached) {
+            match r {
+                Ok((_, view)) => views.push((id, view)),
+                Err(e) => tracing::warn!("attach {id}: {e}"),
+            }
+        }
         {
             let mut m = self.model.lock();
             m.client_id = Some(boot.client_id.clone()).filter(|s| !s.is_empty()).or_else(|| conn.client_id().map(str::to_owned));
-            m.latency_ms = Some(rtt);
+            m.latency_ms = Some(call_rtt.min(rtt.max(1)));
             m.version = version.as_ref().and_then(|v| v.get("rex_version")).and_then(Value::as_str).map(short_version);
             m.host_name = boot
                 .server_status
                 .pointer("/tailscale/dns_name")
                 .and_then(Value::as_str)
                 .map(|s| s.split('.').next().unwrap_or(s).to_owned());
-            m.account = account;
+            m.account = account.ok().and_then(|v| v.get("account").and_then(Value::as_str).map(str::to_owned));
             m.order = boot.sessions().iter().map(|s| s.session_id.clone()).collect();
             let keep: std::collections::HashSet<_> = m.order.iter().cloned().collect();
             m.sessions.retain(|k, _| keep.contains(k));
@@ -351,12 +403,16 @@ impl ServerEntry {
                 m.sessions.entry(s.session_id.clone()).or_default().summary = s.clone();
             }
         }
+        for (id, view) in &views {
+            self.apply_view(id, view.clone());
+        }
         *self.conn.lock() = Some(conn.clone());
         self.conn_tx.send_modify(|v| *v += 1);
-        for s in boot.sessions() {
-            self.clone().attach(conn.clone(), s.session_id.clone(), sink.clone());
-        }
         self.set_connectivity(Connectivity::Online, &**sink);
+        sink.changed();
+        for (id, view) in views {
+            self.clone().load_details(conn.clone(), id, &view, sink.clone());
+        }
 
         loop {
             tokio::select! {
@@ -364,12 +420,10 @@ impl ServerEntry {
                     Some(ConnEvent::Event { event, .. }) => self.clone().apply(&conn, event, sink),
                     Some(ConnEvent::Closed { reason }) => {
                         *self.conn.lock() = None;
-                        *token = conn.reconnect_token().map(str::to_owned);
                         return Served::Lost(reason);
                     }
                     None => {
                         *self.conn.lock() = None;
-                        *token = conn.reconnect_token().map(str::to_owned);
                         return Served::Lost("connection lost".into());
                     }
                 },
@@ -377,9 +431,15 @@ impl ServerEntry {
                     conn.close();
                     return Served::Stopped;
                 }
+                _ = fg.changed() => if !*fg.borrow() {
+                    *self.conn.lock() = None;
+                    conn.abort();
+                    return Served::Background;
+                },
                 _ = self.wake.notified() => {
                     // A manual "reconnect" while online: re-read everything.
-                    for id in self.model.lock().order.clone() {
+                    let order = self.model.lock().order.clone();
+                    for id in order {
                         self.clone().refresh_view(conn.clone(), id, sink.clone());
                     }
                 }
@@ -391,61 +451,94 @@ impl ServerEntry {
         tokio::spawn(async move {
             match conn.attach(&session_id).await {
                 Ok((_, view)) => {
-                    let blocks: Vec<String> = view.all_blocks().filter_map(|(_, b)| b.block_id.clone()).collect();
-                    {
-                        let mut m = self.model.lock();
-                        let s = m.sessions.entry(session_id.clone()).or_default();
-                        s.summary.session_id = session_id.clone();
-                        if s.summary.label.is_empty() {
-                            s.summary.label = view.label.clone();
-                        }
-                        s.view = Some(view);
-                    }
+                    self.apply_view(&session_id, view.clone());
                     sink.changed();
-                    self.fetch_meta(&conn, &session_id, blocks, &sink).await;
-                    if let Ok(v) = conn.call("session.list_clients", json!({"session_id": session_id})).await {
-                        let mut m = self.model.lock();
-                        if let Some(s) = m.sessions.get_mut(&session_id) {
-                            s.clients = v
-                                .get("clients")
-                                .and_then(Value::as_array)
-                                .into_iter()
-                                .flatten()
-                                .filter_map(|c| {
-                                    let id = c.get("client_id")?.as_str()?.to_owned();
-                                    Some((id, describe_client(c)))
-                                })
-                                .collect();
-                        }
-                        drop(m);
-                        sink.changed();
-                    }
+                    self.load_details(conn, session_id, &view, sink);
                 }
                 Err(e) => tracing::warn!("attach {session_id}: {e}"),
             }
         });
     }
 
-    fn refresh_view(self: Arc<Self>, conn: Connection, session_id: String, sink: Arc<dyn Sink>) {
+    /// Take a session's view unless we already hold a newer one.
+    fn apply_view(&self, session_id: &str, view: SessionView) {
+        let mut m = self.model.lock();
+        let s = m.sessions.entry(session_id.to_owned()).or_default();
+        s.summary.session_id = session_id.to_owned();
+        if s.summary.label.is_empty() {
+            s.summary.label = view.label.clone();
+        }
+        if s.view.as_ref().is_none_or(|old| old.revision <= view.revision) {
+            s.view = Some(view);
+        }
+    }
+
+    /// Block titles, statuses and the client list: nice to have, so after going online.
+    fn load_details(self: Arc<Self>, conn: Connection, session_id: String, view: &SessionView, sink: Arc<dyn Sink>) {
+        let blocks: Vec<String> = view.all_blocks().filter_map(|(_, b)| b.block_id.clone()).collect();
         tokio::spawn(async move {
-            if let Ok((_, view)) = conn.view(&session_id).await {
-                let new_blocks: Vec<String> = {
-                    let mut m = self.model.lock();
-                    let known: Vec<String> = view
-                        .all_blocks()
-                        .filter_map(|(_, b)| b.block_id.clone())
-                        .filter(|id| !m.meta.get(id).is_some_and(|x| x.fetched))
+            self.fetch_meta(&conn, &session_id, blocks, &sink).await;
+            if let Ok(v) = conn.call("session.list_clients", json!({"session_id": session_id})).await {
+                let mut m = self.model.lock();
+                if let Some(s) = m.sessions.get_mut(&session_id) {
+                    s.clients = v
+                        .get("clients")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|c| {
+                            let id = c.get("client_id")?.as_str()?.to_owned();
+                            Some((id, describe_client(c)))
+                        })
                         .collect();
-                    if let Some(s) = m.sessions.get_mut(&session_id)
-                        && s.view.as_ref().is_none_or(|old| old.revision <= view.revision) {
-                            s.summary.label = view.label.clone();
-                            s.view = Some(view);
-                        }
-                    known
+                }
+                drop(m);
+                sink.changed();
+            }
+        });
+    }
+
+    /// Re-read a session's view. A burst of changes (a script laying out a
+    /// window) costs one read in flight plus one more for whatever it missed.
+    fn refresh_view(self: Arc<Self>, conn: Connection, session_id: String, sink: Arc<dyn Sink>) {
+        {
+            let mut m = self.model.lock();
+            let Some(s) = m.sessions.get_mut(&session_id) else { return };
+            if s.refreshing {
+                s.refresh_again = true;
+                return;
+            }
+            s.refreshing = true;
+        }
+        tokio::spawn(async move {
+            loop {
+                let view = conn.view(&session_id).await;
+                let (again, new_blocks) = {
+                    let mut m = self.model.lock();
+                    let new_blocks: Vec<String> = match &view {
+                        Ok((_, v)) => v
+                            .all_blocks()
+                            .filter_map(|(_, b)| b.block_id.clone())
+                            .filter(|id| !m.meta.get(id).is_some_and(|x| x.fetched))
+                            .collect(),
+                        Err(_) => Vec::new(),
+                    };
+                    let Some(s) = m.sessions.get_mut(&session_id) else { return };
+                    if let Ok((_, v)) = view
+                        && s.view.as_ref().is_none_or(|old| old.revision <= v.revision)
+                    {
+                        s.summary.label = v.label.clone();
+                        s.view = Some(v);
+                    }
+                    s.refreshing = std::mem::take(&mut s.refresh_again) && !conn.is_closed();
+                    (s.refreshing, new_blocks)
                 };
                 sink.changed();
                 if !new_blocks.is_empty() {
                     self.fetch_meta(&conn, &session_id, new_blocks, &sink).await;
+                }
+                if !again {
+                    return;
                 }
             }
         });
@@ -474,8 +567,8 @@ impl ServerEntry {
                 if let Some(p) = p.as_ref().and_then(|v| v.get("pwd")).and_then(Value::as_str) {
                     meta.pwd = p.to_owned();
                 }
-                if let Some(name) = pr.as_ref().and_then(|v| v.pointer("/foreground/name")).and_then(Value::as_str) {
-                    meta.process = name.to_owned();
+                if let Some(p) = pr.as_ref().and_then(|v| v.get("foreground")).and_then(|f| serde_json::from_value::<Process>(f.clone()).ok()) {
+                    meta.process = p.label();
                 }
                 if let Some(code) = pr.as_ref().and_then(|v| v.pointer("/last_exit/exit_code")).and_then(Value::as_i64)
                     && pr.as_ref().and_then(|v| v.get("child")).is_none_or(Value::is_null) {
@@ -526,6 +619,16 @@ impl ServerEntry {
                 });
             }
             Event::Session { session_id, event } => self.apply_session(conn, session_id, event, sink),
+            Event::ClientChanged(client) => {
+                let Some(id) = client.get("client_id").and_then(Value::as_str) else { return };
+                let d = describe_client(&client);
+                for s in self.model.lock().sessions.values_mut() {
+                    if let Some(c) = s.clients.get_mut(id) {
+                        c.clone_from(&d);
+                    }
+                }
+                sink.changed();
+            }
             _ => {}
         }
     }
@@ -549,13 +652,18 @@ impl ServerEntry {
                 sink.changed();
             }
             SessionEvent::ClientConnected { client_id, display } => {
+                // Listed right away; the inspect reply only fills in its name, and
+                // only if it hasn't left by then (the CLI comes and goes in a blink).
+                if let Some(s) = self.model.lock().sessions.get_mut(&session_id) {
+                    s.clients.insert(client_id.clone(), describe_client(&json!({"principal": {"display": display}})));
+                }
+                sink.changed();
                 let (this, conn, sink, sid) = (self.clone(), conn.clone(), sink.clone(), session_id.clone());
-                let _ = display;
                 tokio::spawn(async move {
                     if let Ok(v) = conn.call("client.inspect", json!({"client_id": client_id})).await {
                         let d = describe_client(v.get("client").unwrap_or(&v));
-                        if let Some(s) = this.model.lock().sessions.get_mut(&sid) {
-                            s.clients.insert(client_id, d);
+                        if let Some(c) = this.model.lock().sessions.get_mut(&sid).and_then(|s| s.clients.get_mut(&client_id)) {
+                            *c = d;
                         }
                         sink.changed();
                     }
@@ -567,16 +675,33 @@ impl ServerEntry {
                 }
                 sink.changed();
             }
-            SessionEvent::Block { block_id, event, .. } => self.apply_block(session_id, block_id, event, sink),
+            SessionEvent::Block { block_id, event, .. } => self.apply_block(conn, session_id, block_id, event, sink),
             _ => {}
         }
     }
 
-    fn apply_block(&self, session_id: String, block_id: String, event: TerminalEvent, sink: &Arc<dyn Sink>) {
+    fn apply_block(&self, conn: &Connection, session_id: String, block_id: String, event: TerminalEvent, sink: &Arc<dyn Sink>) {
         let server_id = self.id();
-        if let TerminalEvent::Clipboard { text: Some(t), .. } = &event {
-            if let Some(term) = self.terminals.lock().get(&block_id).and_then(|w| w.upgrade()) {
-                term.on_clipboard(t.clone());
+        if let TerminalEvent::Clipboard { text, id } = event {
+            let Some(term) = self.terminals.lock().get(&block_id).cloned() else { return };
+            match (text, id) {
+                (Some(t), _) => {
+                    if let Some(term) = term.upgrade() {
+                        term.on_clipboard(t);
+                    }
+                }
+                // Too large for the event: read it in parts.
+                (None, Some(id)) => {
+                    let conn = conn.clone();
+                    tokio::spawn(async move {
+                        if let Some(text) = read_clipboard(&conn, &session_id, &block_id, id).await
+                            && let Some(term) = term.upgrade()
+                        {
+                            term.on_clipboard(text);
+                        }
+                    });
+                }
+                (None, None) => {}
             }
             return;
         }
@@ -590,7 +715,7 @@ impl ServerEntry {
                 TerminalEvent::PwdChanged { pwd } => meta.pwd = pwd,
                 TerminalEvent::ProcessChanged { foreground } => {
                     if let Some(p) = foreground {
-                        meta.process = p.name;
+                        meta.process = p.label();
                         meta.exited = None;
                     }
                 }
@@ -679,8 +804,23 @@ impl ServerEntry {
     }
 }
 
+/// Read a copied text that was too large for its event.
+async fn read_clipboard(conn: &Connection, session_id: &str, block_id: &str, id: u64) -> Option<String> {
+    let mut text = String::new();
+    loop {
+        let args = json!({"id": id, "offset": text.len(), "max_bytes": 983_040});
+        let v = conn.terminal(session_id, block_id, "clipboard_read", args).await.ok()?;
+        let data = v.get("data").and_then(Value::as_str).unwrap_or_default();
+        text.push_str(data);
+        if data.is_empty() || v.get("eof").and_then(Value::as_bool).unwrap_or(true) || text.len() > 64 << 20 {
+            return Some(text);
+        }
+    }
+}
+
 pub(crate) enum Served {
     Stopped,
+    Background,
     Lost(String),
 }
 
@@ -751,6 +891,25 @@ fn notification_name(title: &str, process: &str) -> String {
     if name.is_empty() { process.to_owned() } else { name }
 }
 
+fn splits(w: &raptor_proto::Window) -> Vec<SplitState> {
+    fn first(n: &raptor_proto::LayoutNode) -> Option<String> {
+        n.block_id.clone().or_else(|| n.split.as_ref().and_then(|s| first(&s.before)))
+    }
+    fn walk(n: &raptor_proto::LayoutNode, out: &mut Vec<SplitState>) {
+        let Some(s) = &n.split else { return };
+        if let (Some(before), Some(after)) = (first(&s.before), first(&s.after)) {
+            out.push(SplitState { rect: n.rect, horizontal: s.direction != "vertical", ratio: s.ratio, before, after });
+        }
+        walk(&s.before, out);
+        walk(&s.after, out);
+    }
+    let mut out = Vec::new();
+    if let Some(n) = w.layers.iter().find(|l| l.kind == "tiled").and_then(|l| l.layout.as_ref()) {
+        walk(n, &mut out);
+    }
+    out
+}
+
 #[cfg(test)]
 mod name_tests {
     use super::notification_name as n;
@@ -764,5 +923,27 @@ mod name_tests {
         assert_eq!(n("cargo test -p core /home/me/x", "cargo"), "cargo");
         assert_eq!(n("", "htop"), "htop");
         assert_eq!(n("bad\u{7}bell", "zsh"), "zsh");
+    }
+}
+
+#[cfg(test)]
+mod split_tests {
+    use serde_json::json;
+
+    #[test]
+    fn layout_splits() {
+        let w: raptor_proto::Window = serde_json::from_value(json!({"window_id": "w", "layers": [{
+            "kind": "tiled", "bounds": [0,0,1,1],
+            "layout": {"rect": [0,0,1,1], "split": {"direction": "horizontal", "ratio": 0.6,
+                "before": {"rect": [0,0,0.6,1], "block_id": "a"},
+                "after": {"rect": [0.6,0,0.4,1], "split": {"direction": "vertical", "ratio": 0.5,
+                    "before": {"rect": [0.6,0,0.4,0.5], "block_id": "b"},
+                    "after": {"rect": [0.6,0.5,0.4,0.5], "block_id": "c"}}}}},
+            "blocks": [{"block_id": "a"}, {"block_id": "b"}, {"block_id": "c"}]}]}))
+        .unwrap();
+        let s = super::splits(&w);
+        assert_eq!(s.len(), 2);
+        assert!(s[0].horizontal && s[0].before == "a" && s[0].after == "b" && s[0].ratio == 0.6);
+        assert!(!s[1].horizontal && s[1].rect == [0.6, 0.0, 0.4, 1.0] && s[1].before == "b" && s[1].after == "c");
     }
 }

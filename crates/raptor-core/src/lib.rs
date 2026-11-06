@@ -310,6 +310,16 @@ impl Raptor {
         }
     }
 
+    /// Call when the system wakes from sleep or the network changes. Sockets
+    /// that died meanwhile are found within a few seconds instead of the
+    /// minute a ping timeout takes, and resume on new ones.
+    pub fn verify_connections(&self) {
+        let _rt = self.rt.enter();
+        for e in self.inner.servers.read().iter() {
+            e.verify();
+        }
+    }
+
     /// Mobile apps call this from their lifecycle hooks. In the background,
     /// connections close (the server keeps the client for 60s for a quick resume).
     pub fn set_foreground(&self, fg: bool) {
@@ -321,13 +331,12 @@ impl Raptor {
         }
     }
 
-    /// Forget a server's live connection without closing it, as if its socket
-    /// had died while the app was frozen. Tests use this; the supervisor will
-    /// reconnect on its own.
+    /// Drop a server's live connection without a close frame, as if the
+    /// network had gone away. Tests use this; the supervisor resumes on its own.
     #[doc(hidden)]
     pub fn disconnect_for_test(&self, server_id: &str) {
         if let Ok(e) = self.entry(server_id) {
-            e.forget_connection();
+            e.drop_connection();
         }
     }
 
@@ -471,18 +480,24 @@ impl Raptor {
         self.run(server_id, move |c| Box::pin(async move { c.call("session.move_window", p).await.map(drop) })).await
     }
 
-    /// Move the border of the split between two blocks to `ratio` of its space.
+    /// Minimize a floating layer (its blocks keep running) or show it again.
+    pub async fn set_layer_minimized(&self, server_id: &str, session_id: &str, layer_id: &str, minimized: bool) -> Result<(), CoreError> {
+        let (s, l) = (session_id.to_owned(), layer_id.to_owned());
+        self.run(server_id, move |c| Box::pin(async move { c.set_layer_state(&s, &l, minimized).await })).await
+    }
+
+    /// Move the border of the split that has `before` on one side and `after` on the other.
     pub async fn resize_pane(
         &self,
         server_id: &str,
         session_id: &str,
-        vertical: bool,
-        before_block_id: &str,
-        after_block_id: &str,
+        before: &str,
+        after: &str,
+        horizontal: bool,
         ratio: f64,
     ) -> Result<(), CoreError> {
-        let p = json!({"session_id": session_id, "direction": if vertical { "vertical" } else { "horizontal" },
-            "before_block_id": before_block_id, "after_block_id": after_block_id, "ratio": ratio.clamp(0.02, 0.98)});
+        let p = json!({"session_id": session_id, "before_block_id": before, "after_block_id": after,
+            "direction": if horizontal { "horizontal" } else { "vertical" }, "ratio": ratio.clamp(0.02, 0.98)});
         self.run(server_id, move |c| Box::pin(async move { c.call("session.resize_pane", p).await.map(drop) })).await
     }
 
@@ -564,11 +579,25 @@ impl Raptor {
 
 impl Drop for Raptor {
     fn drop(&mut self) {
+        let mut closing = Vec::new();
         for e in self.inner.servers.read().iter() {
             let _ = e.stop.send(true);
             if let Some(c) = e.connection() {
                 c.close();
+                closing.push(c);
             }
+        }
+        // Give the close frames a moment to go out before the runtime stops:
+        // without one the server keeps each client around for a minute.
+        if !closing.is_empty() && tokio::runtime::Handle::try_current().is_err() {
+            self.rt.block_on(async {
+                let all_closed = async {
+                    while !closing.iter().all(Connection::is_closed) {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                };
+                let _ = tokio::time::timeout(Duration::from_millis(500), all_closed).await;
+            });
         }
     }
 }

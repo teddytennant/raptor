@@ -462,7 +462,7 @@ impl TermView {
             me.root.add_css_class("focused");
             me.restart_blink();
             if let Some(s) = me.session() {
-                s.focus(true);
+                s.event("focus", serde_json::json!({"action": "in"}));
             }
             let cb = me.state.borrow().on_focus.clone();
             if let Some(cb) = cb {
@@ -475,7 +475,7 @@ impl TermView {
             me.root.remove_css_class("focused");
             me.restart_blink();
             if let Some(s) = me.session() {
-                s.focus(false);
+                s.event("focus", serde_json::json!({"action": "out"}));
             }
         });
         self.area.add_controller(focus);
@@ -545,7 +545,7 @@ impl TermView {
                 st.mouse.last_cell = Some((c, r));
                 let held = st.mouse.held.clone();
                 drop(st);
-                s.mouse("press", name, c, r, &held);
+                mouse(&s, "press", name, c, r, &held);
                 g.set_state(gtk::EventSequenceState::Claimed);
                 return;
             }
@@ -593,7 +593,7 @@ impl TermView {
                 drop(st);
                 let (c, r) = me.cell_at(x, y);
                 if let Some(s) = me.session() {
-                    s.mouse("release", name, c, r, &held);
+                    mouse(&s, "release", name, c, r, &held);
                 }
             } else if button == 1 {
                 drop(st);
@@ -619,7 +619,7 @@ impl TermView {
                     st.mouse.last_cell = Some((c, r));
                     let held = st.mouse.held.clone();
                     drop(st);
-                    s.mouse("motion", "unknown", c, r, &held);
+                    mouse(&s, "motion", "unknown", c, r, &held);
                 }
                 return;
             }
@@ -654,7 +654,7 @@ impl TermView {
                 st.mouse.last_cell = Some(cell);
                 drop(st);
                 if let Some(s) = me.session() {
-                    s.mouse("motion", "unknown", cell.0, cell.1, &[]);
+                    mouse(&s, "motion", "unknown", cell.0, cell.1, &[]);
                 }
             }
         });
@@ -867,6 +867,13 @@ fn rounded(cr: &gtk::cairo::Context, x: f64, y: f64, w: f64, h: f64) {
     cr.arc(x + r, y + r, r, std::f64::consts::PI, 0.0);
     cr.arc(x + r, y + h - r, r, 0.0, std::f64::consts::PI);
     cr.close_path();
+}
+
+/// A mouse event for a program that tracks the mouse; `held` is the buttons down after it.
+fn mouse(s: &TerminalSession, action: &str, button: &str, col: u16, row: u16, held: &[&str]) {
+    let buttons: serde_json::Map<String, serde_json::Value> = held.iter().map(|b| (b.to_string(), true.into())).collect();
+    let buttons = if buttons.is_empty() { serde_json::Value::Null } else { buttons.into() };
+    s.event("mouse", serde_json::json!({"action": action, "button": button, "buttons": buttons, "x": col, "y": row}));
 }
 
 fn button_name(b: u32) -> &'static str {

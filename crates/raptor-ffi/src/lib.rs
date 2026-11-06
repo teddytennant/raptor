@@ -100,6 +100,12 @@ pub struct Block {
     pub agent: Option<AgentStatus>,
     pub progress: Option<u8>,
     pub has_bell: bool,
+    /// The layer holding the block, for `set_layer_minimized`.
+    #[uniffi(default = "")]
+    pub layer_id: String,
+    /// In a minimized floating layer: still running, but don't draw it.
+    #[uniffi(default = false)]
+    pub minimized: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
@@ -109,6 +115,21 @@ pub struct Window {
     pub focused_block_id: Option<String>,
     pub zoomed_block_id: Option<String>,
     pub blocks: Vec<Block>,
+    pub splits: Vec<Split>,
+}
+
+/// A border in a window's tiled layout; see `RaptorApp::resize_pane`.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct Split {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    /// Side by side (a vertical border) rather than one above the other.
+    pub horizontal: bool,
+    pub ratio: f64,
+    pub before: String,
+    pub after: String,
 }
 
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
@@ -189,6 +210,8 @@ fn block(b: &core::BlockState, me_connected: bool) -> Block {
         }),
         progress: b.progress,
         has_bell: b.has_bell,
+        layer_id: b.layer_id.clone(),
+        minimized: b.minimized,
     }
 }
 
@@ -244,6 +267,20 @@ impl From<core::AppState> for AppState {
                                 focused_block_id: w.focused_block_id.clone(),
                                 zoomed_block_id: w.zoomed_block_id.clone(),
                                 blocks: w.blocks.iter().map(|b| block(b, true)).collect(),
+                                splits: w
+                                    .splits
+                                    .iter()
+                                    .map(|s| Split {
+                                        x: s.rect[0],
+                                        y: s.rect[1],
+                                        w: s.rect[2],
+                                        h: s.rect[3],
+                                        horizontal: s.horizontal,
+                                        ratio: s.ratio,
+                                        before: s.before.clone(),
+                                        after: s.after.clone(),
+                                    })
+                                    .collect(),
                             })
                             .collect(),
                     })
@@ -547,6 +584,12 @@ impl RaptorApp {
         self.core.set_foreground(foreground)
     }
 
+    /// Call when the system wakes from sleep or the network changes: dead
+    /// connections are found and resumed in seconds, not after a ping timeout.
+    pub fn verify_connections(&self) {
+        self.core.verify_connections()
+    }
+
     pub fn setting(&self, key: String) -> Option<String> {
         self.core.setting(&key).map(|v| v.as_str().map(str::to_owned).unwrap_or_else(|| v.to_string()))
     }
@@ -602,6 +645,23 @@ impl RaptorApp {
 
     pub async fn zoom_block(&self, server_id: String, session_id: String, block_id: String) -> Result<()> {
         Ok(self.core.zoom_block(&server_id, &session_id, &block_id).await?)
+    }
+
+    /// Minimize a floating layer (its blocks keep running) or show it again.
+    pub async fn set_layer_minimized(&self, server_id: String, session_id: String, layer_id: String, minimized: bool) -> Result<()> {
+        Ok(self.core.set_layer_minimized(&server_id, &session_id, &layer_id, minimized).await?)
+    }
+
+    pub async fn resize_pane(
+        &self,
+        server_id: String,
+        session_id: String,
+        before: String,
+        after: String,
+        horizontal: bool,
+        ratio: f64,
+    ) -> Result<()> {
+        Ok(self.core.resize_pane(&server_id, &session_id, &before, &after, horizontal, ratio).await?)
     }
 
     pub async fn preview_text(&self, server_id: String, session_id: String, block_id: String) -> Result<String> {
@@ -819,6 +879,14 @@ impl Terminal {
     /// Go back to the colors the server (or the program) sets.
     pub fn use_server_colors(&self) {
         self.inner.set_theme(None)
+    }
+
+    /// Send a `block.event` such as a mouse press, motion or release, or a
+    /// focus change. `payload_json` is the event's payload as JSON.
+    pub fn send_event(&self, kind: String, payload_json: String) {
+        if let Ok(v) = serde_json::from_str(&payload_json) {
+            self.inner.event(&kind, v)
+        }
     }
 
     /// Wheel scroll for full-screen programs; positive is down.

@@ -630,7 +630,7 @@ fn update_content(ui: &Shared, state: &AppState) {
                     let (core, srv, ses, pending, busy) = (core.clone(), srv.clone(), ses.clone(), pending.clone(), busy.clone());
                     glib::spawn_future_local(async move {
                         while let Some((s, r)) = pending.take() {
-                            let _ = core.resize_pane(&srv, &ses, s.vertical, &s.before_block_id, &s.after_block_id, r).await;
+                            let _ = core.resize_pane(&srv, &ses, &s.before, &s.after, s.horizontal, r).await;
                         }
                         busy.set(false);
                     });

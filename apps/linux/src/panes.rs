@@ -66,7 +66,7 @@ mod imp {
             }
             for (child, s) in self.dividers.borrow().iter() {
                 let r = s.rect;
-                let rect = if s.vertical {
+                let rect = if !s.horizontal {
                     let y = ((r[1] + r[3] * s.ratio) * h).round() - GAP / 2.0;
                     gtk::Allocation::new((r[0] * w) as i32, (y - GRAB / 2.0) as i32, (r[2] * w) as i32, GRAB as i32)
                 } else {
@@ -149,7 +149,7 @@ impl PaneGrid {
         for s in splits {
             let d = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             d.add_css_class("raptor-divider");
-            d.set_cursor_from_name(Some(if s.vertical { "row-resize" } else { "col-resize" }));
+            d.set_cursor_from_name(Some(if !s.horizontal { "row-resize" } else { "col-resize" }));
             d.set_parent(self);
             v.push((d.upcast(), s));
         }
@@ -185,7 +185,7 @@ impl PaneGrid {
                 let mut divs = g.imp().dividers.borrow_mut();
                 let Some((d, s)) = divs.get_mut(index) else { return };
                 let r = s.rect;
-                let ratio = if s.vertical { base + offset.1 / (r[3] * h).max(1.0) } else { base + offset.0 / (r[2] * w).max(1.0) };
+                let ratio = if !s.horizontal { base + offset.1 / (r[3] * h).max(1.0) } else { base + offset.0 / (r[2] * w).max(1.0) };
                 s.ratio = ratio.clamp(0.05, 0.95);
                 if last {
                     d.remove_css_class("dragging");
