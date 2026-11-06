@@ -121,6 +121,10 @@ pub struct BlockState {
     /// `[x, y, w, h]` within the window, as fractions.
     pub rect: [f64; 4],
     pub floating: bool,
+    /// The layer holding the block, for `Raptor::set_layer_minimized`.
+    pub layer_id: String,
+    /// Its floating layer is minimized: the block runs but isn't drawn.
+    pub minimized: bool,
     pub owner: Option<String>,
     pub owned_by_me: bool,
     pub exited: Option<i32>,

@@ -462,6 +462,12 @@ impl Raptor {
         self.run(server_id, move |c| Box::pin(async move { c.zoom_block(&s, &b).await })).await
     }
 
+    /// Minimize a floating layer (its blocks keep running) or show it again.
+    pub async fn set_layer_minimized(&self, server_id: &str, session_id: &str, layer_id: &str, minimized: bool) -> Result<(), CoreError> {
+        let (s, l) = (session_id.to_owned(), layer_id.to_owned());
+        self.run(server_id, move |c| Box::pin(async move { c.set_layer_state(&s, &l, minimized).await })).await
+    }
+
     /// Plain text of a block's screen (for previews and the agent inbox).
     pub async fn preview_text(&self, server_id: &str, session_id: &str, block_id: &str, max_bytes: u64) -> Result<String, CoreError> {
         let (s, b) = (session_id.to_owned(), block_id.to_owned());

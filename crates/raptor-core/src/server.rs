@@ -161,6 +161,8 @@ impl ServerEntry {
                                             process: meta.map(|m| m.process.clone()).unwrap_or_default(),
                                             rect: pl.map(|p| p.rect).unwrap_or([0.0, 0.0, 1.0, 1.0]),
                                             floating: pl.is_some_and(|p| p.floating),
+                                            layer_id: pl.map(|p| p.layer_id.clone()).unwrap_or_default(),
+                                            minimized: pl.is_some_and(|p| p.minimized),
                                             owned_by_me: me.is_some() && b.owner == me,
                                             // An owner that's no longer connected (e.g. the CLI that created
                                             // the session) shouldn't stop us taking the size. Only judge once

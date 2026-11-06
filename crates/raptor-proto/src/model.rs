@@ -47,6 +47,9 @@ pub struct Layer {
     pub kind: String,
     #[serde(default)]
     pub bounds: [f64; 4],
+    /// `minimized` (rev 9) means don't draw it; anything else is normal.
+    #[serde(default)]
+    pub state: Option<String>,
     #[serde(default)]
     pub layout: Option<LayoutNode>,
     #[serde(default, deserialize_with = "null_vec")]
@@ -95,6 +98,9 @@ pub struct PlacedBlock {
     pub block_id: String,
     pub rect: [f64; 4],
     pub floating: bool,
+    pub layer_id: String,
+    /// In a minimized floating layer: running, but not drawn.
+    pub minimized: bool,
 }
 
 impl Window {
@@ -106,9 +112,8 @@ impl Window {
     pub fn placed_blocks(&self) -> Vec<PlacedBlock> {
         let mut out = Vec::new();
         for layer in &self.layers {
-            let floating = layer.kind != "tiled";
             if let Some(node) = &layer.layout {
-                collect(node, floating, &mut out);
+                collect(node, layer, &mut out);
             }
         }
         out
@@ -123,12 +128,18 @@ impl Window {
     }
 }
 
-fn collect(node: &LayoutNode, floating: bool, out: &mut Vec<PlacedBlock>) {
+fn collect(node: &LayoutNode, layer: &Layer, out: &mut Vec<PlacedBlock>) {
     if let Some(id) = &node.block_id {
-        out.push(PlacedBlock { block_id: id.clone(), rect: node.rect, floating });
+        out.push(PlacedBlock {
+            block_id: id.clone(),
+            rect: node.rect,
+            floating: layer.kind != "tiled",
+            layer_id: layer.layer_id.clone().unwrap_or_default(),
+            minimized: layer.state.as_deref() == Some("minimized"),
+        });
     } else if let Some(split) = &node.split {
-        collect(&split.before, floating, out);
-        collect(&split.after, floating, out);
+        collect(&split.before, layer, out);
+        collect(&split.after, layer, out);
     }
 }
 
@@ -374,6 +385,25 @@ mod tests {
         assert_eq!(placed.len(), 2);
         assert_eq!(placed[1].rect, [0.5, 0.0, 0.5, 1.0]);
         assert_eq!(v.find_block("b2").unwrap().1.label, "logs");
+    }
+
+    #[test]
+    fn minimized_floating_layer() {
+        let w: Window = serde_json::from_value(json!({"window_id": "w", "layers": [
+            {"layer_id": "t", "kind": "tiled", "bounds": [0,0,1,1], "layout": {"rect": [0,0,1,1], "block_id": "a"}},
+            {"layer_id": "f", "kind": "floating", "bounds": [0.1,0.1,0.5,0.5], "state": "minimized",
+                "layout": {"rect": [0.1,0.1,0.5,0.5], "block_id": "b"}},
+            {"layer_id": "g", "kind": "floating", "bounds": [0.2,0.2,0.5,0.5], "state": "sparkly",
+                "layout": {"rect": [0.2,0.2,0.5,0.5], "block_id": "c"}}
+        ]}))
+        .unwrap();
+        let p = w.placed_blocks();
+        assert_eq!(p.iter().map(|b| (b.block_id.as_str(), b.floating, b.minimized)).collect::<Vec<_>>(), [
+            ("a", false, false),
+            ("b", true, true),
+            ("c", true, false)
+        ]);
+        assert_eq!(p[1].layer_id, "f");
     }
 
     #[test]

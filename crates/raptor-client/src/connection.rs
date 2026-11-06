@@ -359,6 +359,12 @@ impl Connection {
         self.call("session.zoom_block", json!({"session_id": session_id, "block_id": block_id})).await.map(drop)
     }
 
+    /// Minimize a floating layer, or bring it back (API revision 9).
+    pub async fn set_layer_state(&self, session_id: &str, layer_id: &str, minimized: bool) -> Result<(), ClientError> {
+        let state = if minimized { "minimized" } else { "normal" };
+        self.call("session.set_layer_state", json!({"session_id": session_id, "layer_id": layer_id, "state": state})).await.map(drop)
+    }
+
     pub async fn own_block(&self, session_id: &str, block_id: &str, take: bool) -> Result<Value, ClientError> {
         self.call(
             "session.own_block",

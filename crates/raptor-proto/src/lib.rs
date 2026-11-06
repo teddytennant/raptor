@@ -1,4 +1,4 @@
-//! Wire types and codecs for the Rex server protocol (API revision 8).
+//! Wire types and codecs for the Rex server protocol (API revision 9).
 //!
 //! This crate is pure: no I/O, no async. It describes the control connection
 //! (`rex.control.v1`, JSON over WebSocket text frames), the data connection
@@ -15,8 +15,9 @@ pub use control::*;
 pub use model::*;
 
 /// The control API revision this crate was written against.
-pub const API_REVISION: u32 = 8;
-/// The oldest revision whose shapes we can still parse.
+pub const API_REVISION: u32 = 9;
+/// The oldest revision whose shapes we can still parse. Revision 9 only added
+/// a layer's `state` and `session.set_layer_state`; on 8 every layer is normal.
 pub const API_MIN_REVISION: u32 = 8;
 pub const CONTROL_SUBPROTOCOL: &str = "rex.control.v1";
 pub const TERMINAL_SUBPROTOCOL: &str = "rex.data.terminal.v1";

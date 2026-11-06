@@ -100,6 +100,12 @@ pub struct Block {
     pub agent: Option<AgentStatus>,
     pub progress: Option<u8>,
     pub has_bell: bool,
+    /// The layer holding the block, for `set_layer_minimized`.
+    #[uniffi(default = "")]
+    pub layer_id: String,
+    /// In a minimized floating layer: still running, but don't draw it.
+    #[uniffi(default = false)]
+    pub minimized: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
@@ -189,6 +195,8 @@ fn block(b: &core::BlockState, me_connected: bool) -> Block {
         }),
         progress: b.progress,
         has_bell: b.has_bell,
+        layer_id: b.layer_id.clone(),
+        minimized: b.minimized,
     }
 }
 
@@ -602,6 +610,11 @@ impl RaptorApp {
 
     pub async fn zoom_block(&self, server_id: String, session_id: String, block_id: String) -> Result<()> {
         Ok(self.core.zoom_block(&server_id, &session_id, &block_id).await?)
+    }
+
+    /// Minimize a floating layer (its blocks keep running) or show it again.
+    pub async fn set_layer_minimized(&self, server_id: String, session_id: String, layer_id: String, minimized: bool) -> Result<()> {
+        Ok(self.core.set_layer_minimized(&server_id, &session_id, &layer_id, minimized).await?)
     }
 
     pub async fn preview_text(&self, server_id: String, session_id: String, block_id: String) -> Result<String> {
