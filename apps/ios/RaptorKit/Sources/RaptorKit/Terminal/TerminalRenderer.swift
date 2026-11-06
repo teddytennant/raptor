@@ -37,7 +37,14 @@ public final class TerminalRenderer {
     public private(set) var fontSize: CGFloat
     public private(set) var metrics: CellMetrics
     private var fonts: [CTFont] = []
-    private var lineCache: [String: CTLine] = [:]
+    private struct LineKey: Hashable {
+        var text: String
+        var font: Int
+        var color: UInt32
+    }
+    /// Shaped text by content, face and color: most of a screen is the same from
+    /// one frame to the next, and shaping is the expensive part of drawing.
+    private var lineCache: [LineKey: CTLine] = [:]
 
     public private(set) var font: TermFont = Fonts.byId(nil)
     public private(set) var lineHeight: CGFloat = 1.06
@@ -69,7 +76,17 @@ public final class TerminalRenderer {
         lineCache.removeAll(keepingCapacity: true)
     }
 
-    private func font(bold: Bool, italic: Bool) -> CTFont { fonts[(bold ? 1 : 0) + (italic ? 2 : 0)] }
+    private func face(_ style: UInt16) -> Int { (style & styleBold != 0 ? 1 : 0) + (style & styleItalic != 0 ? 2 : 0) }
+
+    private func shaped(_ s: String, font: Int, color: UInt32) -> CTLine {
+        let key = LineKey(text: s, font: font, color: color)
+        if let l = lineCache[key] { return l }
+        if lineCache.count > 4096 { lineCache.removeAll(keepingCapacity: true) }
+        let attrs: [CFString: Any] = [kCTFontAttributeName: fonts[font], kCTForegroundColorAttributeName: cg(color)]
+        let l = CTLineCreateWithAttributedString(CFAttributedStringCreate(nil, s as CFString, attrs as CFDictionary))
+        lineCache[key] = l
+        return l
+    }
 
     /// Grid that fits `size` points.
     public func grid(for size: CGSize, padding: CGFloat) -> (cols: Int, rows: Int) {
@@ -101,8 +118,11 @@ public final class TerminalRenderer {
         let fgDefault = frame.foreground
         let selection = blend(fgDefault, frame.background, 0.30)
 
+        // Only rows the dirty rect touches (a blinking cursor redraws one cell).
+        let clip = ctx.boundingBoxOfClipPath
         for (row, line) in frame.lines.enumerated() {
             let top = CGFloat(row) * m.height
+            guard top + m.height * 2 >= clip.minY, top - m.height <= clip.maxY else { continue }
             for run in line.runs {
                 let selected = run.style & styleSelected != 0
                 guard let color = selected ? selection : run.bg else { continue }
@@ -112,8 +132,7 @@ public final class TerminalRenderer {
             for run in line.runs where !run.text.allSatisfy({ $0 == " " }) {
                 var color = run.fg
                 if run.style & styleFaint != 0 { color = blend(color, frame.background, 0.5) }
-                let f = font(bold: run.style & styleBold != 0, italic: run.style & styleItalic != 0)
-                drawRun(run, font: f, color: cg(color), at: CGPoint(x: CGFloat(run.col) * m.width, y: top), in: ctx)
+                drawRun(run, font: face(run.style), color: color, at: CGPoint(x: CGFloat(run.col) * m.width, y: top), in: ctx)
                 decorate(run, color: cg(run.underlineColor ?? color), top: top, in: ctx)
             }
         }
@@ -136,7 +155,7 @@ public final class TerminalRenderer {
         }
     }
 
-    private func drawRun(_ run: Run, font: CTFont, color: CGColor, at origin: CGPoint, in ctx: CGContext) {
+    private func drawRun(_ run: Run, font: Int, color: UInt32, at origin: CGPoint, in ctx: CGContext) {
         let m = metrics
         let baseline = origin.y + (m.height - (m.ascent + m.descent)) / 2 + m.ascent
         let graphemes = Array(run.text)
@@ -150,7 +169,7 @@ public final class TerminalRenderer {
             let g = graphemes[i]
             let x = origin.x + col * m.width
             if let scalar = g.unicodeScalars.first, g.unicodeScalars.count == 1, (0x2500...0x259F).contains(scalar.value) {
-                if drawBox(scalar.value, x: x, top: origin.y, cells: w, color: color, in: ctx) {
+                if drawBox(scalar.value, x: x, top: origin.y, cells: w, color: cg(color), in: ctx) {
                     col += w
                     i += 1
                     continue
@@ -174,9 +193,8 @@ public final class TerminalRenderer {
         }
     }
 
-    private func drawText(_ s: String, font: CTFont, color: CGColor, x: CGFloat, baseline: CGFloat, in ctx: CGContext, fitWidth: CGFloat? = nil) {
-        let attrs: [CFString: Any] = [kCTFontAttributeName: font, kCTForegroundColorAttributeName: color]
-        let line = CTLineCreateWithAttributedString(CFAttributedStringCreate(nil, s as CFString, attrs as CFDictionary))
+    private func drawText(_ s: String, font: Int, color: UInt32, x: CGFloat, baseline: CGFloat, in ctx: CGContext, fitWidth: CGFloat? = nil) {
+        let line = shaped(s, font: font, color: color)
         var dx: CGFloat = 0
         if let fit = fitWidth {
             let w = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
@@ -321,9 +339,8 @@ public final class TerminalRenderer {
                 let idx = graphemeIndex(run.widths, Int(c.col - run.col))
                 let chars = Array(run.text)
                 if idx < chars.count, chars[idx] != " " {
-                    let f = font(bold: run.style & styleBold != 0, italic: run.style & styleItalic != 0)
                     let baseline = rect.minY + (m.height - (m.ascent + m.descent)) / 2 + m.ascent
-                    drawText(String(chars[idx]), font: f, color: cg(frame.background), x: rect.minX, baseline: baseline, in: ctx)
+                    drawText(String(chars[idx]), font: face(run.style), color: frame.background, x: rect.minX, baseline: baseline, in: ctx)
                 }
             }
         }
@@ -340,14 +357,13 @@ public final class TerminalRenderer {
         let width = CGFloat(cells) * m.width
         ctx.setFillColor(cg(frame.background))
         ctx.fill(CGRect(x: x, y: top, width: width, height: m.height))
-        let fg = cg(frame.foreground)
         let baseline = top + (m.height - (m.ascent + m.descent)) / 2 + m.ascent
         for g in text {
             let w = CGFloat(cellWidth(g)) * m.width
-            drawText(String(g), font: fonts[0], color: fg, x: x, baseline: baseline, in: ctx, fitWidth: w)
+            drawText(String(g), font: 0, color: frame.foreground, x: x, baseline: baseline, in: ctx, fitWidth: w)
             x += w
         }
-        ctx.setFillColor(fg)
+        ctx.setFillColor(cg(frame.foreground))
         ctx.fill(CGRect(x: CGFloat(col) * m.width, y: top + m.height - 1.5, width: width, height: 1))
         ctx.fill(CGRect(x: x, y: top, width: 2, height: m.height))
     }

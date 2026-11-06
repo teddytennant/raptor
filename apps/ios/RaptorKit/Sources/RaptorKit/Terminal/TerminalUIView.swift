@@ -80,13 +80,6 @@ public final class TerminalUIView: UIView, UITextInputTraits, UIGestureRecognize
         addInteraction(menu)
         editMenu = menu
 
-        blinkTimer = Timer.scheduledTimer(withTimeInterval: 0.53, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, self.frameCache?.cursor?.blinking == true else { return }
-                self.blinkOn.toggle()
-                self.setNeedsDisplay()
-            }
-        }
         isAccessibilityElement = true
         accessibilityTraits = .allowsDirectInteraction
         accessibilityLabel = "Terminal"
@@ -136,10 +129,50 @@ public final class TerminalUIView: UIView, UITextInputTraits, UIGestureRecognize
             onColors?(f.background, f.foreground)
         }
         blinkOn = true
-        setNeedsDisplay()
+        invalidate(from: prev, to: frameCache)
         if UIAccessibility.isVoiceOverRunning, let f = frameCache {
             accessibilityValue = f.lines.suffix(3).map { $0.runs.map(\.text).joined() }.joined(separator: "\n")
         }
+    }
+
+    /// Redraw only the rows that changed (and the cursor's old and new rows);
+    /// anything that moves the whole grid redraws everything.
+    private func invalidate(from p: Frame?, to f: Frame?) {
+        guard let p, let f, p.cols == f.cols, p.rows == f.rows, p.lines.count == f.lines.count,
+              p.background == f.background, p.foreground == f.foreground, p.alternateScreen == f.alternateScreen,
+              p.scrollOffset == f.scrollOffset, p.scrollTotal == f.scrollTotal, offsetY() == drawnOffsetY
+        else { return setNeedsDisplay() }
+        var dirty = CGRect.null
+        for i in f.lines.indices where p.lines[i] != f.lines[i] { dirty = dirty.union(rowRect(i)) }
+        if p.cursor != f.cursor || p.cursorColor != f.cursorColor {
+            for c in [p.cursor, f.cursor].compactMap({ $0 }) { dirty = dirty.union(rowRect(Int(c.row))) }
+        }
+        if !dirty.isNull { setNeedsDisplay(dirty) }
+    }
+
+    private func rowRect(_ row: Int) -> CGRect {
+        let h = renderer.metrics.height * scale
+        return CGRect(x: 0, y: insetTop - offsetY() + padding + CGFloat(row) * h - 2, width: bounds.width, height: h + 4)
+    }
+
+    private var drawnOffsetY: CGFloat = 0
+
+    /// The blink timer only runs while the terminal has the keyboard.
+    private func blink(_ on: Bool) {
+        blinkTimer?.invalidate()
+        blinkTimer = nil
+        blinkOn = true
+        guard on else { return }
+        let t = Timer(timeInterval: 0.53, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.cursorBlinks, self.frameCache?.cursor?.blinking == true else { return }
+                self.blinkOn.toggle()
+                self.setNeedsDisplay(self.cursorRect().insetBy(dx: -3, dy: -3))
+            }
+        }
+        t.tolerance = 0.05
+        RunLoop.main.add(t, forMode: .common)
+        blinkTimer = t
     }
 
     private var scale: CGFloat {
@@ -159,7 +192,8 @@ public final class TerminalUIView: UIView, UITextInputTraits, UIGestureRecognize
         ctx.fill(bounds)
         // Keep the cursor row visible when the grid is taller than the space
         // between the chrome (e.g. the keyboard just opened).
-        ctx.translateBy(x: 0, y: insetTop - offsetY())
+        drawnOffsetY = offsetY()
+        ctx.translateBy(x: 0, y: insetTop - drawnOffsetY)
         var o = TerminalRenderer.Options()
         o.padding = padding
         o.scale = scale
@@ -385,6 +419,7 @@ public final class TerminalUIView: UIView, UITextInputTraits, UIGestureRecognize
     private func startMomentum() {
         link?.invalidate()
         let l = CADisplayLink(target: self, selector: #selector(stepMomentum(_:)))
+        l.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
         l.add(to: .main, forMode: .common)
         link = l
     }
@@ -424,6 +459,7 @@ public final class TerminalUIView: UIView, UITextInputTraits, UIGestureRecognize
 
     public override func becomeFirstResponder() -> Bool {
         let r = super.becomeFirstResponder()
+        blink(r)
         setNeedsDisplay()
         return r
     }
@@ -431,6 +467,7 @@ public final class TerminalUIView: UIView, UITextInputTraits, UIGestureRecognize
     public override func resignFirstResponder() -> Bool {
         resetKeyboardDocument()
         let r = super.resignFirstResponder()
+        blink(false)
         setNeedsDisplay()
         return r
     }
