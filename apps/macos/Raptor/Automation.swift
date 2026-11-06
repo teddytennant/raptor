@@ -37,6 +37,10 @@ enum Automation {
         let args = line.split(separator: " ", maxSplits: 1).map(String.init)
         guard let cmd = args.first else { return "err empty" }
         let rest = args.count > 1 ? args[1] : ""
+        if cmd == "windows" {
+            return "windows \(NSApp.windows.count) hidden=\(NSApp.isHidden) active=\(NSApp.isActive)\n" + NSApp.windows.map { "\($0.title.isEmpty ? "-" : $0.title) visible=\($0.isVisible) \(Int($0.frame.width))x\(Int($0.frame.height)) \(type(of: $0))" }.joined(separator: "\n")
+        }
+        if cmd == "menu" { return menu(rest) ? "ok menu \(rest)" : "err no menu item \(rest)" }
         guard let main = window else { return "err no window" }
         // Keys and clicks go to a sheet while one is up, as they would for a person.
         let w = main.attachedSheet ?? main
@@ -85,8 +89,6 @@ enum Automation {
             guard n.count >= 3 else { return "err scroll x y dy" }
             scroll(point(n[0], n[1], w), dy: n[2], w)
             return "ok scroll"
-        case "menu":
-            return menu(rest) ? "ok menu \(rest)" : "err no menu item \(rest)"
         case "size":
             let n = rest.split(separator: " ").compactMap { Double($0) }
             guard n.count == 2 else { return "err size w h" }
@@ -103,8 +105,6 @@ enum Automation {
             return "err no session \(rest)"
         case "dump":
             return dump(main)
-        case "windows":
-            return NSApp.windows.map { "\($0.title.isEmpty ? "-" : $0.title) visible=\($0.isVisible) \(Int($0.frame.width))x\(Int($0.frame.height)) \(type(of: $0))" }.joined(separator: "\n")
         case "snapself", "snapwin":
             // Offscreen render of a window's views, for when the screen can't be captured.
             // snapwin renders the frontmost other window (Settings, About, a sheet).

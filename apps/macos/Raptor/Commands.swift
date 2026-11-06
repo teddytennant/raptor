@@ -9,6 +9,7 @@ struct RaptorCommands: Commands {
     private var ws: Workspace? { app.current }
 
     var body: some Commands {
+        let _ = app.openMainWindow = { openWindow(id: "main") }
         SidebarCommands()
         CommandGroup(replacing: .appInfo) {
             Button("About Raptor") { showAbout() }

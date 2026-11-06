@@ -14,6 +14,8 @@ final class AppModel {
     private(set) var confirmClose = true
     /// The workspace of the most recently active window; menu commands act on it.
     @ObservationIgnored weak var current: Workspace?
+    /// Opens a new Raptor window (set by the menu commands, which can reach SwiftUI's openWindow).
+    @ObservationIgnored var openMainWindow: (() -> Void)?
     @ObservationIgnored private var workspaces: [WeakWorkspace] = []
     @ObservationIgnored private var pathMonitor: NWPathMonitor?
     @ObservationIgnored private var lastPath: NWPath.Status?

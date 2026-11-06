@@ -46,6 +46,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         #if DEBUG
         Automation.start()
         #endif
+        // Quitting with every window closed would otherwise relaunch to an empty menu bar.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            if !NSApp.windows.contains(where: { $0.isVisible && $0.identifier?.rawValue.hasPrefix("main") == true }) {
+                AppModel.shared.openMainWindow?()
+            }
+        }
     }
 
     func applicationDidBecomeActive(_ note: Foundation.Notification) {
