@@ -890,23 +890,6 @@ fn latin(ctl: &gtk::EventControllerKey, code: u32) -> Option<char> {
         .find_map(|(_, kv)| kv.to_unicode().filter(|c| c.is_ascii_graphic()))
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn finds_urls() {
-        let l = "see (https://example.com/a?b=1). or http://x.io";
-        assert_eq!(super::url_at(l, 10).as_deref(), Some("https://example.com/a?b=1"));
-        assert_eq!(super::url_at(l, 2), None);
-        assert_eq!(super::url_at(l, 44).as_deref(), Some("http://x.io"));
-    }
-
-    #[test]
-    fn quotes_paths() {
-        assert_eq!(super::shell_quote("/tmp/a.txt"), "/tmp/a.txt");
-        assert_eq!(super::shell_quote("/tmp/it's here"), "'/tmp/it'\\''s here'");
-    }
-}
-
 fn named(k: gdk::Key) -> Option<Key> {
     use gdk::Key as G;
     Some(match k {
@@ -933,4 +916,21 @@ fn named(k: gdk::Key) -> Option<Key> {
             return None;
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn finds_urls() {
+        let l = "see (https://example.com/a?b=1). or http://x.io";
+        assert_eq!(super::url_at(l, 10).as_deref(), Some("https://example.com/a?b=1"));
+        assert_eq!(super::url_at(l, 2), None);
+        assert_eq!(super::url_at(l, 44).as_deref(), Some("http://x.io"));
+    }
+
+    #[test]
+    fn quotes_paths() {
+        assert_eq!(super::shell_quote("/tmp/a.txt"), "/tmp/a.txt");
+        assert_eq!(super::shell_quote("/tmp/it's here"), "'/tmp/it'\\''s here'");
+    }
 }
