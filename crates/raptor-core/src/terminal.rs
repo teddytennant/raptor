@@ -124,6 +124,8 @@ enum Input {
     Text(String),
     Key(KeyPress),
     Paste(String),
+    /// A raw `block.event` event, sent in order with typing.
+    Event(serde_json::Value),
 }
 
 pub struct TerminalSession {
@@ -334,6 +336,10 @@ impl TerminalSession {
                     Input::Text(t) => conn.write(&self.session_id, &self.block_id, t).await,
                     Input::Key(k) => conn.key(&self.session_id, &self.block_id, k).await,
                     Input::Paste(p) => conn.paste(&self.session_id, &self.block_id, p).await,
+                    Input::Event(e) => conn
+                        .call("block.event", json!({"session_id": self.session_id, "block_id": self.block_id, "event": e}))
+                        .await
+                        .map(drop),
                 };
                 if let Err(e) = r {
                     tracing::warn!("input: {e}");
@@ -537,6 +543,21 @@ impl TerminalSession {
                     .await;
             }
         });
+    }
+
+    /// A mouse event for programs that track the mouse. `action` is press, release,
+    /// or motion; `held` lists the buttons down after the event.
+    pub fn mouse(&self, action: &str, button: &str, col: u16, row: u16, held: &[&str]) {
+        let buttons: serde_json::Map<String, serde_json::Value> = held.iter().map(|b| (b.to_string(), json!(true))).collect();
+        let buttons = if buttons.is_empty() { serde_json::Value::Null } else { buttons.into() };
+        let payload = json!({"action": action, "button": button, "buttons": buttons, "x": col, "y": row});
+        let _ = self.input.send(Input::Event(json!({"type": "mouse", "payload": payload})));
+    }
+
+    /// Tell a program that asked for focus reports (mode 1004) that the view gained or lost focus.
+    pub fn focus(&self, focused: bool) {
+        let payload = json!({"action": if focused { "in" } else { "out" }});
+        let _ = self.input.send(Input::Event(json!({"type": "focus", "payload": payload})));
     }
 
     /// Scroll wheel for full-screen programs (vim, less, htop). Positive is down.
