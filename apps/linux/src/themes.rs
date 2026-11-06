@@ -137,10 +137,9 @@ impl Theme {
             @define-color accent_color {acc};
             @define-color accent_fg_color {onacc};
             .raptor-terminal {{ background: {bgc}; }}
-            .raptor-panes {{ background: {gap}; }}
-            .raptor-ring {{ border: 1px solid transparent; }}
-            .raptor-pane.focused .raptor-ring {{ border-color: alpha({acc}, 0.7); }}
-            .raptor-pill {{ background: alpha({raised}, 0.94); color: {fgc}; }}
+            panegrid {{ background: {gap}; }}
+            panegrid.multi > .raptor-pane:not(.focused) .raptor-ring {{ background: alpha({bgc}, 0.35); }}
+            .raptor-pill {{ background: alpha({raised}, 0.96); color: {fgc}; }}
             .raptor-tile {{ background: alpha({acc}, 0.16); color: {acc}; border-radius: 7px; min-width: 26px; min-height: 26px; font-family: "JetBrains Mono", monospace; font-weight: 700; }}
             .raptor-palette row {{ padding: 6px 10px; border-radius: 8px; }}
             .raptor-palette .cat {{ font-size: 0.75em; font-weight: 700; opacity: 0.55; letter-spacing: 0.05em; }}
