@@ -260,6 +260,10 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
         val s = scale()
         val visible = height - insetTop - insetBottom
         val contentH = f.rows.toInt() * cellH * s + padding * 2
+        // A fitted grid shorter than the view is waiting for the server to grow it
+        // (the keyboard just closed): keep its bottom row where it was, so the
+        // prompt doesn't jump up and back down.
+        if (control && contentH < visible - cellH) return contentH - visible
         if (contentH <= visible) return 0f
         val anchorRow = (f.cursor?.row?.toInt() ?: (f.rows.toInt() - 1)) + 1
         val needBottom = anchorRow * cellH * s + padding * 2
