@@ -1,12 +1,13 @@
 //! A terminal a UI is showing: its stream, its emulator, and its input queue.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use parking_lot::Mutex;
 use serde_json::json;
-use raptor_client::{DataEvent, DataStream, KeyPress, Mods};
+use futures_util::FutureExt;
+use raptor_client::{Connection, DataEvent, DataStream, KeyPress, Mods};
 use raptor_term::{Frame, Rgb, Terminal};
 use tokio::sync::{mpsc, watch};
 
@@ -159,7 +160,8 @@ fn apply_colors(t: &mut Terminal, forced: Option<&ColorTheme>, server: &ServerTh
 enum Input {
     Text(String),
     Key(KeyPress),
-    Paste(String),
+    /// A `block.event`: paste, mouse button, wheel.
+    Event(serde_json::Value),
 }
 
 pub struct TerminalSession {
@@ -205,8 +207,9 @@ impl TerminalSession {
             server_theme: Mutex::new(ServerTheme::default()),
             rt: tokio::runtime::Handle::current(),
         });
-        this.rt.spawn(this.clone().stream_task());
-        this.rt.spawn(this.clone().input_task(input_rx));
+        // The tasks hold the session weakly, so it's freed as soon as the app lets go.
+        this.rt.spawn(Self::stream_task(Arc::downgrade(&this), this.stop.subscribe()));
+        this.rt.spawn(Self::input_task(Arc::downgrade(&this), input_rx, this.stop.subscribe()));
         this
     }
 
@@ -255,109 +258,129 @@ impl TerminalSession {
         }
     }
 
-    async fn stream_task(self: Arc<Self>) {
-        let mut stop = self.stop.subscribe();
-        // Get a ticket (needs a live, attached control connection).
-        let ticket = loop {
-            if *stop.borrow() {
-                return;
-            }
-            match self.server.wait_connection(Duration::from_secs(30)).await {
-                Some(c) => match c.data_ticket(&self.session_id, &self.block_id).await {
-                    Ok(t) => break t,
-                    Err(e) if e.api_code() == Some("not_found") || e.api_code() == Some("session_not_found") => {
-                        self.set_status(TerminalStatus::Ended { reason: "This terminal no longer exists".into() });
-                        return;
-                    }
-                    Err(e) => {
-                        // Not attached yet (conflict) or a hiccup: try shortly.
-                        tracing::debug!("ticket: {e}");
-                        tokio::time::sleep(Duration::from_millis(400)).await;
-                    }
-                },
-                None => self.set_status(TerminalStatus::Reconnecting),
-            }
-        };
-        let endpoint = match raptor_client::Endpoint::parse(&self.server.profile.lock().address) {
-            Ok(e) => e,
-            Err(e) => return self.set_status(TerminalStatus::Ended { reason: e.to_string() }),
-        };
-        let (ds, mut rx) = DataStream::open(endpoint, ticket);
+    /// A data ticket, once the server is reachable and attached. `None` when the
+    /// session went away or the block closed (the status says which).
+    async fn ticket(this: &Weak<Self>, stop: &mut watch::Receiver<bool>, gone: &str) -> Option<String> {
         loop {
-            tokio::select! {
-                _ = stop.changed() => { drop(ds); return; }
-                ev = rx.recv() => {
-                    let Some(ev) = ev else { return };
-                    match ev {
-                        DataEvent::Started => self.set_status(TerminalStatus::Connecting),
-                        DataEvent::Snapshot(s) => {
-                            let r = {
-                                let mut t = self.term.lock();
-                                let r = t.restore(&s);
-                                // A new stream sends its theme after the snapshot, unless every color is built in.
-                                *self.server_theme.lock() = ServerTheme::default();
-                                apply_colors(&mut t, self.forced.lock().as_ref(), &ServerTheme::default());
-                                r
-                            };
-                            if let Err(e) = r { tracing::warn!("restore: {e}"); }
-                            let (c, r) = self.size();
-                            self.listener.size_changed(c, r);
-                            self.set_status(TerminalStatus::Live);
-                            self.dirty();
-                        }
-                        DataEvent::Output(o) => {
-                            self.term.lock().write_vt(&o);
-                            self.dirty();
-                        }
-                        DataEvent::Resize { cols, rows } => {
-                            let changed = {
-                                let mut t = self.term.lock();
-                                let (oc, or) = t.size();
-                                if (oc, or) != (cols as u16, rows as u16) {
-                                    t.resize(cols as u16, rows as u16, 0, 0);
-                                    true
-                                } else { false }
-                            };
-                            if changed { self.listener.size_changed(cols as u16, rows as u16); self.dirty(); }
-                        }
-                        DataEvent::Theme { foreground, background, cursor, palette } => {
-                            let theme = ServerTheme::parse(&foreground, &background, &cursor, &palette);
-                            if self.forced.lock().is_none() {
-                                apply_colors(&mut self.term.lock(), None, &theme);
-                                self.dirty();
-                            }
-                            *self.server_theme.lock() = theme;
-                        }
-                        DataEvent::ChildExited { exit_code } => self.set_status(TerminalStatus::Exited { code: exit_code }),
-                        DataEvent::Reconnecting => self.set_status(TerminalStatus::Reconnecting),
-                        DataEvent::Resumed => self.set_status(TerminalStatus::Live),
-                        DataEvent::NeedsTicket => {
-                            self.set_status(TerminalStatus::Reconnecting);
-                            let this = self.clone();
-                            let ticket = loop {
-                                if *stop.borrow() { return; }
-                                if let Some(c) = this.server.wait_connection(Duration::from_secs(30)).await { match c.data_ticket(&this.session_id, &this.block_id).await {
-                                    Ok(t) => break t,
-                                    Err(e) if e.api_code() == Some("not_found") || e.api_code() == Some("session_not_found") => {
-                                        return this.set_status(TerminalStatus::Ended { reason: "This terminal closed".into() });
-                                    }
-                                    Err(_) => tokio::time::sleep(Duration::from_millis(500)).await,
-                                } }
-                            };
-                            ds.restart(ticket);
-                        }
-                        DataEvent::Ended { reason } => {
-                            let reason = if reason.contains("block closed") { "This terminal closed".to_owned() } else { reason };
-                            return self.set_status(TerminalStatus::Ended { reason });
-                        }
+            if *stop.borrow() {
+                return None;
+            }
+            let server = this.upgrade()?.server.clone();
+            let conn = tokio::select! {
+                _ = stop.changed() => return None,
+                c = server.wait_connection(Duration::from_secs(30)) => c,
+            };
+            let me = this.upgrade()?;
+            let Some(c) = conn else {
+                me.set_status(TerminalStatus::Reconnecting);
+                continue;
+            };
+            match c.data_ticket(&me.session_id, &me.block_id).await {
+                Ok(t) => return Some(t),
+                Err(e) if e.api_code() == Some("not_found") || e.api_code() == Some("session_not_found") => {
+                    me.set_status(TerminalStatus::Ended { reason: gone.into() });
+                    return None;
+                }
+                Err(e) => {
+                    // Not attached yet (conflict) or a hiccup: try shortly.
+                    tracing::debug!("ticket: {e}");
+                    drop(me);
+                    tokio::select! {
+                        _ = stop.changed() => return None,
+                        _ = tokio::time::sleep(Duration::from_millis(400)) => {}
                     }
                 }
             }
         }
     }
 
-    async fn input_task(self: Arc<Self>, mut rx: mpsc::UnboundedReceiver<Input>) {
-        while let Some(first) = rx.recv().await {
+    async fn stream_task(this: Weak<Self>, mut stop: watch::Receiver<bool>) {
+        let Some(ticket) = Self::ticket(&this, &mut stop, "This terminal no longer exists").await else { return };
+        let Some(address) = this.upgrade().map(|me| me.server.profile.lock().address.clone()) else { return };
+        let endpoint = match raptor_client::Endpoint::parse(&address) {
+            Ok(e) => e,
+            Err(e) => {
+                if let Some(me) = this.upgrade() {
+                    me.set_status(TerminalStatus::Ended { reason: e.to_string() });
+                }
+                return;
+            }
+        };
+        let (ds, mut rx) = DataStream::open(endpoint, ticket);
+        loop {
+            let ev = tokio::select! {
+                _ = stop.changed() => return,
+                ev = rx.recv() => ev,
+            };
+            let (Some(ev), Some(me)) = (ev, this.upgrade()) else { return };
+            match ev {
+                DataEvent::Started => me.set_status(TerminalStatus::Connecting),
+                DataEvent::Snapshot(s) => {
+                    let r = {
+                        let mut t = me.term.lock();
+                        let r = t.restore(&s);
+                        // A new stream sends its theme after the snapshot, unless every color is built in.
+                        *me.server_theme.lock() = ServerTheme::default();
+                        apply_colors(&mut t, me.forced.lock().as_ref(), &ServerTheme::default());
+                        r
+                    };
+                    if let Err(e) = r {
+                        tracing::warn!("restore: {e}");
+                    }
+                    let (c, r) = me.size();
+                    me.listener.size_changed(c, r);
+                    me.set_status(TerminalStatus::Live);
+                    me.dirty();
+                }
+                DataEvent::Output(o) => {
+                    me.term.lock().write_vt(&o);
+                    me.dirty();
+                }
+                DataEvent::Resize { cols, rows } => {
+                    let changed = {
+                        let mut t = me.term.lock();
+                        let changed = t.size() != (cols as u16, rows as u16);
+                        if changed {
+                            t.resize(cols as u16, rows as u16, 0, 0);
+                        }
+                        changed
+                    };
+                    if changed {
+                        me.listener.size_changed(cols as u16, rows as u16);
+                        me.dirty();
+                    }
+                }
+                DataEvent::Theme { foreground, background, cursor, palette } => {
+                    let theme = ServerTheme::parse(&foreground, &background, &cursor, &palette);
+                    if me.forced.lock().is_none() {
+                        apply_colors(&mut me.term.lock(), None, &theme);
+                        me.dirty();
+                    }
+                    *me.server_theme.lock() = theme;
+                }
+                DataEvent::ChildExited { exit_code } => me.set_status(TerminalStatus::Exited { code: exit_code }),
+                DataEvent::Reconnecting => me.set_status(TerminalStatus::Reconnecting),
+                DataEvent::Resumed => me.set_status(TerminalStatus::Live),
+                DataEvent::NeedsTicket => {
+                    me.set_status(TerminalStatus::Reconnecting);
+                    drop(me);
+                    let Some(ticket) = Self::ticket(&this, &mut stop, "This terminal closed").await else { return };
+                    ds.restart(ticket);
+                }
+                DataEvent::Ended { reason } => {
+                    let reason = if reason.contains("block closed") { "This terminal closed".to_owned() } else { reason };
+                    return me.set_status(TerminalStatus::Ended { reason });
+                }
+            }
+        }
+    }
+
+    async fn input_task(this: Weak<Self>, mut rx: mpsc::UnboundedReceiver<Input>, mut stop: watch::Receiver<bool>) {
+        loop {
+            let first = tokio::select! {
+                _ = stop.changed() => return,
+                i = rx.recv() => match i { Some(i) => i, None => return },
+            };
             // Merge queued text so fast typing over slow links costs one round trip.
             let mut batch = vec![first];
             while let Ok(more) = rx.try_recv() {
@@ -366,17 +389,15 @@ impl TerminalSession {
                     (_, m) => batch.push(m),
                 }
             }
-            let Some(conn) = self.server.wait_connection(Duration::from_secs(10)).await else { continue };
-            for item in batch {
-                let r = match &item {
-                    Input::Text(t) => conn.write(&self.session_id, &self.block_id, t).await,
-                    Input::Key(k) => conn.key(&self.session_id, &self.block_id, k).await,
-                    Input::Paste(p) => conn.paste(&self.session_id, &self.block_id, p).await,
-                };
-                if let Err(e) = r {
-                    tracing::warn!("input: {e}");
-                }
-            }
+            let Some(me) = this.upgrade() else { return };
+            let (server, sid, bid) = (me.server.clone(), me.session_id.clone(), me.block_id.clone());
+            drop(me);
+            let conn = tokio::select! {
+                _ = stop.changed() => return,
+                c = server.wait_connection(Duration::from_secs(10)) => c,
+            };
+            let Some(conn) = conn else { continue };
+            send_input(&conn, &sid, &bid, batch).await;
         }
     }
 
@@ -402,7 +423,7 @@ impl TerminalSession {
     pub fn paste(&self, text: &str) {
         if !text.is_empty() {
             self.snap_to_bottom();
-            let _ = self.input.send(Input::Paste(text.to_owned()));
+            let _ = self.input.send(Input::Event(json!({"type": "paste", "payload": {"text": text}})));
         }
     }
 
@@ -554,35 +575,16 @@ impl TerminalSession {
 
     /// Send a mouse click at a cell, for programs that track the mouse.
     pub fn click(&self, col: u16, row: u16) {
-        let (server, sid, bid) = (self.server.clone(), self.session_id.clone(), self.block_id.clone());
-        self.rt.spawn(async move {
-            let Some(c) = server.connection() else { return };
-            for (action, held) in [("press", json!({"left": true})), ("release", serde_json::Value::Null)] {
-                let _ = c
-                    .call(
-                        "block.event",
-                        json!({"session_id": sid, "block_id": bid, "event": {"type": "mouse",
-                            "payload": {"action": action, "button": "left", "buttons": held, "x": col, "y": row}}}),
-                    )
-                    .await;
-            }
-        });
+        for (action, held) in [("press", json!({"left": true})), ("release", serde_json::Value::Null)] {
+            let _ = self.input.send(Input::Event(json!({"type": "mouse",
+                "payload": {"action": action, "button": "left", "buttons": held, "x": col, "y": row}})));
+        }
     }
 
     /// Scroll wheel for full-screen programs (vim, less, htop). Positive is down.
     pub fn wheel(&self, col: u16, row: u16, lines: f32) {
-        let (server, sid, bid) = (self.server.clone(), self.session_id.clone(), self.block_id.clone());
-        self.rt.spawn(async move {
-            if let Some(c) = server.connection() {
-                let _ = c
-                    .call(
-                        "block.event",
-                        json!({"session_id": sid, "block_id": bid, "event": {"type": "wheel",
-                            "payload": {"delta_x": 0, "delta_y": lines, "delta_mode": "line", "x": col, "y": row}}}),
-                    )
-                    .await;
-            }
-        });
+        let _ = self.input.send(Input::Event(json!({"type": "wheel",
+            "payload": {"delta_x": 0, "delta_y": lines, "delta_mode": "line", "x": col, "y": row}})));
     }
 
     pub fn mouse_tracking(&self) -> bool {
@@ -591,6 +593,34 @@ impl TerminalSession {
 
     pub(crate) fn on_clipboard(&self, text: String) {
         self.listener.clipboard(text);
+    }
+}
+
+/// Send input in order. Keys and input events run in order on the server, so a
+/// run of them goes out back to back and costs one round trip; typed text runs
+/// alongside them there, so it waits for what came before and vice versa.
+async fn send_input(conn: &Connection, sid: &str, bid: &str, batch: Vec<Input>) {
+    let mut ordered = Vec::new();
+    for item in batch {
+        match item {
+            Input::Key(k) => ordered.push(conn.send_key(sid, bid, &k).boxed()),
+            Input::Event(e) => ordered.push(conn.send_event(sid, bid, e).boxed()),
+            Input::Text(t) => {
+                for r in futures_util::future::join_all(ordered.drain(..)).await {
+                    if let Err(e) = r {
+                        tracing::warn!("input: {e}");
+                    }
+                }
+                if let Err(e) = conn.write(sid, bid, &t).await {
+                    tracing::warn!("input: {e}");
+                }
+            }
+        }
+    }
+    for r in futures_util::future::join_all(ordered).await {
+        if let Err(e) = r {
+            tracing::warn!("input: {e}");
+        }
     }
 }
 

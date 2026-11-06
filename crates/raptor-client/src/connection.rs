@@ -227,12 +227,37 @@ impl Connection {
 
     /// Call a method; returns the response's `seq` and its payload.
     pub async fn call_seq(&self, method: &str, payload: Value) -> Result<(u64, Value), ClientError> {
+        self.request(method, payload).await
+    }
+
+    /// Send a request now and wait for its response later. Requests go out in
+    /// the order of these calls, so methods the server runs in order (keys,
+    /// input events) can be pipelined without waiting a round trip for each.
+    pub fn request(&self, method: &str, payload: Value) -> impl Future<Output = Result<(u64, Value), ClientError>> + Send + use<> {
+        let sent = self.send_request(method, payload);
+        let inner = self.inner.clone();
+        async move {
+            let (id, rx) = sent?;
+            let resp = match tokio::time::timeout(inner.timeout * 3, rx).await {
+                Ok(Ok(r)) => r,
+                Ok(Err(_)) => return Err(ClientError::Closed),
+                Err(_) => {
+                    inner.pending.lock().unwrap().remove(&id);
+                    return Err(ClientError::Timeout);
+                }
+            };
+            if let Some(e) = resp.error {
+                return Err(ClientError::Api(e));
+            }
+            Ok((resp.seq, resp.payload.unwrap_or(Value::Null)))
+        }
+    }
+
+    fn send_request(&self, method: &str, payload: Value) -> Result<(String, oneshot::Receiver<Response>), ClientError> {
         if self.is_closed() {
             return Err(ClientError::Closed);
         }
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed).to_string();
-        let (tx, rx) = oneshot::channel();
-        self.inner.pending.lock().unwrap().insert(id.clone(), tx);
         let req = ClientMessage::Request {
             id: id.clone(),
             method: method.to_owned(),
@@ -240,25 +265,17 @@ impl Connection {
         };
         let text = serde_json::to_string(&req)?;
         if text.len() as u64 > self.inner.welcome.limits.max_message_bytes {
-            self.inner.pending.lock().unwrap().remove(&id);
             return Err(ClientError::Protocol("request too large".into()));
         }
-        if self.inner.out.send(Out::Message(Message::text(text))).is_err() {
+        let (tx, rx) = oneshot::channel();
+        self.inner.pending.lock().unwrap().insert(id.clone(), tx);
+        // The reader clears `pending` when the socket closes; a request that slipped
+        // in after that would otherwise wait out the whole timeout.
+        if self.inner.out.send(Out::Message(Message::text(text))).is_err() || self.is_closed() {
             self.inner.pending.lock().unwrap().remove(&id);
             return Err(ClientError::Closed);
         }
-        let resp = match tokio::time::timeout(self.inner.timeout * 3, rx).await {
-            Ok(Ok(r)) => r,
-            Ok(Err(_)) => return Err(ClientError::Closed),
-            Err(_) => {
-                self.inner.pending.lock().unwrap().remove(&id);
-                return Err(ClientError::Timeout);
-            }
-        };
-        if let Some(e) = resp.error {
-            return Err(ClientError::Api(e));
-        }
-        Ok((resp.seq, resp.payload.unwrap_or(Value::Null)))
+        Ok((id, rx))
     }
 
     pub async fn call(&self, method: &str, payload: Value) -> Result<Value, ClientError> {
@@ -406,20 +423,28 @@ impl Connection {
 
     /// Paste (respects bracketed paste mode).
     pub async fn paste(&self, session_id: &str, block_id: &str, text: &str) -> Result<(), ClientError> {
-        self.call(
-            "block.event",
-            json!({"session_id": session_id, "block_id": block_id, "event": {"type": "paste", "payload": {"text": text}}}),
-        )
-        .await
-        .map(drop)
+        self.send_event(session_id, block_id, json!({"type": "paste", "payload": {"text": text}})).await
+    }
+
+    /// Send an input event (paste, mouse, wheel) now; await the result later.
+    pub fn send_event(&self, session_id: &str, block_id: &str, event: Value) -> impl Future<Output = Result<(), ClientError>> + Send + use<> {
+        let r = self.request("block.event", json!({"session_id": session_id, "block_id": block_id, "event": event}));
+        async move { r.await.map(drop) }
     }
 
     /// Send a key press (and release), routed through the server's key bindings.
     pub async fn key(&self, session_id: &str, block_id: &str, key: &KeyPress) -> Result<(), ClientError> {
-        for action in ["press", "release"] {
-            self.call("client.key", json!({"session_id": session_id, "block_id": block_id, "key": key.to_json(action)})).await?;
+        self.send_key(session_id, block_id, key).await
+    }
+
+    /// Send a key press and release now; await the result later.
+    pub fn send_key(&self, session_id: &str, block_id: &str, key: &KeyPress) -> impl Future<Output = Result<(), ClientError>> + Send + use<> {
+        let [press, release] = ["press", "release"]
+            .map(|action| self.request("client.key", json!({"session_id": session_id, "block_id": block_id, "key": key.to_json(action)})));
+        async move {
+            press.await?;
+            release.await.map(drop)
         }
-        Ok(())
     }
 
     pub async fn resize(
