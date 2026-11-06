@@ -89,6 +89,8 @@ public struct TerminalScreen: View {
 
             // The top bar sits over the terminal like glass: live rows start
             // below it, and scrollback moving up behind it shows through blurred.
+            // A landscape phone with the keyboard up needs every row, so it goes.
+            if !(vsize == .compact && keyboard) {
             VStack(spacing: 8) {
                 header(c, server: server, session: session, window: window, block: block)
                 // Windows as slim tabs in the top bar: always reachable, even while typing.
@@ -116,6 +118,8 @@ public struct TerminalScreen: View {
                         .ignoresSafeArea(edges: .top)
                 }
                 .background(GeometryReader { g in Color.clear.preference(key: TopInsetKey.self, value: g.frame(in: .global).maxY) })
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
 
         }
         .environment(\.chrome, c)
