@@ -159,6 +159,8 @@ private struct Detail: View {
                 }
             } else if let srv = ws.server, !srv.connectivity.isOnline {
                 ServerStatusView(server: srv)
+            } else if let s = ws.session {
+                EmptySession(ws: ws, session: s)
             } else {
                 Placeholder(ws: ws)
             }
@@ -202,6 +204,26 @@ private struct Placeholder: View {
             if model.state.servers.contains(where: { $0.connectivity.isOnline }) {
                 Button("New Session") { ws.newSession() }.padding(.top, 4)
             }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// A session whose last tab closed; the server keeps it until it's ended.
+private struct EmptySession: View {
+    let ws: Workspace
+    let session: Session
+    @Environment(\.chrome) private var c
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "macwindow.badge.plus").font(.system(size: 36, weight: .light)).foregroundStyle(c.tertiary)
+            Text("“\(session.label)” has no tabs").font(.title3.weight(.semibold)).foregroundStyle(c.text)
+            HStack {
+                Button("New Tab") { ws.newTab() }.keyboardShortcut(.defaultAction)
+                Button("End Session") { ws.endSession(serverId: ws.serverId ?? "", sessionId: session.id, label: session.label) }
+            }
+            .padding(.top, 4)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
