@@ -359,6 +359,11 @@ impl TerminalSession {
                         let changed = t.size() != (cols as u16, rows as u16);
                         if changed {
                             t.resize(cols as u16, rows as u16, 0, 0);
+                            // Reflow moves the last match; follow its selection.
+                            let mut pos = me.find_pos.lock();
+                            if pos.is_some() {
+                                *pos = selection_start(&mut t);
+                            }
                         }
                         changed
                     };
@@ -733,6 +738,12 @@ impl Drop for TerminalSession {
 }
 
 /// Start and end columns of every match of `needle` (lowercase) in a row.
+/// Where the selection starts in the scrollback, if it's on screen.
+fn selection_start(t: &mut raptor_term::Terminal) -> Option<(u64, u16)> {
+    let f = t.frame();
+    f.lines.iter().enumerate().find_map(|(r, row)| row.runs.iter().find(|x| x.selected).map(|x| (f.scrollbar.offset + r as u64, x.col)))
+}
+
 fn find_in_row(row: &raptor_term::Row, needle: &[char]) -> Vec<(u16, u16)> {
     // Each lowercase char of the row with the cell its grapheme starts at and covers.
     let mut chars: Vec<(char, u16, u16)> = Vec::new();
@@ -799,5 +810,23 @@ mod tests {
         let wide: Vec<char> = "你好".chars().collect();
         assert_eq!(find_in_row(&f.lines[0], &wide), [(10, 13)]);
         assert!(find_in_row(&f.lines[1], &q).is_empty());
+    }
+
+    #[test]
+    fn selection_follows_reflow() {
+        let mut t = Terminal::new(20, 4);
+        t.write_vt(b"0123456789abcdefghij needle here");
+        assert_eq!(selection_start(&mut t), None);
+        let f = t.frame();
+        let row = f.lines.iter().position(|l| find_in_row(l, &"needle".chars().collect::<Vec<_>>()).len() == 1).unwrap();
+        let (s, e) = find_in_row(&f.lines[row], &"needle".chars().collect::<Vec<_>>())[0];
+        t.select((s, row as u16), (e, row as u16));
+        let before = selection_start(&mut t).unwrap();
+        t.resize(40, 4, 0, 0);
+        let after = selection_start(&mut t).unwrap();
+        assert_ne!(before, after, "the match moved when the line unwrapped");
+        let f = t.frame();
+        let r = (after.0 - f.scrollbar.offset) as usize;
+        assert_eq!(find_in_row(&f.lines[r], &"needle".chars().collect::<Vec<_>>()), [(after.1, after.1 + 5)]);
     }
 }
