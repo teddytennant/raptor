@@ -115,6 +115,21 @@ pub struct Window {
     pub focused_block_id: Option<String>,
     pub zoomed_block_id: Option<String>,
     pub blocks: Vec<Block>,
+    pub splits: Vec<Split>,
+}
+
+/// A border in a window's tiled layout; see `RaptorApp::resize_pane`.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct Split {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    /// Side by side (a vertical border) rather than one above the other.
+    pub horizontal: bool,
+    pub ratio: f64,
+    pub before: String,
+    pub after: String,
 }
 
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
@@ -252,6 +267,20 @@ impl From<core::AppState> for AppState {
                                 focused_block_id: w.focused_block_id.clone(),
                                 zoomed_block_id: w.zoomed_block_id.clone(),
                                 blocks: w.blocks.iter().map(|b| block(b, true)).collect(),
+                                splits: w
+                                    .splits
+                                    .iter()
+                                    .map(|s| Split {
+                                        x: s.rect[0],
+                                        y: s.rect[1],
+                                        w: s.rect[2],
+                                        h: s.rect[3],
+                                        horizontal: s.horizontal,
+                                        ratio: s.ratio,
+                                        before: s.before.clone(),
+                                        after: s.after.clone(),
+                                    })
+                                    .collect(),
                             })
                             .collect(),
                     })
@@ -623,6 +652,18 @@ impl RaptorApp {
         Ok(self.core.set_layer_minimized(&server_id, &session_id, &layer_id, minimized).await?)
     }
 
+    pub async fn resize_pane(
+        &self,
+        server_id: String,
+        session_id: String,
+        before: String,
+        after: String,
+        horizontal: bool,
+        ratio: f64,
+    ) -> Result<()> {
+        Ok(self.core.resize_pane(&server_id, &session_id, &before, &after, horizontal, ratio).await?)
+    }
+
     pub async fn preview_text(&self, server_id: String, session_id: String, block_id: String) -> Result<String> {
         Ok(self.core.preview_text(&server_id, &session_id, &block_id, 64 * 1024).await?)
     }
@@ -838,6 +879,14 @@ impl Terminal {
     /// Go back to the colors the server (or the program) sets.
     pub fn use_server_colors(&self) {
         self.inner.set_theme(None)
+    }
+
+    /// Send a `block.event` such as a mouse press, motion or release, or a
+    /// focus change. `payload_json` is the event's payload as JSON.
+    pub fn send_event(&self, kind: String, payload_json: String) {
+        if let Ok(v) = serde_json::from_str(&payload_json) {
+            self.inner.event(&kind, v)
+        }
     }
 
     /// Wheel scroll for full-screen programs; positive is down.

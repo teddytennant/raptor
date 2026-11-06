@@ -477,6 +477,21 @@ impl Raptor {
         self.run(server_id, move |c| Box::pin(async move { c.set_layer_state(&s, &l, minimized).await })).await
     }
 
+    /// Move the border of the split that has `before` on one side and `after` on the other.
+    pub async fn resize_pane(
+        &self,
+        server_id: &str,
+        session_id: &str,
+        before: &str,
+        after: &str,
+        horizontal: bool,
+        ratio: f64,
+    ) -> Result<(), CoreError> {
+        let p = json!({"session_id": session_id, "before_block_id": before, "after_block_id": after,
+            "direction": if horizontal { "horizontal" } else { "vertical" }, "ratio": ratio.clamp(0.02, 0.98)});
+        self.run(server_id, move |c| Box::pin(async move { c.call("session.resize_pane", p).await.map(drop) })).await
+    }
+
     /// Plain text of a block's screen (for previews and the agent inbox).
     pub async fn preview_text(&self, server_id: &str, session_id: &str, block_id: &str, max_bytes: u64) -> Result<String, CoreError> {
         let (s, b) = (session_id.to_owned(), block_id.to_owned());

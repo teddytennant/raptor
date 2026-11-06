@@ -1,7 +1,7 @@
 # Raptor
 
 Open-source clients for [Rex](https://superlogical.com) terminal servers: native
-apps for **iPhone/iPad**, **Android**, and **Linux** that connect to the Rex
+apps for **Mac**, **iPhone/iPad**, **Android**, and **Linux** that connect to the Rex
 server you already run, on your Mac or on any box on your tailnet.
 
 > Smaller and quicker than the T. rex.
@@ -50,6 +50,7 @@ makes a good headless backend). Raptor's own multiplexer server is planned for v
 | `apps/android` | Android app: Jetpack Compose UI, Canvas terminal view | Kotlin |
 | `apps/ios` | iOS/iPadOS app: SwiftUI, Core Text terminal, UIKit input (`RaptorKit` package + app target) | Swift |
 | `apps/linux` | Linux app: GTK 4 + libadwaita, Cairo/Pango terminal, tiled panes | Rust |
+| `apps/macos` | macOS app: SwiftUI sidebar and settings, AppKit terminal view on the shared `RaptorKit` renderer | Swift |
 
 The Rex protocol is documented by every Rex server at `GET /llms.txt`.
 
@@ -86,6 +87,17 @@ the simulator:
 `swift run raptor-snap terminal <server> out.png` renders a live terminal through
 the iOS renderer, and `swift run raptor-snap views <server> dir/` renders the
 screens offscreen.
+
+**macOS** (macOS 15+, Xcode, `brew install xcodegen`):
+
+```sh
+scripts/build-apple.sh                # the macOS slice is always built
+cd apps/macos && xcodegen generate && open RaptorMac.xcodeproj
+```
+
+The app is signed ad hoc, so it runs on the Mac that built it. Debug builds
+accept automation commands (`dev.raptor.automation` distributed notifications,
+see `Automation.swift`) so UI tests can drive a window without focusing it.
 
 **Linux** (GTK 4.12+, libadwaita 1.5+):
 

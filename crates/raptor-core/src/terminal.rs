@@ -592,6 +592,11 @@ impl TerminalSession {
         }
     }
 
+    /// Send a `block.event` (mouse, wheel, focus) in order with typed input.
+    pub fn event(&self, kind: &str, payload: serde_json::Value) {
+        let _ = self.input.send(Input::Event(json!({"type": kind, "payload": payload})));
+    }
+
     /// Scroll wheel for full-screen programs (vim, less, htop). Positive is down.
     pub fn wheel(&self, col: u16, row: u16, lines: f32) {
         let _ = self.input.send(Input::Event(json!({"type": "wheel",

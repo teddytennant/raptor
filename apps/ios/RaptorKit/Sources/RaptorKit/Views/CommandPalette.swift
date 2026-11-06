@@ -58,10 +58,12 @@ struct CommandPalette: View {
             }
             .scrollContentBackground(.hidden)
             .background(c.bg)
-            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Run a command")
             .navigationTitle("Commands")
             #if os(iOS)
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Run a command")
             .navigationBarTitleDisplayMode(.inline)
+            #else
+            .searchable(text: $query, prompt: "Run a command")
             #endif
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
         }
