@@ -745,14 +745,15 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
             return true
         }
 
+        // Long-press selects the word under your finger (drag to extend), and
+        // anywhere it offers the menu, so Paste is always one gesture away.
         override fun onLongPress(e: MotionEvent) {
             val (c, r) = cellAt(e.x, e.y)
-            if (terminal?.selectWord(c.toUShort(), r.toUShort()) == true) {
-                performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                selecting = true
-                selAnchor = c to r
-                startSelectionMode()
-            }
+            terminal?.selectWord(c.toUShort(), r.toUShort())
+            selecting = true
+            selAnchor = c to r
+            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            startSelectionMode()
         }
 
         override fun onScroll(e1: MotionEvent?, e2: MotionEvent, dx: Float, dy: Float): Boolean {
@@ -847,6 +848,7 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
             return true
         }
         if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+            if (selecting) actionMode?.invalidate()
             selecting = false
         }
         if (!scaleDetector.isInProgress) gestures.onTouchEvent(event)
@@ -855,6 +857,7 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
 
     private fun startSelectionMode() {
         if (actionMode != null) {
+            actionMode?.invalidate()
             actionMode?.invalidateContentRect()
             return
         }
@@ -866,7 +869,11 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
                 return true
             }
 
-            override fun onPrepareActionMode(mode: ActionMode, menu: Menu) = false
+            override fun onPrepareActionMode(mode: ActionMode, menu: Menu): Boolean {
+                menu.findItem(1).isVisible = terminal?.selectionText()?.isNotEmpty() == true
+                menu.findItem(2).isVisible = context.getSystemService(ClipboardManager::class.java).hasPrimaryClip()
+                return true
+            }
 
             override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean {
                 when (item.itemId) {
