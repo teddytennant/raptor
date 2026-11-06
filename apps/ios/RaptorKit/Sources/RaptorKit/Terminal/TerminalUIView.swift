@@ -632,6 +632,7 @@ public final class TerminalUIView: UIView, UITextInputTraits, UIGestureRecognize
         case .keyboardLeftArrow: return .left
         case .keyboardRightArrow: return .right
         case .keyboardEscape: return .escape
+        case .keypadEnter: return .enter
         case .keyboardTab: return .tab
         case .keyboardHome: return .home
         case .keyboardEnd: return .end
