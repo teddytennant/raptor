@@ -93,6 +93,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.max
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import dev.raptor.app.Focus
@@ -256,11 +257,11 @@ fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?,
                     // live rows start exactly below it and never hide under it.
                     .onSizeChanged { topH = it.height }
                     .statusBarsPadding()
-                    .padding(top = 4.dp, bottom = 8.dp),
+                    .padding(bottom = 4.dp),
             ) {
-                Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                     GlassCircle(onClick = onSessions) { Icon(Icons.AutoMirrored.Filled.List, "Sessions", tint = Ink.text, modifier = Modifier.size(22.dp)) }
-                    Spacer(Modifier.width(10.dp))
+                    Spacer(Modifier.width(6.dp))
                     Tile(glyph(block), Modifier.size(32.dp))
                     Spacer(Modifier.width(10.dp))
                     TitleBlock(block, session, Modifier.weight(1f), onClick = onSessions)
@@ -333,7 +334,10 @@ fun Modifier.glass(shape: Shape): Modifier = this.clip(shape).background(Ink.gla
 
 @Composable
 fun GlassCircle(size: Dp = 40.dp, onClick: () -> Unit, content: @Composable () -> Unit) {
-    Box(Modifier.size(size).glass(CircleShape).clickable(onClick = onClick), contentAlignment = Alignment.Center) { content() }
+    // Drawn at [size], touched at 48dp.
+    Box(Modifier.size(max(size, 48.dp)).clip(CircleShape).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
+        Box(Modifier.size(size).glass(CircleShape), contentAlignment = Alignment.Center) { content() }
+    }
 }
 
 /** A rounded tile with a glyph for the running program. */
@@ -695,8 +699,8 @@ private fun KeyBar(view: TerminalView, mods: Modifiers) {
         }
     }
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp).glass(RoundedCornerShape(14.dp)).height(44.dp).padding(4.dp),
-        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp).glass(RoundedCornerShape(14.dp)).height(48.dp).padding(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         for (k in if (more) moreKeys else mainKeys) {
             val on = (k.label == "ctrl" && mods.ctrl) || (k.label == "alt" && mods.alt)

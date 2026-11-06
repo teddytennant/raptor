@@ -129,10 +129,9 @@ fun SessionSheet(
         Box(Modifier.padding(top = 8.dp, bottom = 4.dp).size(width = 40.dp, height = 4.dp).clip(RoundedCornerShape(2.dp)).background(Ink.tertiary.copy(alpha = 0.5f)))
     }) {
         Column(Modifier.fillMaxWidth().navigationBarsPadding()) {
-            Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 4.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("Sessions", color = Ink.text, fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                 GlassCircle(size = 40.dp, onClick = { close(onSettings) }) { Icon(Icons.Default.Settings, "Settings", tint = Ink.text, modifier = Modifier.size(20.dp)) }
-                Spacer(Modifier.width(8.dp))
                 GlassCircle(size = 40.dp, onClick = { close(onAddServer) }) { Icon(Icons.Default.Add, "Add server", tint = Ink.accent, modifier = Modifier.size(22.dp)) }
             }
             SessionList(
@@ -255,7 +254,7 @@ fun SettingsScreen(onClose: () -> Unit, onAddServer: () -> Unit, onEditServer: (
     }
 
     Column(Modifier.fillMaxSize().background(Ink.bg).statusBarsPadding()) {
-        Box(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 10.dp)) {
+        Box(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 6.dp), contentAlignment = Alignment.CenterStart) {
             GlassCircle(size = 40.dp, onClick = onClose) {
                 Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "Back", tint = Ink.text, modifier = Modifier.size(26.dp))
             }
