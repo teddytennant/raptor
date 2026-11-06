@@ -1,14 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#1b2230"/>
-      <stop offset="1" stop-color="#0c1017"/>
-    </linearGradient>
-  </defs>
-  <rect x="8" y="12" width="112" height="108" rx="22" fill="#06080c"/>
-  <rect x="8" y="8" width="112" height="108" rx="22" fill="url(#bg)"/>
-  <path d="M37 45 L56 64 L37 83" fill="none" stroke="#34d399" stroke-width="9" stroke-linecap="square"/>
-  <ellipse cx="83" cy="57.5" rx="2.6" ry="3.8" fill="#f9a8d4"/>
-  <path d="M65 80 Q65 60 84 60 Q91 60 96.5 65.5 L103.5 69 Q106 71.2 104.2 73.8 L97.4 76.3 Q94.6 88 81 88 L70 88 Q65 88 65 83 Z" fill="#f3f4f6"/>
-  <circle cx="89.5" cy="68.5" r="2.1" fill="#111827"/>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108"><defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1c2130"/><stop offset="1" stop-color="#0d1017"/></linearGradient><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#6ee7b7"/><stop offset="1" stop-color="#10b981"/></linearGradient><linearGradient id="c" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#aeb5c4"/></linearGradient></defs><rect width="108" height="108" rx="24" fill="url(#bg)"/><g transform="translate(-3.5 -1)"><path d="M30,40 L44,54 L30,68" fill="none" stroke="url(#g)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/><path d="M53.0,77 C54.0,62.0 61.0,43 65.0,35 C66.5,47 61.5,66.0 53.0,77 Z" fill="url(#c)"/><path d="M64.5,80 C65.5,61.0 72.5,38 76.5,30 C78.0,42 73.0,65.0 64.5,80 Z" fill="url(#c)"/><path d="M76.0,77 C77.0,62.0 84.0,43 88.0,35 C89.5,47 84.5,66.0 76.0,77 Z" fill="url(#c)"/></g></svg>

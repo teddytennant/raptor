@@ -1,12 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Themed icon layer: one color, the eye cut out. -->
+<!-- Themed icon layer: the same mark in one color. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp"
     android:viewportWidth="108" android:viewportHeight="108">
-    <path android:fillColor="#FFFFFFFF"
-        android:pathData="M33,40 L47,54 L33,68 L38,73 L57,54 L38,35 Z" />
-    <path android:fillColor="#FFFFFFFF" android:fillType="evenOdd"
-        android:pathData="M58,66 C58,58 64,52 72,52 C76,52 79,53 82,56 L88,59 C89,60 89,61 88,62 L83,64 C82,69 77,73 71,73 L62,73 C60,73 58,71 58,69 Z M76,58 m-1.8,0 a1.8,1.8 0 1,0 3.6,0 a1.8,1.8 0 1,0 -3.6,0 Z" />
-    <path android:fillColor="#FFFFFFFF"
-        android:pathData="M68,52 C67,48 69,46 71,47 C72,48 72,50 71,52 Z" />
+    <group android:translateX="-3.5" android:translateY="-1">
+        <path android:strokeColor="#FFFFFFFF" android:strokeWidth="8"
+            android:strokeLineCap="round" android:strokeLineJoin="round"
+            android:pathData="M30,40 L44,54 L30,68" />
+        <path android:fillColor="#FFFFFFFF"
+            android:pathData="M53.0,77 C54.0,62.0 61.0,43 65.0,35 C66.5,47 61.5,66.0 53.0,77 Z" />
+        <path android:fillColor="#FFFFFFFF"
+            android:pathData="M64.5,80 C65.5,61.0 72.5,38 76.5,30 C78.0,42 73.0,65.0 64.5,80 Z" />
+        <path android:fillColor="#FFFFFFFF"
+            android:pathData="M76.0,77 C77.0,62.0 84.0,43 88.0,35 C89.5,47 84.5,66.0 76.0,77 Z" />
+    </group>
 </vector>
