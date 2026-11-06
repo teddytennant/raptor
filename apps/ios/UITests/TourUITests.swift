@@ -203,6 +203,95 @@ final class TourUITests: XCTestCase {
         sleep(2)
     }
 
+    func testSelectionZoomAndSizing() throws {
+        open("raptor-demo")
+        let terminal = app.textViews["Terminal"]
+        XCTAssertTrue(terminal.waitForExistence(timeout: 15))
+        sleep(3)
+        let from = terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.3))
+        let to = terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.36))
+        from.press(forDuration: 0.8, thenDragTo: to)
+        sleep(1)
+        shot("select-drag")
+        terminal.tap()
+        terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.3)).doubleTap()
+        sleep(1)
+        shot("select-word")
+        terminal.tap()
+        terminal.pinch(withScale: 1.6, velocity: 1)
+        sleep(2)
+        shot("pinch-bigger")
+        terminal.pinch(withScale: 0.6, velocity: -1)
+        sleep(2)
+        app.buttons["More"].tap()
+        sleep(1)
+        shot("more-menu")
+        let desk = app.buttons["Use Desktop Size"]
+        if desk.waitForExistence(timeout: 3) {
+            desk.tap()
+            sleep(3)
+            shot("mirror")
+            app.buttons["More"].tap()
+            app.buttons["Fit to This Screen"].tap()
+            sleep(3)
+            shot("fit-again")
+        }
+    }
+
+    func testHideKeyboard() throws {
+        open("raptor-demo")
+        let terminal = app.textViews["Terminal"]
+        XCTAssertTrue(terminal.waitForExistence(timeout: 15))
+        terminal.tap()
+        sleep(2)
+        shot("hide-before")
+        let w = app.windows.firstMatch.frame
+        let kbTop = app.keyboards.firstMatch.exists ? app.keyboards.firstMatch.frame.minY : w.height * 0.62
+        app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: w.width - 24, dy: kbTop - 30)).tap()
+        sleep(2)
+        shot("hide-after")
+    }
+
+    /// iPad with a hardware keyboard: shortcuts from the Terminal menu.
+    func testHardwareKeyboard() throws {
+        open("raptor-demo")
+        let terminal = app.textViews["Terminal"].firstMatch
+        XCTAssertTrue(terminal.waitForExistence(timeout: 15))
+        terminal.tap()
+        sleep(1)
+        app.typeKey("t", modifierFlags: .command)
+        sleep(3)
+        shot("hw-new-window")
+        app.typeText("clear; echo typed-on-hardware")
+        app.typeKey(.enter, modifierFlags: [])
+        app.typeKey("c", modifierFlags: .control)
+        sleep(1)
+        app.typeKey("k", modifierFlags: .command)
+        sleep(2)
+        shot("hw-palette")
+        app.typeKey(.escape, modifierFlags: [])
+        sleep(1)
+        app.typeKey("w", modifierFlags: .command)
+        sleep(3)
+        shot("hw-closed")
+    }
+
+    func testSettings() throws {
+        app.launch()
+        sleep(2)
+        let gear = app.buttons["Settings"]
+        if !gear.exists { app.buttons.matching(identifier: "Sessions").firstMatch.tap(); sleep(1) }
+        app.buttons["Settings"].firstMatch.tap()
+        sleep(2)
+        shot("settings-1")
+        app.swipeUp()
+        sleep(1)
+        shot("settings-2")
+        app.swipeUp()
+        sleep(1)
+        shot("settings-3")
+    }
+
     func testOtherSessions() throws {
         for s in ["api", "monitor", "editor", "build"] {
             open(s)
