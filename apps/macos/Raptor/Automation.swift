@@ -46,8 +46,20 @@ enum Automation {
         let w = main.attachedSheet ?? main
         switch cmd {
         case "key":
+            // A background window's input context is inactive; dead keys and IMEs need it.
+            (w.firstResponder as? NSView)?.inputContext?.activate()
             for spec in rest.split(separator: " ") { key(String(spec), in: w) }
             return "ok key \(rest)"
+        case "ckey":
+            // Keys built as CGEvents, so the keyboard layout (dead keys) applies as for real typing.
+            (w.firstResponder as? NSView)?.inputContext?.activate()
+            for spec in rest.split(separator: " ") {
+                let opt = spec.hasPrefix("opt+"), base = String(spec.dropFirst(opt ? 4 : 0))
+                guard let code = letterCodes[Character(base)], let cg = CGEvent(keyboardEventSource: CGEventSource(stateID: .hidSystemState), virtualKey: CGKeyCode(code), keyDown: true) else { continue }
+                if opt { cg.flags = CGEventFlags(rawValue: CGEventFlags.maskAlternate.rawValue | 0x20) }
+                if let e = NSEvent(cgEvent: cg) { w.sendEvent(e) }
+            }
+            return "ok ckey"
         case "type":
             for ch in rest { key(String(ch), in: w) }
             return "ok type"
