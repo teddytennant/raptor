@@ -127,6 +127,7 @@ public struct TerminalScreen: View {
 
         }
         .environment(\.chrome, c)
+        .tint(c.accent)
         .preferredColorScheme(c.scheme)
         .toolbar(.hidden, for: .navigationBar)
         .statusBarHidden(false)
