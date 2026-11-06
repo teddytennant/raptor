@@ -42,11 +42,13 @@ struct RootView: View {
     @State private var addingServer = false
     @State private var editing: Server?
     @State private var loaded = false
+    @State private var columns = NavigationSplitViewVisibility.automatic
+    @State private var openCount = 0
 
     var body: some View {
         Group {
             if hsize == .regular, !model.state.servers.isEmpty {
-                NavigationSplitView {
+                NavigationSplitView(columnVisibility: $columns) {
                     ScrollView {
                         HomeList(current: current, onOpen: { s, ses, b in open(Focus(serverId: s, sessionId: ses, blockId: b)) },
                                  onAdd: { addingServer = true }, onEdit: { editing = $0 })
@@ -108,11 +110,11 @@ struct RootView: View {
         if model.state.servers.isEmpty {
             WelcomeView { addingServer = true }
         } else if let c = current {
-            TerminalScreen(serverId: c.serverId, sessionId: c.sessionId, blockId: c.blockId, onSessions: { switcher = true }, onOpen: open,
+            TerminalScreen(serverId: c.serverId, sessionId: c.sessionId, blockId: c.blockId, request: openCount, onSessions: showSessions, onOpen: open,
                            onSettings: { settings = true })
                 .id("\(c.serverId)/\(c.sessionId)")
         } else if hsize == .regular {
-            PickSessionView { switcher = true }
+            PickSessionView(onSessions: nil)
         } else {
             NavigationStack {
                 HomeView(onOpen: { s, ses, b in open(Focus(serverId: s, sessionId: ses, blockId: b)) },
@@ -121,8 +123,18 @@ struct RootView: View {
         }
     }
 
+    /// iPad shows and hides the sidebar; iPhone pulls up the switcher.
+    private func showSessions() {
+        if hsize == .regular {
+            withAnimation { columns = columns == .detailOnly ? .all : .detailOnly }
+        } else {
+            switcher = true
+        }
+    }
+
     private func open(_ f: Focus) {
         current = f
+        openCount += 1
         model.core.setSetting(key: "last_open", value: "\(f.serverId)|\(f.sessionId)")
     }
 

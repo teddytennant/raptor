@@ -75,26 +75,27 @@ public struct WelcomeView: View {
             Spacer()
         }
         .padding(.horizontal, 28)
+        .frame(maxWidth: 480)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(c.bg.ignoresSafeArea())
         .preferredColorScheme(c.scheme)
     }
 }
 
-/// Nothing open: point at the switcher.
+/// Nothing open: point at the switcher, or at the sidebar when there's no switcher.
 public struct PickSessionView: View {
     @Environment(RaptorModel.self) private var model
-    var onSessions: () -> Void
-    public init(onSessions: @escaping () -> Void) { self.onSessions = onSessions }
+    var onSessions: (() -> Void)?
+    public init(onSessions: (() -> Void)?) { self.onSessions = onSessions }
 
     public var body: some View {
         let c = Chrome(model.theme)
         ContentUnavailableView {
             Label("Pick a session", systemImage: "terminal")
         } description: {
-            Text("Your sessions keep running on the server.")
+            Text(onSessions == nil ? "Choose one from the list. Sessions keep running on the server." : "Your sessions keep running on the server.")
         } actions: {
-            Button("Show Sessions", action: onSessions).font(.headline)
+            if let onSessions { Button("Show Sessions", action: onSessions).font(.headline) }
         }
         .tint(c.accent)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
