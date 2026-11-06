@@ -113,7 +113,7 @@ fun SessionList(
 
 @Composable
 private fun Header(text: String, trailing: @Composable (() -> Unit)? = null) {
-    Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 20.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().padding(start = 32.dp, end = 8.dp, top = 18.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(text.uppercase(), style = MaterialTheme.typography.labelMedium, color = Ink.tertiary, modifier = Modifier.weight(1f))
         trailing?.invoke()
     }
@@ -330,8 +330,8 @@ private fun NeedsRow(item: AttentionItem, onOpen: () -> Unit) {
     Column(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .clip(RoundedCornerShape(14.dp))
             .background(Ink.surface)
             .combinedClickable(onClick = onOpen)
             .padding(14.dp),
