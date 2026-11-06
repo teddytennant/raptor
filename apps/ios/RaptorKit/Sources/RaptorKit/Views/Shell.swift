@@ -36,10 +36,10 @@ public struct SessionSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .leading) {
                     Button { dismiss(); onSettings() } label: { Image(systemName: "gearshape") }.accessibilityLabel("Settings")
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .trailing) {
                     Button { dismiss(); onAddServer() } label: { Image(systemName: "plus") }.accessibilityLabel("Add server")
                 }
             }
@@ -101,4 +101,14 @@ public struct PickSessionView: View {
         .background(c.bg.ignoresSafeArea())
         .preferredColorScheme(c.scheme)
     }
+}
+
+private extension ToolbarItemPlacement {
+    #if os(iOS)
+    static let leading = ToolbarItemPlacement.topBarLeading
+    static let trailing = ToolbarItemPlacement.topBarTrailing
+    #else
+    static let leading = ToolbarItemPlacement.navigation
+    static let trailing = ToolbarItemPlacement.primaryAction
+    #endif
 }
