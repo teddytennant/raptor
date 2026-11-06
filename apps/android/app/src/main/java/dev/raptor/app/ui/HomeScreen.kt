@@ -94,11 +94,12 @@ fun SessionList(
     onAddServer: () -> Unit,
     onEditServer: (Server) -> Unit,
     modifier: Modifier = Modifier,
+    bottomPadding: androidx.compose.ui.unit.Dp = 24.dp,
 ) {
     val app = RaptorApplication.instance
     val state by app.state.collectAsState()
     val needs = state.attention.filter { it.block.agent?.state == AgentState.BLOCKED || it.block.agent?.state == AgentState.ERROR }
-    LazyColumn(modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = 24.dp)) {
+    LazyColumn(modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = bottomPadding)) {
         if (state.servers.isEmpty()) item(key = "empty") { EmptyState(onAddServer) }
         if (needs.isNotEmpty()) {
             item(key = "needs") { Header("Needs you") }

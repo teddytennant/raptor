@@ -80,15 +80,15 @@ class MainActivity : ComponentActivity() {
                         return@LaunchedEffect
                     }
                 }
-                // The app opens straight into your last session. Everything else
-                // (other sessions, servers, settings) is one tap away in the switcher.
+                // The app opens straight into your last session. Back from a terminal
+                // goes to the session list; the switcher sheet jumps between sessions.
                 val wide = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 720
                 var current by remember { mutableStateOf(lastOpen()) }
                 var switcher by remember { mutableStateOf(false) }
                 var settings by remember { mutableStateOf(false) }
-                fun open(f: Focus) {
+                fun open(f: Focus?) {
                     current = f
-                    app.core.setSetting("last_open", "${f.serverId}|${f.sessionId}")
+                    app.core.setSetting("last_open", f?.let { "${it.serverId}|${it.sessionId}" } ?: "")
                 }
                 LaunchedEffect(pending) {
                     val p = pending ?: return@LaunchedEffect
@@ -102,55 +102,36 @@ class MainActivity : ComponentActivity() {
                     val c = current ?: return@LaunchedEffect
                     val srv = appState.servers.firstOrNull { it.id == c.serverId }
                     val gone = srv == null || (srv.connectivity is uniffi.raptor_ffi.Connectivity.Online && srv.sessions.none { it.id == c.sessionId })
-                    if (gone && appState.servers.isNotEmpty()) {
-                        current = null
-                        app.core.setSetting("last_open", "")
-                        switcher = true
-                    }
+                    if (gone) open(null)
                 }
-                // Nothing open yet: offer the switcher once.
-                LaunchedEffect(Unit) { if (current == null && appState.servers.isNotEmpty()) switcher = true }
                 val addServer = {
                     editing = null
                     sheet = true
-                    maybeAskNotifications()
                 }
                 val editServer = { s: Server -> editing = s; sheet = true }
-
-                val terminal = @androidx.compose.runtime.Composable {
-                    val c = current
-                    when {
-                        appState.servers.isEmpty() -> dev.raptor.app.ui.Welcome(addServer)
-                        c == null -> dev.raptor.app.ui.PickASession(onSessions = { switcher = true })
-                        else -> androidx.compose.runtime.key(c) {
-                            TerminalScreen(c.serverId, c.sessionId, c.blockId, onSessions = { switcher = true }, onOpen = ::open)
-                        }
-                    }
+                val home = @androidx.compose.runtime.Composable { modifier: androidx.compose.ui.Modifier ->
+                    dev.raptor.app.ui.Home(current, onOpen = ::open, onAddServer = addServer, onEditServer = editServer, onSettings = { settings = true }, modifier = modifier)
                 }
-                if (wide && appState.servers.isNotEmpty()) {
-                    // Tablets and unfolded foldables: sessions beside the terminal.
-                    androidx.compose.foundation.layout.Row(androidx.compose.ui.Modifier.fillMaxSize().background(dev.raptor.app.ui.Ink.bg)) {
-                        androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.width(340.dp).fillMaxHeight().statusBarsPadding()) {
-                            androidx.compose.foundation.layout.Row(
-                                androidx.compose.ui.Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
-                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                            ) {
-                                androidx.compose.material3.Text("Sessions", color = dev.raptor.app.ui.Ink.text, fontSize = 22.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, modifier = androidx.compose.ui.Modifier.weight(1f))
-                                dev.raptor.app.ui.GlassCircle(size = 40.dp, onClick = { settings = true }) {
-                                    androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Default.Settings, "Settings", tint = dev.raptor.app.ui.Ink.text, modifier = androidx.compose.ui.Modifier.size(20.dp))
-                                }
-                                androidx.compose.foundation.layout.Spacer(androidx.compose.ui.Modifier.width(8.dp))
-                                dev.raptor.app.ui.GlassCircle(size = 40.dp, onClick = addServer) {
-                                    androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Default.Add, "Add server", tint = dev.raptor.app.ui.Ink.accent, modifier = androidx.compose.ui.Modifier.size(22.dp))
+
+                when {
+                    appState.servers.isEmpty() -> dev.raptor.app.ui.Welcome(addServer)
+                    wide -> {
+                        // Tablets and unfolded foldables: sessions beside the terminal.
+                        androidx.compose.foundation.layout.Row(androidx.compose.ui.Modifier.fillMaxSize().background(dev.raptor.app.ui.Ink.bg)) {
+                            home(androidx.compose.ui.Modifier.width(340.dp).fillMaxHeight())
+                            androidx.compose.material3.VerticalDivider(color = dev.raptor.app.ui.Ink.hairline)
+                            androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.weight(1f).fillMaxHeight()) {
+                                val c = current
+                                if (c == null) dev.raptor.app.ui.PickASession()
+                                else androidx.compose.runtime.key(c) {
+                                    TerminalScreen(c.serverId, c.sessionId, c.blockId, onSessions = { switcher = true }, onOpen = ::open)
                                 }
                             }
-                            SessionList(current, onOpenSession = { s, ses, b -> open(Focus(s, ses, b)) }, onAddServer = addServer, onEditServer = editServer)
                         }
-                        androidx.compose.material3.VerticalDivider(color = dev.raptor.app.ui.Ink.hairline)
-                        androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.weight(1f).fillMaxHeight()) { terminal() }
                     }
-                } else {
-                    terminal()
+                    else -> dev.raptor.app.ui.BackToHome(current, onBack = { open(null) }, home = { home(androidx.compose.ui.Modifier.fillMaxSize()) }) { c ->
+                        TerminalScreen(c.serverId, c.sessionId, c.blockId, onSessions = { switcher = true }, onOpen = ::open)
+                    }
                 }
                 if (switcher) {
                     dev.raptor.app.ui.SessionSheet(

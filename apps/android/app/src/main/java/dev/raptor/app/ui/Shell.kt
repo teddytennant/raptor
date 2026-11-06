@@ -3,7 +3,19 @@ package dev.raptor.app.ui
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.ui.text.withStyle
+import androidx.activity.BackEventCompat
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.PredictiveBackHandler
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.runtime.key
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.res.colorResource
+import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -130,6 +142,62 @@ fun SessionSheet(
                 onEditServer = { srv -> close { onEditServer(srv) } },
                 modifier = Modifier.fillMaxHeight(0.85f),
             )
+        }
+    }
+}
+
+/** Every server and session: the phone's home screen, and the sidebar on tablets. */
+@Composable
+fun Home(current: Focus?, onOpen: (Focus) -> Unit, onAddServer: () -> Unit, onEditServer: (Server) -> Unit, onSettings: () -> Unit, modifier: Modifier = Modifier) {
+    Column(modifier.background(Ink.bg).statusBarsPadding()) {
+        Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Sessions", color = Ink.text, fontSize = 28.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            GlassCircle(onClick = onSettings) { Icon(Icons.Default.Settings, "Settings", tint = Ink.text, modifier = Modifier.size(20.dp)) }
+            GlassCircle(onClick = onAddServer) { Icon(Icons.Default.Add, "Add server", tint = Ink.accent, modifier = Modifier.size(22.dp)) }
+        }
+        SessionList(
+            current = current,
+            onOpenSession = { s, ses, b -> onOpen(Focus(s, ses, b)) },
+            onAddServer = onAddServer,
+            onEditServer = onEditServer,
+            bottomPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 24.dp,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+/**
+ * The open terminal over the home screen. Back (with the predictive gesture)
+ * shrinks the terminal away to reveal the session list underneath.
+ */
+@Composable
+fun BackToHome(current: Focus?, onBack: () -> Unit, home: @Composable () -> Unit, terminal: @Composable (Focus) -> Unit) {
+    var progress by remember { mutableFloatStateOf(0f) }
+    var fromLeft by remember { mutableStateOf(true) }
+    PredictiveBackHandler(enabled = current != null) { events ->
+        try {
+            events.collect {
+                progress = it.progress
+                fromLeft = it.swipeEdge == BackEventCompat.EDGE_LEFT
+            }
+            onBack()
+        } finally {
+            progress = 0f
+        }
+    }
+    Box(Modifier.fillMaxSize().background(Ink.bg)) {
+        if (current == null || progress > 0f) home()
+        if (current != null) key(current) {
+            Box(
+                Modifier.fillMaxSize().graphicsLayer {
+                    val scale = 1f - 0.1f * progress
+                    scaleX = scale
+                    scaleY = scale
+                    translationX = (if (fromLeft) 1 else -1) * size.width * 0.05f * progress
+                    shape = RoundedCornerShape(32.dp * progress)
+                    clip = progress > 0f
+                },
+            ) { terminal(current) }
         }
     }
 }
