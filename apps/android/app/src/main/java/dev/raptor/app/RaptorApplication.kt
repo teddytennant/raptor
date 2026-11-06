@@ -162,6 +162,7 @@ class RaptorApplication : Application() {
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(n.body)
+            .setSubText(state.value.servers.firstOrNull { it.id == n.serverId }?.sessions?.firstOrNull { it.id == n.sessionId }?.label)
             .setStyle(NotificationCompat.BigTextStyle().bigText(n.body))
             .setCategory(if (agent) NotificationCompat.CATEGORY_STATUS else NotificationCompat.CATEGORY_EVENT)
             .setPriority(if (n.kind == NotificationKind.AGENT_BLOCKED) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT)
