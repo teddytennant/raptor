@@ -87,8 +87,10 @@ public struct TerminalScreen: View {
         }
         .environment(\.chrome, c)
         .preferredColorScheme(c.scheme)
+        #if os(iOS)
         .toolbar(.hidden, for: .navigationBar)
         .statusBarHidden(false)
+        #endif
         .onPreferenceChange(TopInsetKey.self) { topInset = $0 }
         .onPreferenceChange(BottomInsetKey.self) { bottomInset = keyboard ? 0 : $0 }
         .animation(.snappy(duration: 0.25), value: keyboard)

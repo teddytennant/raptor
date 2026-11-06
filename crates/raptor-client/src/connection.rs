@@ -50,8 +50,14 @@ pub enum ConnEvent {
     Closed { reason: String },
 }
 
+enum Out {
+    Message(Message),
+    /// Drop the socket without a close frame, so the server keeps the client for a resume.
+    Abort,
+}
+
 struct Inner {
-    out: mpsc::UnboundedSender<Message>,
+    out: mpsc::UnboundedSender<Out>,
     pending: Mutex<HashMap<String, oneshot::Sender<Response>>>,
     next_id: AtomicU64,
     closed: AtomicBool,
@@ -108,7 +114,7 @@ impl Connection {
             return Err(ClientError::Protocol(format!("unexpected protocol {}", welcome.protocol)));
         }
 
-        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Message>();
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Out>();
         let (ev_tx, ev_rx) = mpsc::unbounded_channel();
         let inner = Arc::new(Inner {
             out: out_tx,
@@ -123,7 +129,9 @@ impl Connection {
         });
 
         let (mut sink, mut stream) = ws.split();
-        let reader_inner = inner.clone();
+        // Weak, so that dropping the last handle closes the socket (the reader
+        // sees the outgoing channel end and says goodbye).
+        let reader_inner = Arc::downgrade(&inner);
         tokio::spawn(async move {
             let mut last_heard = Instant::now();
             let mut ticker = tokio::time::interval(PING_EVERY);
@@ -132,11 +140,13 @@ impl Connection {
                 tokio::select! {
                     msg = stream.next() => {
                         last_heard = Instant::now();
-                        reader_inner.heard_ms.store(reader_inner.born.elapsed().as_millis() as u64, Ordering::Relaxed);
+                        if let Some(i) = reader_inner.upgrade() {
+                            i.heard_ms.store(i.born.elapsed().as_millis() as u64, Ordering::Relaxed);
+                        }
                         match msg {
                             Some(Ok(Message::Text(t))) => match ServerMessage::parse(&t) {
                                 Ok(ServerMessage::Response(r)) => {
-                                    let tx = reader_inner.pending.lock().unwrap().remove(&r.id);
+                                    let tx = reader_inner.upgrade().and_then(|i| i.pending.lock().unwrap().remove(&r.id));
                                     if let Some(tx) = tx { let _ = tx.send(r); }
                                 }
                                 Ok(ServerMessage::Event(e)) => {
@@ -152,7 +162,8 @@ impl Connection {
                         }
                     }
                     out = out_rx.recv() => match out {
-                        Some(m) => if let Err(e) = sink.send(m).await { break e.to_string(); },
+                        Some(Out::Message(m)) => if let Err(e) = sink.send(m).await { break e.to_string(); },
+                        Some(Out::Abort) => break "dropped by client".into(),
                         None => { let _ = sink.send(Message::Close(None)).await; break "closed by client".into(); }
                     },
                     _ = ticker.tick() => {
@@ -161,8 +172,10 @@ impl Connection {
                     }
                 }
             };
-            reader_inner.closed.store(true, Ordering::SeqCst);
-            reader_inner.pending.lock().unwrap().clear(); // drops senders => callers see Closed
+            if let Some(i) = reader_inner.upgrade() {
+                i.closed.store(true, Ordering::SeqCst);
+                i.pending.lock().unwrap().clear(); // drops senders => callers see Closed
+            }
             let _ = ev_tx.send(ConnEvent::Closed { reason });
         });
 
@@ -208,17 +221,49 @@ impl Connection {
 
     /// Close politely (with a close frame, which ends the client on the server).
     pub fn close(&self) {
-        let _ = self.inner.out.send(Message::Close(None));
+        let _ = self.inner.out.send(Out::Message(Message::Close(None)));
+    }
+
+    /// Drop the socket without a close frame, as a lost network would. The
+    /// server keeps the client, its attachments, and its data streams for a
+    /// minute, so reconnecting with [`Connection::reconnect_token`] resumes it.
+    pub fn abort(&self) {
+        let _ = self.inner.out.send(Out::Abort);
     }
 
     /// Call a method; returns the response's `seq` and its payload.
     pub async fn call_seq(&self, method: &str, payload: Value) -> Result<(u64, Value), ClientError> {
+        self.request(method, payload).await
+    }
+
+    /// Send a request now and wait for its response later. Requests go out in
+    /// the order of these calls, so methods the server runs in order (keys,
+    /// input events) can be pipelined without waiting a round trip for each.
+    pub fn request(&self, method: &str, payload: Value) -> impl Future<Output = Result<(u64, Value), ClientError>> + Send + use<> {
+        let sent = self.send_request(method, payload);
+        let inner = self.inner.clone();
+        async move {
+            let (id, rx) = sent?;
+            let resp = match tokio::time::timeout(inner.timeout * 3, rx).await {
+                Ok(Ok(r)) => r,
+                Ok(Err(_)) => return Err(ClientError::Closed),
+                Err(_) => {
+                    inner.pending.lock().unwrap().remove(&id);
+                    return Err(ClientError::Timeout);
+                }
+            };
+            if let Some(e) = resp.error {
+                return Err(ClientError::Api(e));
+            }
+            Ok((resp.seq, resp.payload.unwrap_or(Value::Null)))
+        }
+    }
+
+    fn send_request(&self, method: &str, payload: Value) -> Result<(String, oneshot::Receiver<Response>), ClientError> {
         if self.is_closed() {
             return Err(ClientError::Closed);
         }
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed).to_string();
-        let (tx, rx) = oneshot::channel();
-        self.inner.pending.lock().unwrap().insert(id.clone(), tx);
         let req = ClientMessage::Request {
             id: id.clone(),
             method: method.to_owned(),
@@ -226,25 +271,17 @@ impl Connection {
         };
         let text = serde_json::to_string(&req)?;
         if text.len() as u64 > self.inner.welcome.limits.max_message_bytes {
-            self.inner.pending.lock().unwrap().remove(&id);
             return Err(ClientError::Protocol("request too large".into()));
         }
-        if self.inner.out.send(Message::text(text)).is_err() {
+        let (tx, rx) = oneshot::channel();
+        self.inner.pending.lock().unwrap().insert(id.clone(), tx);
+        // The reader clears `pending` when the socket closes; a request that slipped
+        // in after that would otherwise wait out the whole timeout.
+        if self.inner.out.send(Out::Message(Message::text(text))).is_err() || self.is_closed() {
             self.inner.pending.lock().unwrap().remove(&id);
             return Err(ClientError::Closed);
         }
-        let resp = match tokio::time::timeout(self.inner.timeout * 3, rx).await {
-            Ok(Ok(r)) => r,
-            Ok(Err(_)) => return Err(ClientError::Closed),
-            Err(_) => {
-                self.inner.pending.lock().unwrap().remove(&id);
-                return Err(ClientError::Timeout);
-            }
-        };
-        if let Some(e) = resp.error {
-            return Err(ClientError::Api(e));
-        }
-        Ok((resp.seq, resp.payload.unwrap_or(Value::Null)))
+        Ok((id, rx))
     }
 
     pub async fn call(&self, method: &str, payload: Value) -> Result<Value, ClientError> {
@@ -359,6 +396,12 @@ impl Connection {
         self.call("session.zoom_block", json!({"session_id": session_id, "block_id": block_id})).await.map(drop)
     }
 
+    /// Minimize a floating layer, or bring it back (API revision 9).
+    pub async fn set_layer_state(&self, session_id: &str, layer_id: &str, minimized: bool) -> Result<(), ClientError> {
+        let state = if minimized { "minimized" } else { "normal" };
+        self.call("session.set_layer_state", json!({"session_id": session_id, "layer_id": layer_id, "state": state})).await.map(drop)
+    }
+
     pub async fn own_block(&self, session_id: &str, block_id: &str, take: bool) -> Result<Value, ClientError> {
         self.call(
             "session.own_block",
@@ -386,20 +429,28 @@ impl Connection {
 
     /// Paste (respects bracketed paste mode).
     pub async fn paste(&self, session_id: &str, block_id: &str, text: &str) -> Result<(), ClientError> {
-        self.call(
-            "block.event",
-            json!({"session_id": session_id, "block_id": block_id, "event": {"type": "paste", "payload": {"text": text}}}),
-        )
-        .await
-        .map(drop)
+        self.send_event(session_id, block_id, json!({"type": "paste", "payload": {"text": text}})).await
+    }
+
+    /// Send an input event (paste, mouse, wheel) now; await the result later.
+    pub fn send_event(&self, session_id: &str, block_id: &str, event: Value) -> impl Future<Output = Result<(), ClientError>> + Send + use<> {
+        let r = self.request("block.event", json!({"session_id": session_id, "block_id": block_id, "event": event}));
+        async move { r.await.map(drop) }
     }
 
     /// Send a key press (and release), routed through the server's key bindings.
     pub async fn key(&self, session_id: &str, block_id: &str, key: &KeyPress) -> Result<(), ClientError> {
-        for action in ["press", "release"] {
-            self.call("client.key", json!({"session_id": session_id, "block_id": block_id, "key": key.to_json(action)})).await?;
+        self.send_key(session_id, block_id, key).await
+    }
+
+    /// Send a key press and release now; await the result later.
+    pub fn send_key(&self, session_id: &str, block_id: &str, key: &KeyPress) -> impl Future<Output = Result<(), ClientError>> + Send + use<> {
+        let [press, release] = ["press", "release"]
+            .map(|action| self.request("client.key", json!({"session_id": session_id, "block_id": block_id, "key": key.to_json(action)})));
+        async move {
+            press.await?;
+            release.await.map(drop)
         }
-        Ok(())
     }
 
     pub async fn resize(
@@ -430,7 +481,7 @@ impl Connection {
 
     /// Plain-text screen and scrollback (for previews and search).
     pub async fn screen_text(&self, session_id: &str, block_id: &str, max_bytes: Option<u64>) -> Result<String, ClientError> {
-        let mut args = json!({"format": "plain", "trim": true, "unwrap": true});
+        let mut args = json!({"format": "text", "trim": true, "unwrap": true});
         if let Some(m) = max_bytes {
             args["max_bytes"] = json!(m);
         }
