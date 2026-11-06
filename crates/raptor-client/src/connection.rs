@@ -481,7 +481,7 @@ impl Connection {
 
     /// Plain-text screen and scrollback (for previews and search).
     pub async fn screen_text(&self, session_id: &str, block_id: &str, max_bytes: Option<u64>) -> Result<String, ClientError> {
-        let mut args = json!({"format": "plain", "trim": true, "unwrap": true});
+        let mut args = json!({"format": "text", "trim": true, "unwrap": true});
         if let Some(m) = max_bytes {
             args["max_bytes"] = json!(m);
         }

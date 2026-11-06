@@ -349,6 +349,9 @@ fn palette_actions() {
     let (term, _) = l.open(&l.bid);
     l.type_line(&term, "echo before-clear");
     assert!(wait(10, || screen(&term).contains("before-clear\n")));
+    // The inbox's preview reads the server's copy of the screen.
+    let preview = l.raptor.block_on(l.raptor.preview_text(&l.id, &l.sid, &l.bid, 64 * 1024)).unwrap();
+    assert!(preview.contains("\nbefore-clear"), "{preview:?}");
     let actions = l.raptor.block_on(l.raptor.palette_actions(&l.id)).unwrap();
     let clear = actions.iter().find(|a| a.name == "com.superlogical.terminal.clear").expect("clear action");
     l.raptor.block_on(l.raptor.run_action(&l.id, &l.sid, Some(&l.bid), &clear.name)).unwrap();
@@ -503,7 +506,7 @@ fn control_survives_a_new_client() {
     let (sid, bid) = (l.sid.clone(), l.bid.clone());
     l.raptor.block_on(async move { side.resize(&sid, &bid, 70, 20, None).await.unwrap() });
     std::thread::sleep(Duration::from_millis(300));
-    assert_eq!(term.size(), (90, 28));
+    assert!(wait(3, || term.size() == (90, 28)), "{:?}", term.size());
 }
 
 #[test]
