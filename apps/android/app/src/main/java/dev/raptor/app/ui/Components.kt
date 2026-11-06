@@ -205,29 +205,3 @@ fun SendGlyph(color: Color, size: Dp = 24.dp) {
         drawPath(path, bg, style = stroke)
     }
 }
-
-/** The empty detail pane on wide screens, like iOS's "Pick a session". */
-@Composable
-fun PickASession(onSessions: (() -> Unit)? = null) {
-    androidx.compose.foundation.layout.Column(
-        androidx.compose.ui.Modifier.fillMaxSize().background(Ink.bg),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-    ) {
-        androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Default.Terminal, null, tint = Ink.tertiary, modifier = Modifier.size(44.dp))
-        androidx.compose.foundation.layout.Spacer(Modifier.size(14.dp))
-        Text("Pick a session", color = Ink.text, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-        androidx.compose.foundation.layout.Spacer(Modifier.size(6.dp))
-        Text("Your sessions keep running on the server.", color = Ink.secondary, fontSize = 15.sp)
-        if (onSessions != null) {
-            androidx.compose.foundation.layout.Spacer(Modifier.size(20.dp))
-            Text(
-                "Show sessions",
-                color = Ink.accent,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable(onClick = onSessions).padding(horizontal = 14.dp, vertical = 10.dp),
-            )
-        }
-    }
-}

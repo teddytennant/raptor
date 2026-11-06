@@ -1,18 +1,9 @@
 package dev.raptor.app
 
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.ui.unit.sp
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Settings
-import dev.raptor.app.ui.SessionList
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.width
-import androidx.compose.ui.unit.dp
 import android.Manifest
 import android.content.Intent
 import android.os.Build
@@ -82,7 +73,6 @@ class MainActivity : ComponentActivity() {
                 }
                 // The app opens straight into your last session. Back from a terminal
                 // goes to the session list; the switcher sheet jumps between sessions.
-                val wide = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 720
                 var current by remember { mutableStateOf(lastOpen()) }
                 var switcher by remember { mutableStateOf(false) }
                 var settings by remember { mutableStateOf(false) }
@@ -115,20 +105,6 @@ class MainActivity : ComponentActivity() {
 
                 when {
                     appState.servers.isEmpty() -> dev.raptor.app.ui.Welcome(addServer)
-                    wide -> {
-                        // Tablets and unfolded foldables: sessions beside the terminal.
-                        androidx.compose.foundation.layout.Row(androidx.compose.ui.Modifier.fillMaxSize().background(dev.raptor.app.ui.Ink.bg)) {
-                            home(androidx.compose.ui.Modifier.width(340.dp).fillMaxHeight())
-                            androidx.compose.material3.VerticalDivider(color = dev.raptor.app.ui.Ink.hairline)
-                            androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.weight(1f).fillMaxHeight()) {
-                                val c = current
-                                if (c == null) dev.raptor.app.ui.PickASession()
-                                else androidx.compose.runtime.key(c) {
-                                    TerminalScreen(c.serverId, c.sessionId, c.blockId, onSessions = { switcher = true }, onOpen = ::open)
-                                }
-                            }
-                        }
-                    }
                     else -> dev.raptor.app.ui.BackToHome(current, onBack = { open(null) }, home = { home(androidx.compose.ui.Modifier.fillMaxSize()) }) { c ->
                         TerminalScreen(c.serverId, c.sessionId, c.blockId, onSessions = { switcher = true }, onOpen = ::open)
                     }
