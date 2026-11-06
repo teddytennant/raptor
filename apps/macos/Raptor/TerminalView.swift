@@ -89,6 +89,7 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
         guard let f = frameCache else { return }
         if prev?.background != f.background {
             layer?.backgroundColor = cgColor(f.background)
+            scroller.color = NSColor(cgColor: cgColor(f.foreground)) ?? .white
         }
         if prev?.cols != f.cols || prev?.rows != f.rows { invalidateIntrinsicContentSize() }
         blinkOn = true
@@ -147,8 +148,7 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
 
     override func layout() {
         super.layout()
-        let w = NSScroller.scrollerWidth(for: .regular, scrollerStyle: .overlay)
-        scroller.frame = NSRect(x: bounds.width - w, y: 0, width: w, height: bounds.height)
+        scroller.frame = NSRect(x: bounds.width - 16, y: 0, width: 16, height: bounds.height)
         pushGrid()
     }
 
@@ -636,6 +636,8 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
         guard let f = frameCache, f.scrollTotal > f.scrollLen else { return }
         let target = Int64((Double(f.scrollTotal - f.scrollLen) * fraction).rounded())
         terminal?.scroll(rows: Int32(target - Int64(f.scrollOffset)))
+        // Several drag events can arrive before the next frame; keep the offset current.
+        refresh()
     }
 
     override func magnify(with e: NSEvent) {
@@ -685,62 +687,106 @@ func cgColor(_ argb: UInt32) -> CGColor {
 
 extension TerminalStatus {
     var isTerminalEnded: Bool { if case .ended = self { return true } else { return false } }
+    var isExited: Bool { if case .exited = self { return true } else { return false } }
 }
 
-/// A thin overlay scroller for history that fades out when idle.
-final class HistoryScroller: NSScroller {
+/// An overlay scroller for history: a slim knob that shows while scrolling or
+/// hovered, fades when idle, and can be dragged or clicked to page.
+final class HistoryScroller: NSView {
     var onScroll: ((Double) -> Void)?
+    var color = NSColor.white { didSet { needsDisplay = true } }
+    private var total: UInt64 = 0, offset: UInt64 = 0, len: UInt64 = 0
     private var hideWork: DispatchWorkItem?
-    private var hasHistory = false
+    private var hovering = false { didSet { needsDisplay = true } }
+    private var grab: CGFloat?
 
-    override class var isCompatibleWithOverlayScrollers: Bool { true }
+    override var isFlipped: Bool { true }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     init() {
         super.init(frame: .zero)
-        scrollerStyle = .overlay
-        knobStyle = .light
         alphaValue = 0
-        isEnabled = true
-        target = self
-        action = #selector(moved)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
+    private var hasHistory: Bool { total > len }
+
     func update(total: UInt64, offset: UInt64, len: UInt64) {
-        hasHistory = total > len
-        guard hasHistory else {
-            alphaValue = 0
-            return
+        guard (total, offset, len) != (self.total, self.offset, self.len) else { return }
+        let moved = offset != self.offset && self.total > 0 && offset + len < total
+        (self.total, self.offset, self.len) = (total, offset, len)
+        needsDisplay = true
+        if !hasHistory { alphaValue = 0 } else if moved { flash() }
+    }
+
+    private var knob: NSRect {
+        guard hasHistory else { return .zero }
+        let track = bounds.insetBy(dx: 0, dy: 3)
+        let h = max(28, track.height * CGFloat(len) / CGFloat(total))
+        let y = track.minY + (track.height - h) * CGFloat(offset) / CGFloat(total - len)
+        let w: CGFloat = hovering || grab != nil ? 8 : 6
+        return NSRect(x: bounds.maxX - w - 3, y: y, width: w, height: h)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard hasHistory else { return }
+        if hovering || grab != nil {
+            color.withAlphaComponent(0.06).setFill()
+            NSRect(x: bounds.maxX - 14, y: 0, width: 14, height: bounds.height).fill()
         }
-        knobProportion = CGFloat(Double(len) / Double(total))
-        doubleValue = Double(offset) / Double(total - len)
-        if offset + len < total { flash() }
+        color.withAlphaComponent(hovering || grab != nil ? 0.55 : 0.4).setFill()
+        NSBezierPath(roundedRect: knob, xRadius: knob.width / 2, yRadius: knob.width / 2).fill()
     }
 
     func flash() {
         guard hasHistory else { return }
-        if alphaValue < 1 { animator().alphaValue = 1 }
+        if alphaValue < 1 { alphaValue = 1 }
         hideWork?.cancel()
         let w = DispatchWorkItem { [weak self] in
-            NSAnimationContext.runAnimationGroup { $0.duration = 0.35; self?.animator().alphaValue = 0 }
+            guard let self, !self.hovering, self.grab == nil else { return }
+            NSAnimationContext.runAnimationGroup { $0.duration = 0.3; self.animator().alphaValue = 0 }
         }
         hideWork = w
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.4, execute: w)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: w)
     }
 
-    override func mouseEntered(with event: NSEvent) { flash() }
+    override func mouseEntered(with event: NSEvent) { hovering = true; flash() }
+    override func mouseExited(with event: NSEvent) { hovering = false; flash() }
 
-    @objc private func moved() {
-        switch hitPart {
-        case .knob, .knobSlot: onScroll?(doubleValue)
-        case .decrementPage: onScroll?(max(0, doubleValue - Double(knobProportion)))
-        case .incrementPage: onScroll?(min(1, doubleValue + Double(knobProportion)))
-        default: break
+    override func mouseDown(with e: NSEvent) {
+        let p = convert(e.locationInWindow, from: nil)
+        let k = knob
+        if k.insetBy(dx: -4, dy: 0).contains(p) {
+            grab = p.y - k.minY
+        } else {
+            let page = Double(len) / Double(max(1, total - len))
+            let cur = Double(offset) / Double(max(1, total - len))
+            onScroll?(min(1, max(0, p.y < k.minY ? cur - page : cur + page)))
         }
+        needsDisplay = true
+    }
+
+    override func mouseDragged(with e: NSEvent) {
+        guard let grab, hasHistory else { return }
+        let p = convert(e.locationInWindow, from: nil)
+        let track = bounds.insetBy(dx: 0, dy: 3)
+        let free = track.height - knob.height
+        guard free > 0 else { return }
+        onScroll?(Double(min(max((p.y - grab - track.minY) / free, 0), 1)))
+    }
+
+    override func mouseUp(with e: NSEvent) {
+        grab = nil
+        needsDisplay = true
         flash()
     }
 
-    override func hitTest(_ point: NSPoint) -> NSView? { alphaValue > 0.1 ? super.hitTest(point) : nil }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard hasHistory, alphaValue > 0.1 || hovering else { return nil }
+        let local = convert(point, from: superview)
+        return local.x > bounds.maxX - 14 ? self : nil
+    }
 }

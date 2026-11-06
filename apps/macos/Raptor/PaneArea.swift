@@ -230,8 +230,8 @@ final class PaneView: NSView {
     let terminal: TerminalView
     private let ws: Workspace
     private let header = NSHostingView(rootView: PaneHeader(title: "", detail: "", agent: nil, focused: false, chrome: Chrome(Themes.all[0]), onAction: { _ in }))
-    private let banner = NSHostingView(rootView: StatusBanner(text: nil, busy: false, chrome: Chrome(Themes.all[0]), onTake: nil))
-    private let dim = NSView()
+    private let banner = NSHostingView(rootView: StatusBanner(text: nil, busy: false, chrome: Chrome(Themes.all[0])))
+    private let dim = PassthroughView()
     private var showsHeader = false
     private var bannerText: String?
     static let headerHeight: CGFloat = 24
@@ -269,7 +269,11 @@ final class PaneView: NSView {
         let text = status.banner ?? (mirrored ? "Sized by another device" : nil)
         bannerText = text
         banner.isHidden = text == nil
-        banner.rootView = StatusBanner(text: text, busy: status.isBusy, chrome: chrome, onTake: mirrored && status.banner == nil ? { [weak ws] in ws?.run(.takeSize, blockId: id) } : nil)
+        banner.rootView = StatusBanner(
+            text: text, busy: status.isBusy, chrome: chrome,
+            onTake: mirrored && status.banner == nil ? { [weak ws] in ws?.run(.takeSize, blockId: id) } : nil,
+            onClose: status.isExited ? { [weak ws] in ws?.closePane(id, confirmed: true) } : nil
+        )
         needsLayout = true
     }
 
@@ -281,13 +285,14 @@ final class PaneView: NSView {
         if terminal.frame != tf { terminal.frame = tf }
         dim.frame = tf
         let size = banner.fittingSize
-        banner.frame = NSRect(x: (bounds.width - size.width) / 2, y: top + 10, width: size.width, height: size.height)
+        banner.frame = NSRect(x: (bounds.width - size.width) / 2, y: bounds.height - size.height - 12, width: size.width, height: size.height)
     }
 
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        let v = super.hitTest(point)
-        return v === dim ? terminal : v
-    }
+}
+
+/// Draws over other views without taking their clicks.
+final class PassthroughView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 struct PaneHeader: View {
@@ -350,6 +355,7 @@ struct StatusBanner: View {
     var busy: Bool
     var chrome: Chrome
     var onTake: (() -> Void)?
+    var onClose: (() -> Void)?
 
     var body: some View {
         if let text {
@@ -358,6 +364,9 @@ struct StatusBanner: View {
                 Text(text).font(.system(size: 12, weight: .medium)).foregroundStyle(chrome.text)
                 if let onTake {
                     Button("Fit Here", action: onTake).controlSize(.small)
+                }
+                if let onClose {
+                    Button("Close Pane", action: onClose).controlSize(.small)
                 }
             }
             .padding(.horizontal, 12).padding(.vertical, 6)

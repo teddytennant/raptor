@@ -97,6 +97,20 @@ enum Automation {
             return "err no session \(rest)"
         case "dump":
             return dump(w)
+        case "snapself":
+            // Offscreen render of the window's views, for when the screen can't be captured.
+            guard let v = w.contentView?.superview ?? w.contentView, let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { return "err snapself" }
+            v.cacheDisplay(in: v.bounds, to: rep)
+            try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: rest))
+            return "ok snapself \(rest)"
+        case "views":
+            guard let t = AppModel.shared.current?.focusedTerminal else { return "err" }
+            return t.subviews.map { "\(type(of: $0)) \($0.frame) alpha=\($0.alphaValue) hidden=\($0.isHidden)" }.joined(separator: "\n") + "\nterm \(t.frame) window \(String(describing: t.window?.frame))"
+        case "row":
+            guard let r = Int(rest), let f = AppModel.shared.current?.focusedTerminal?.frameCache, f.lines.indices.contains(r) else { return "err row n" }
+            return f.lines[r].runs.map { run in
+                "[\(run.col)+\(run.cells) \(run.text.unicodeScalars.map { String($0.value, radix: 16) }.joined(separator: " ")) w=\([UInt8](run.widths))]"
+            }.joined(separator: "\n")
         case "hit":
             let n = rest.split(separator: " ").compactMap { Double($0) }
             guard n.count == 2, let cv = w.contentView else { return "err hit x y" }
@@ -142,7 +156,10 @@ enum Automation {
         let h = NSScreen.screens.first?.frame.height ?? 0
         cg.location = CGPoint(x: screen.x, y: h - screen.y)
         cg.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
-        if let e = NSEvent(cgEvent: cg) { w.sendEvent(e) }
+        if let e = NSEvent(cgEvent: cg) {
+            let v = w.contentView?.hitTest(w.contentView!.convert(p, from: nil))
+            v?.scrollWheel(with: e)
+        }
     }
 
     private static let names: [String: (Int, String)] = [
