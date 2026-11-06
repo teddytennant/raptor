@@ -276,6 +276,22 @@ final class TourUITests: XCTestCase {
         shot("hw-closed")
     }
 
+    /// Answer an agent from the Needs-you inbox without opening its terminal.
+    func testInboxReply() throws {
+        app.launchEnvironment["RAPTOR_OPEN"] = nil
+        app.launch()
+        let sessions = app.buttons.matching(identifier: "Sessions").firstMatch
+        if sessions.waitForExistence(timeout: 10) { sessions.tap() }
+        let reply = app.textFields["Reply"].firstMatch
+        XCTAssertTrue(reply.waitForExistence(timeout: 10))
+        reply.tap()
+        reply.typeText("from-inbox")
+        shot("inbox-typing")
+        app.buttons["Send reply"].firstMatch.tap()
+        sleep(2)
+        shot("inbox-sent")
+    }
+
     func testSettings() throws {
         app.launch()
         sleep(2)

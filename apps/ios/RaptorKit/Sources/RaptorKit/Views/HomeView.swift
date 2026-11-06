@@ -227,6 +227,7 @@ private struct SessionRow: View {
                             Text(session.label).font(.callout.weight(.medium)).foregroundStyle(online ? c.text : c.tertiary).lineLimit(1)
                             if let s = session.agentState, s != .idle {
                                 Circle().fill(Palette.agent(s)).frame(width: 7, height: 7)
+                                    .accessibilityLabel(s.spoken)
                             }
                         }
                         let d = detail(focused)
@@ -309,6 +310,7 @@ private struct NeedsRow: View {
                     .submitLabel(.send)
                     .onSubmit(send)
                 Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.system(size: 22)) }
+                    .accessibilityLabel("Send reply")
                     .disabled(reply.isEmpty)
                     .foregroundStyle(reply.isEmpty ? c.tertiary : c.accent)
             }

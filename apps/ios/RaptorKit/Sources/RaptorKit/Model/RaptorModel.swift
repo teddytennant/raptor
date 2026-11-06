@@ -142,4 +142,15 @@ public extension Session {
 
 public extension AgentState {
     var urgent: Bool { self == .blocked || self == .error }
+
+    /// For VoiceOver, where the status dot's color says nothing.
+    var spoken: String {
+        switch self {
+        case .blocked: "Needs you"
+        case .working: "Working"
+        case .done: "Done"
+        case .error: "Error"
+        case .idle: "Idle"
+        }
+    }
 }

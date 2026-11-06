@@ -709,6 +709,10 @@ final class KeyBar: UIInputView {
     private var repeatTimer: Timer?
     var chrome = Chrome(Themes.all[0]) { didSet { restyle() } }
 
+    private static let spoken = ["esc": "Escape", "tab": "Tab", "ctrl": "Control", "alt": "Alt", "←": "Left", "↓": "Down", "↑": "Up", "→": "Right",
+                                 "•••": "More keys", "abc": "Arrow keys", "|": "Pipe", "~": "Tilde", "/": "Slash", "-": "Dash", "`": "Backtick",
+                                 "home": "Home", "end": "End", "pgup": "Page Up", "pgdn": "Page Down"]
+
     private enum Item { case key(String, Key, repeats: Bool), text(String), ctrl, alt, more, hide }
     private let pages: [[Item]] = [
         [.key("esc", .escape, repeats: false), .key("tab", .tab, repeats: false), .ctrl, .alt,
@@ -814,7 +818,8 @@ final class KeyBar: UIInputView {
             if btn.isHighlighted { btn.configuration?.background.backgroundColor = self.ui(self.chrome.key) }
             else if btn !== self.ctrlButton && btn !== self.altButton { btn.configuration?.background.backgroundColor = .clear }
         }
-        b.accessibilityLabel = title
+        b.accessibilityLabel = Self.spoken[title] ?? title
+        b.accessibilityIdentifier = title
         if case .hide = item {
             b.configuration?.image = UIImage(systemName: "keyboard.chevron.compact.down",
                                              withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .medium))
@@ -863,6 +868,7 @@ final class KeyBar: UIInputView {
         func style(_ b: UIButton?, on: Bool, locked: Bool) {
             b?.configuration?.background.backgroundColor = locked ? ui(chrome.accent) : on ? ui(chrome.accent).withAlphaComponent(0.3) : .clear
             b?.configuration?.baseForegroundColor = locked ? ui(chrome.bg) : ui(chrome.text)
+            b?.accessibilityValue = locked ? "Locked" : on ? "On" : nil
         }
         style(ctrlButton, on: m.ctrl, locked: m.ctrlLocked)
         style(altButton, on: m.alt, locked: m.altLocked)
