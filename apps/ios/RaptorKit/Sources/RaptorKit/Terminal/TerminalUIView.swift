@@ -4,7 +4,7 @@ import UIKit
 
 /// The iOS terminal surface: draws frames with Core Text and turns touches,
 /// the software keyboard, and hardware keyboards into terminal input.
-public final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGestureRecognizerDelegate, UIEditMenuInteractionDelegate {
+public final class TerminalUIView: UIView, UITextInputTraits, UIGestureRecognizerDelegate, UIEditMenuInteractionDelegate, UIPointerInteractionDelegate {
     public let controller: TerminalController
     public let renderer: TerminalRenderer
     public var onFontSizeChanged: ((CGFloat) -> Void)?
@@ -60,10 +60,15 @@ public final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGest
         tap.require(toFail: doubleTap)
         let pan = UIPanGestureRecognizer(target: self, action: #selector(onPan(_:)))
         pan.delegate = self
+        pan.allowedScrollTypesMask = .all // trackpads and mouse wheels scroll too
+        let rightClick = UITapGestureRecognizer(target: self, action: #selector(onRightClick(_:)))
+        rightClick.buttonMaskRequired = .secondary
+        rightClick.delegate = self
         let pinch = UIPinchGestureRecognizer(target: self, action: #selector(onPinch(_:)))
         let press = UILongPressGestureRecognizer(target: self, action: #selector(onLongPress(_:)))
         press.minimumPressDuration = 0.35
-        [tap, doubleTap, pan, pinch, press].forEach(addGestureRecognizer)
+        [tap, doubleTap, pan, pinch, press, rightClick].forEach(addGestureRecognizer)
+        addInteraction(UIPointerInteraction(delegate: self))
 
         let menu = UIEditMenuInteraction(delegate: self)
         addInteraction(menu)
@@ -257,14 +262,48 @@ public final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGest
         selecting = false
     }
 
+    @objc private func onRightClick(_ g: UITapGestureRecognizer) {
+        showMenu(at: g.location(in: self))
+    }
+
+    public func pointerInteraction(_ interaction: UIPointerInteraction, styleFor region: UIPointerRegion) -> UIPointerStyle? {
+        UIPointerStyle(shape: .verticalBeam(length: renderer.metrics.height * scale), constrainedAxes: [])
+    }
+
     private enum PanAxis { case undecided, vertical, horizontal }
     private var panAxis = PanAxis.undecided
     private var panTotalX: CGFloat = 0
+    /// The pan started with a mouse or trackpad click: drag selects, like a desktop.
+    private var pointerTouch = false
+    private var dragSelecting = false
+
+    public func gestureRecognizer(_ g: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        if g is UIPanGestureRecognizer { pointerTouch = touch.type == .indirectPointer }
+        // A finger tap can satisfy a secondary-button mask; only a real click should.
+        if let t = g as? UITapGestureRecognizer, t.buttonMaskRequired == .secondary { return touch.type == .indirectPointer }
+        return true
+    }
+
+    private func dragSelect(_ g: UIPanGestureRecognizer, moved d: CGPoint) {
+        let p = g.location(in: self)
+        switch g.state {
+        case .began:
+            let (c, r) = cell(at: CGPoint(x: p.x - d.x, y: p.y - d.y))
+            anchor = (c, r)
+        case .changed:
+            let (c, r) = cell(at: p)
+            if let a = anchor { _ = controller.terminal?.selectRange(fromCol: UInt16(a.0), fromRow: UInt16(a.1), toCol: UInt16(c), toRow: UInt16(r)) }
+        default:
+            dragSelecting = false
+        }
+    }
 
     @objc private func onPan(_ g: UIPanGestureRecognizer) {
         if selecting { return }
         let d = g.translation(in: self)
         g.setTranslation(.zero, in: self)
+        if g.state == .began { dragSelecting = pointerTouch && g.numberOfTouches > 0 && controller.terminal?.mouseTracking() != true }
+        if dragSelecting { return dragSelect(g, moved: d) }
         let canPan = (!controller.hasControl && scale < 1) || zoom > 1
         switch g.state {
         case .began:
