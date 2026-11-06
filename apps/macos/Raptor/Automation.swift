@@ -63,6 +63,10 @@ enum Automation {
         case "type":
             for ch in rest { key(String(ch), in: w) }
             return "ok type"
+        case "paste":
+            // The same call ⌘V makes, without touching the system pasteboard.
+            AppModel.shared.current?.focusedTerminal?.terminal?.paste(text: rest.replacingOccurrences(of: "\\n", with: "\n"))
+            return "ok paste"
         case "mark":
             (w.firstResponder as? NSTextInputClient)?.setMarkedText(rest, selectedRange: NSRange(location: rest.count, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
             return "ok mark"

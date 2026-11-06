@@ -107,6 +107,5 @@ struct RaptorCommands: Commands {
         p.alignment = .center
         credits.addAttribute(.paragraphStyle, value: p, range: NSRange(location: 0, length: credits.length))
         NSApp.orderFrontStandardAboutPanel(options: [.credits: credits])
-        NSApp.activate(ignoringOtherApps: true)
     }
 }
