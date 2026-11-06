@@ -9,7 +9,9 @@ public struct TerminalScreen: View {
     @State private var windowId: String?
     @State private var blockId: String?
     @State private var termColors: (UInt32, UInt32)?
-    @State private var controller: TerminalController?
+    /// Every open terminal by block; tiled iPad windows have several.
+    @State private var controllers: [String: TerminalController] = [:]
+    @Environment(\.horizontalSizeClass) private var hsize
     @State private var topInset: CGFloat = 0
     @State private var showPalette = false
     @State private var keyboard = false
@@ -52,9 +54,11 @@ public struct TerminalScreen: View {
 
         ZStack(alignment: .top) {
             c.bg.ignoresSafeArea()
-            if let b = blockId {
+            if let w = window, w.blocks.count > 1, hsize == .regular, blockId != nil {
+                tiles(w, chrome: c, session: session)
+            } else if let b = blockId {
                 LiveTerminal(serverId: serverId, sessionId: sessionId, blockId: b, theme: model.theme, chrome: c,
-                             insetTop: topInset, controller: $controller,
+                             insetTop: topInset, controller: slot(b),
                              onSwipe: { swipe($0, session: session) }) { termColors = ($0, $1) }
                     .id(b)
                     .transition(.asymmetric(insertion: .move(edge: slideEdge), removal: .move(edge: slideEdge == .trailing ? .leading : .trailing)))
@@ -148,6 +152,43 @@ public struct TerminalScreen: View {
             CommandPalette(serverId: serverId, local: localCommands(session: session), sessionId: sessionId, blockId: blockId)
                 .environment(\.chrome, c)
         }
+    }
+
+    private var controller: TerminalController? { blockId.flatMap { controllers[$0] } }
+
+    private func slot(_ id: String) -> Binding<TerminalController?> {
+        Binding(get: { controllers[id] }, set: { controllers[id] = $0 })
+    }
+
+    /// iPad: every pane of the window at once, laid out as on the desktop.
+    /// Tapping a pane gives it the keyboard.
+    private func tiles(_ w: Window, chrome c: Chrome, session: Session?) -> some View {
+        GeometryReader { g in
+            ZStack(alignment: .topLeading) {
+                ForEach(w.blocks, id: \.id) { b in
+                    let focused = b.id == blockId
+                    LiveTerminal(serverId: serverId, sessionId: sessionId, blockId: b.id, theme: model.theme, chrome: c,
+                                 insetTop: 0, controller: slot(b.id), onSwipe: { cycleWindow($0, session: session) },
+                                 onFocus: { if blockId != b.id { focus(b.id) } }) { termColors = ($0, $1) }
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .strokeBorder(focused ? c.accent.opacity(0.7) : c.hairline, lineWidth: focused ? 1.5 : 1))
+                        .frame(width: max(1, b.w * g.size.width - 4), height: max(1, b.h * g.size.height - 4))
+                        .offset(x: b.x * g.size.width + 2, y: b.y * g.size.height + 2)
+                        .accessibilityElement(children: .contain)
+                        .accessibilityLabel(runningName(b) ?? "Shell")
+                }
+            }
+        }
+        .padding(.top, topInset)
+        .padding(.horizontal, 2)
+        .ignoresSafeArea(.container, edges: [.top, .bottom])
+    }
+
+    private func focus(_ b: String) {
+        blockId = b
+        Haptics.select()
+        Task { try? await model.core.focusBlock(serverId: serverId, sessionId: sessionId, blockId: b) }
     }
 
     /// Every pane in the session, in window order then layout order.
@@ -317,7 +358,7 @@ public struct TerminalScreen: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Sessions")
 
-            if let window, window.blocks.count > 1 {
+            if let window, window.blocks.count > 1, hsize != .regular {
                 PaneMap(window: window, selected: blockId) { picked in
                     blockId = picked
                     Haptics.select()
@@ -478,6 +519,7 @@ struct LiveTerminal: View {
     let insetTop: CGFloat
     @Binding var controller: TerminalController?
     var onSwipe: (Int) -> Void
+    var onFocus: (() -> Void)? = nil
     var onColors: (UInt32, UInt32) -> Void
     @State private var own: TerminalController?
 
@@ -485,7 +527,7 @@ struct LiveTerminal: View {
         ZStack {
             if let ctl = own {
                 TerminalSurface(controller: ctl, fontSize: fontSize, chrome: chrome, insetTop: insetTop,
-                                appearance: TerminalAppearance(model), onColors: onColors, onSwipe: onSwipe) {
+                                appearance: TerminalAppearance(model), onColors: onColors, onSwipe: onSwipe, onFocus: onFocus) {
                     model.core.setSetting(key: "font_size", value: String(Double($0)))
                 }
                 if let text = ctl.status.banner {
@@ -514,6 +556,7 @@ struct LiveTerminal: View {
         .onDisappear {
             own?.close()
             own = nil
+            controller = nil
         }
     }
 
@@ -529,6 +572,7 @@ struct TerminalSurface: UIViewRepresentable {
     let appearance: TerminalAppearance
     var onColors: (UInt32, UInt32) -> Void
     var onSwipe: (Int) -> Void
+    var onFocus: (() -> Void)?
     var onFontSize: (CGFloat) -> Void
 
     final class Coordinator { var applied: TerminalAppearance? }
@@ -551,6 +595,7 @@ struct TerminalSurface: UIViewRepresentable {
         v.insetTop = insetTop
         v.onColors = onColors
         v.onSwipePane = onSwipe
+        v.onFocus = onFocus
     }
 }
 #else
@@ -563,6 +608,7 @@ struct TerminalSurface: NSViewRepresentable {
     let appearance: TerminalAppearance
     var onColors: (UInt32, UInt32) -> Void
     var onSwipe: (Int) -> Void
+    var onFocus: (() -> Void)?
     var onFontSize: (CGFloat) -> Void
 
     final class View: NSView {

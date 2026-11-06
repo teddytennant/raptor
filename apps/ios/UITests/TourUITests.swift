@@ -187,6 +187,22 @@ final class TourUITests: XCTestCase {
         print("RESUME took-at-least", Date().timeIntervalSince(start))
     }
 
+    func testPanes() throws {
+        open("editor")
+        let terminals = app.textViews.matching(identifier: "Terminal")
+        XCTAssertTrue(terminals.firstMatch.waitForExistence(timeout: 15))
+        sleep(4)
+        shot("panes")
+        terminals.element(boundBy: 0).tap()
+        sleep(2)
+        shot("panes-focus-left")
+        XCUIDevice.shared.orientation = .portrait
+        sleep(3)
+        shot("panes-portrait")
+        XCUIDevice.shared.orientation = .landscapeLeft
+        sleep(2)
+    }
+
     func testOtherSessions() throws {
         for s in ["api", "monitor", "editor", "build"] {
             open(s)

@@ -11,6 +11,8 @@ public final class TerminalUIView: UIView, UITextInputTraits, UIGestureRecognize
     public var onFontSizeChanged: ((CGFloat) -> Void)?
     /// Horizontal swipe: +1 next pane, -1 previous.
     public var onSwipePane: ((Int) -> Void)?
+    /// Took the keyboard (a tap, a shortcut): the pane the user is working in.
+    public var onFocus: (() -> Void)?
 
     private var frameCache: Frame?
     private let padding: CGFloat = 6
@@ -474,6 +476,7 @@ public final class TerminalUIView: UIView, UITextInputTraits, UIGestureRecognize
 
     public override func becomeFirstResponder() -> Bool {
         let r = super.becomeFirstResponder()
+        if r { onFocus?() }
         blink(r)
         setNeedsDisplay()
         return r
