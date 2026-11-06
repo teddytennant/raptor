@@ -117,6 +117,14 @@ final class AppModel {
         pathMonitor = monitor
     }
 
+    /// Bring up the pane a notification is about: its session, its tab, the pane focused.
+    func show(serverId: String, sessionId: String, blockId: String) {
+        let ws = current ?? allWorkspaces.first
+        let tab = model.session(serverId, sessionId)?.windows.first { $0.blocks.contains { $0.id == blockId } }
+        ws?.open(serverId: serverId, sessionId: sessionId, windowId: tab?.id, blockId: blockId)
+        ws?.window?.makeKeyAndOrderFront(nil)
+    }
+
     func reconnectAll() {
         for s in model.state.servers { model.core.reconnect(serverId: s.id) }
     }

@@ -86,10 +86,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 return
             }
             NSApp.activate(ignoringOtherApps: true)
-            let ws = app.current ?? app.allWorkspaces.first
-            let window = app.model.session(srv, ses)?.windows.first { $0.blocks.contains { $0.id == block } }
-            ws?.open(serverId: srv, sessionId: ses, windowId: window?.id, blockId: block)
-            ws?.window?.makeKeyAndOrderFront(nil)
+            app.show(serverId: srv, sessionId: ses, blockId: block)
         }
     }
 }

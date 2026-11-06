@@ -167,6 +167,11 @@ enum Automation {
                 DispatchQueue.main.async { log("auth \(s.authorizationStatus.rawValue) alert \(s.alertSetting.rawValue)") }
             }
             return "ok notes"
+        case "show":
+            // What clicking an agent notification does, for the first agent in the inbox matching `rest`.
+            guard let a = AppModel.shared.model.state.attention.first(where: { $0.sessionLabel == rest }) else { return "err no agent in \(rest)" }
+            AppModel.shared.show(serverId: a.serverId, sessionId: a.sessionId, blockId: a.block.id)
+            return "ok show \(a.block.name)"
         case "preview":
             guard let a = AppModel.shared.model.state.attention.first(where: { $0.block.agent?.state == .blocked }) else { return "err none blocked" }
             let core = AppModel.shared.model.core
