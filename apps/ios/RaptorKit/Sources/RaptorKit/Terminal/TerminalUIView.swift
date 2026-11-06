@@ -682,9 +682,9 @@ final class KeyBar: UIInputView {
     private enum Item { case key(String, Key, repeats: Bool), text(String), ctrl, alt, more, hide }
     private let pages: [[Item]] = [
         [.key("esc", .escape, repeats: false), .key("tab", .tab, repeats: false), .ctrl, .alt,
-         .key("←", .left, repeats: true), .key("↓", .down, repeats: true), .key("↑", .up, repeats: true), .key("→", .right, repeats: true), .more],
+         .key("←", .left, repeats: true), .key("↓", .down, repeats: true), .key("↑", .up, repeats: true), .key("→", .right, repeats: true), .more, .hide],
         [.text("|"), .text("~"), .text("/"), .text("-"), .text("`"),
-         .key("home", .home, repeats: false), .key("end", .end, repeats: false), .key("pgup", .pageUp, repeats: true), .key("pgdn", .pageDown, repeats: true), .more],
+         .key("home", .home, repeats: false), .key("end", .end, repeats: false), .key("pgup", .pageUp, repeats: true), .key("pgdn", .pageDown, repeats: true), .more, .hide],
     ]
 
     override init(frame: CGRect, inputViewStyle: UIInputView.Style = .default) {
@@ -755,7 +755,7 @@ final class KeyBar: UIInputView {
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         ctrlButton = nil
         altButton = nil
-        let items = wide ? pages.flatMap { $0.filter { if case .more = $0 { false } else { true } } } : pages[page]
+        let items = wide ? pages[0].dropLast(2) + pages[1].dropLast(2) + [.hide] : pages[page]
         for item in items { stack.addArrangedSubview(button(for: item)) }
         refresh()
     }
@@ -785,6 +785,12 @@ final class KeyBar: UIInputView {
             else if btn !== self.ctrlButton && btn !== self.altButton { btn.configuration?.background.backgroundColor = .clear }
         }
         b.accessibilityLabel = title
+        if case .hide = item {
+            b.configuration?.image = UIImage(systemName: "keyboard.chevron.compact.down",
+                                             withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .medium))
+            b.configuration?.baseForegroundColor = ui(chrome.secondary)
+            b.accessibilityLabel = "Hide keyboard"
+        }
         b.addAction(UIAction { [weak self] _ in self?.down(item) }, for: .touchDown)
         b.addAction(UIAction { [weak self] _ in self?.stopRepeat() }, for: [.touchUpInside, .touchUpOutside, .touchCancel, .touchDragExit])
         if case .ctrl = item { ctrlButton = b }
