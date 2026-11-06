@@ -45,6 +45,7 @@ fn local_items(ui: &Shared) -> Vec<Item> {
     act("Tabs", "+", "New Tab", "new-window");
     act("Tabs", "✎", "Rename Tab…", "rename-window");
     act("Tabs", "×", "Close Tab", "close-window");
+    act("Sessions", "⇄", "Switch Session…", "switch-session");
     act("Sessions", "+", "New Session", "new-session");
     act("Sessions", "✎", "Rename Session…", "rename-session");
     act("Sessions", "⏻", "End Session…", "end-session");

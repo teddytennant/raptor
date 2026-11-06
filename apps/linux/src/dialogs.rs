@@ -317,6 +317,7 @@ const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
             ("Previous Tab", "<Control>Page_Up"),
             ("Go to Tab 1–9", "<Alt>1"),
             ("Commands", "<Control><Shift>p"),
+            ("Switch Session", "<Control><Shift>s"),
         ],
     ),
     (

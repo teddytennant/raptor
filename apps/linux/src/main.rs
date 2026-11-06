@@ -58,8 +58,7 @@ pub struct Ui {
     pub window: adw::ApplicationWindow,
     sidebar: gtk::ListBox,
     sidebar_key: String,
-    split: adw::NavigationSplitView,
-    content_title: adw::WindowTitle,
+    switcher: Switcher,
     tabs: adw::TabView,
     pages: Vec<Page>,
     stack: gtk::Stack,
@@ -97,6 +96,24 @@ fn set_syncing(on: bool) {
 }
 
 pub type Shared = Rc<RefCell<Ui>>;
+
+/// The header's session button, Rex style: the session, its server, and a dot
+/// when something elsewhere wants you. It opens the session list.
+struct Switcher {
+    button: gtk::MenuButton,
+    title: gtk::Label,
+    subtitle: gtk::Label,
+    icon: gtk::Image,
+    dot: gtk::Box,
+}
+
+impl Switcher {
+    fn set(&self, title: &str, subtitle: &str, local: bool) {
+        self.title.set_label(title);
+        self.subtitle.set_label(subtitle);
+        self.icon.set_icon_name(Some(if local { "computer-symbolic" } else { "network-server-symbolic" }));
+    }
+}
 
 fn main() -> glib::ExitCode {
     let app = adw::Application::builder().application_id(APP_ID).flags(gio::ApplicationFlags::HANDLES_OPEN).build();
@@ -156,26 +173,58 @@ fn build(app: &adw::Application) {
         let _ = core.add_server("", &addr);
     }
 
-    // ---- sidebar ----
+    // ---- session switcher ----
     let sidebar = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::Single).build();
     sidebar.add_css_class("navigation-sidebar");
-    let side_scroll = gtk::ScrolledWindow::builder().child(&sidebar).vexpand(true).hscrollbar_policy(gtk::PolicyType::Never).build();
-    let add_btn = gtk::Button::from_icon_name("list-add-symbolic");
-    add_btn.set_tooltip_text(Some("Add Server…"));
-    add_btn.set_action_name(Some("app.add-server"));
+    let side_scroll = gtk::ScrolledWindow::builder()
+        .child(&sidebar)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .propagate_natural_height(true)
+        .max_content_height(460)
+        .build();
+    let switch_search = gtk::SearchEntry::builder().placeholder_text("Switch to a session").build();
+    let switch_new = gtk::Button::builder().label("New Session").action_name("app.new-session").build();
+    let switch_add = gtk::Button::builder().label("Add Server…").action_name("app.add-server").build();
+    for b in [&switch_new, &switch_add] {
+        b.add_css_class("flat");
+    }
+    let switch_foot = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    switch_foot.append(&switch_new);
+    switch_foot.append(&gtk::Box::builder().hexpand(true).build());
+    switch_foot.append(&switch_add);
+    let switch_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    switch_box.append(&switch_search);
+    switch_box.append(&side_scroll);
+    switch_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    switch_box.append(&switch_foot);
+    switch_box.set_size_request(340, -1);
+    let switch_pop = gtk::Popover::builder().child(&switch_box).build();
+    switch_pop.add_css_class("raptor-switch-pop");
+    let switch_icon = gtk::Image::from_icon_name("computer-symbolic");
+    let switch_dot = dot("dot-idle");
+    switch_dot.set_halign(gtk::Align::End);
+    switch_dot.set_valign(gtk::Align::Start);
+    switch_dot.set_visible(false);
+    let icon_box = gtk::Overlay::builder().child(&switch_icon).build();
+    icon_box.add_overlay(&switch_dot);
+    let switch_title = label("Raptor", &["raptor-switch-title"]);
+    let switch_sub = label("", &["caption", "dim-label"]);
+    let titles = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    titles.set_valign(gtk::Align::Center);
+    titles.append(&switch_title);
+    titles.append(&switch_sub);
+    let switch_inner = gtk::Box::new(gtk::Orientation::Horizontal, 9);
+    switch_inner.append(&icon_box);
+    switch_inner.append(&titles);
+    switch_inner.append(&gtk::Image::from_icon_name("pan-down-symbolic"));
+    let switcher = gtk::MenuButton::builder().child(&switch_inner).popover(&switch_pop).tooltip_text("Switch Session (Ctrl+Shift+S)").build();
+    switcher.add_css_class("flat");
+    switcher.add_css_class("raptor-switcher");
+    sidebar::install_filter(&sidebar, &switch_search, &switch_pop);
     let app_menu = gtk::MenuButton::builder().icon_name("open-menu-symbolic").menu_model(&app_menu()).tooltip_text("Main Menu").build();
     app_menu.set_primary(true);
-    let side_header = adw::HeaderBar::new();
-    side_header.set_title_widget(Some(&adw::WindowTitle::new("Raptor", "")));
-    side_header.pack_start(&add_btn);
-    side_header.pack_end(&app_menu);
-    let side_view = adw::ToolbarView::new();
-    side_view.add_top_bar(&side_header);
-    side_view.set_content(Some(&side_scroll));
-    let side_page = adw::NavigationPage::builder().title("Raptor").child(&side_view).build();
 
     // ---- content ----
-    let content_title = adw::WindowTitle::new("Raptor", "");
     let new_win = gtk::Button::from_icon_name("tab-new-symbolic");
     new_win.set_tooltip_text(Some("New Tab"));
     new_win.set_action_name(Some("app.new-window"));
@@ -187,8 +236,9 @@ fn build(app: &adw::Application) {
     palette_btn.set_tooltip_text(Some("Commands"));
     palette_btn.set_action_name(Some("app.palette"));
     let content_header = adw::HeaderBar::new();
-    content_header.set_title_widget(Some(&content_title));
+    content_header.pack_start(&switcher);
     content_header.pack_start(&new_win);
+    content_header.pack_end(&app_menu);
     content_header.pack_end(&menu_btn);
     content_header.pack_end(&palette_btn);
     content_header.pack_end(&split_h);
@@ -203,8 +253,9 @@ fn build(app: &adw::Application) {
             | adw::TabViewShortcuts::ALT_ZERO,
     );
     tabs.set_menu_model(Some(&tab_menu()));
-    let tab_bar = adw::TabBar::builder().view(&tabs).autohide(true).build();
+    let tab_bar = adw::TabBar::builder().view(&tabs).autohide(true).hexpand(true).build();
     tab_bar.add_css_class("inline");
+    content_header.set_title_widget(Some(&tab_bar));
 
     let empty_button = gtk::Button::builder().halign(gtk::Align::Center).build();
     empty_button.add_css_class("pill");
@@ -218,7 +269,6 @@ fn build(app: &adw::Application) {
     toasts.set_child(Some(&stack));
     let content_view = adw::ToolbarView::new();
     content_view.add_top_bar(&content_header);
-    content_view.add_top_bar(&tab_bar);
     let find_entry = gtk::SearchEntry::builder().placeholder_text("Find in terminal").width_chars(28).build();
     let find_older = gtk::Button::from_icon_name("go-up-symbolic");
     find_older.set_tooltip_text(Some("Find Older (Enter)"));
@@ -232,9 +282,6 @@ fn build(app: &adw::Application) {
     find_bar.connect_entry(&find_entry);
     content_view.add_top_bar(&find_bar);
     content_view.set_content(Some(&toasts));
-    let content_page = adw::NavigationPage::builder().title("Session").child(&content_view).build();
-
-    let split = adw::NavigationSplitView::builder().sidebar(&side_page).content(&content_page).min_sidebar_width(240.0).build();
     let (w, h) = (setting_f64(&core, "window_width").unwrap_or(1200.0), setting_f64(&core, "window_height").unwrap_or(780.0));
     let window = adw::ApplicationWindow::builder()
         .application(app)
@@ -243,14 +290,15 @@ fn build(app: &adw::Application) {
         .default_height(h as i32)
         .width_request(360)
         .height_request(294)
-        .content(&split)
+        .content(&content_view)
         .build();
     if setting_bool(&core, "window_maximized", false) {
         window.maximize();
     }
-    // Collapse the sidebar into a back button on narrow windows.
-    let bp = adw::Breakpoint::new(adw::BreakpointCondition::new_length(adw::BreakpointConditionLengthType::MaxWidth, 640.0, adw::LengthUnit::Sp));
-    bp.add_setter(&split, "collapsed", Some(&true.to_value()));
+    // Narrow windows keep the split and palette in the session menu.
+    let bp = adw::Breakpoint::new(adw::BreakpointCondition::new_length(adw::BreakpointConditionLengthType::MaxWidth, 560.0, adw::LengthUnit::Sp));
+    bp.add_setter(&split_h, "visible", Some(&false.to_value()));
+    bp.add_setter(&palette_btn, "visible", Some(&false.to_value()));
     window.add_breakpoint(bp);
 
     let theme_id = setting_str(&core, "theme").unwrap_or_else(|| "tokyo-night".into());
@@ -267,8 +315,7 @@ fn build(app: &adw::Application) {
         window: window.clone(),
         sidebar: sidebar.clone(),
         sidebar_key: String::new(),
-        split,
-        content_title,
+        switcher: Switcher { button: switcher.clone(), title: switch_title, subtitle: switch_sub, icon: switch_icon, dot: switch_dot },
         tabs: tabs.clone(),
         pages: Vec::new(),
         stack,
@@ -427,6 +474,9 @@ fn load_css() {
         .raptor-mono { font-family: "JetBrains Mono", monospace; font-size: 0.85em; }
         .raptor-needs { background: alpha(#f59e0b, 0.10); border-radius: 10px; }
         .raptor-count { font-size: 0.8em; min-width: 18px; }
+        .raptor-switcher > button { padding: 2px 8px; }
+        .raptor-switch-title { font-weight: 700; }
+        .raptor-switch-pop > contents { padding: 8px; }
         panegrid > .raptor-divider { background: transparent; }
         panegrid > .raptor-divider.dragging { background: alpha(@accent_bg_color, 0.5); }
         "#,
@@ -464,6 +514,26 @@ pub fn label(text: &str, classes: &[&str]) -> gtk::Label {
 pub fn refresh(ui: &Shared) {
     let state = ui.borrow().core.state();
     sidebar::rebuild(ui, &state);
+    {
+        let u = ui.borrow();
+        let here = u.selected.as_ref().map(|s| s.session.clone());
+        let elsewhere = state
+            .attention()
+            .into_iter()
+            .filter(|a| Some(&a.session_id) != here.as_ref())
+            .filter_map(|a| a.block.agent.as_ref().map(|x| x.state))
+            .filter(|s| *s != AgentState::Idle)
+            .max_by_key(|s| match s {
+                AgentState::Blocked => 4,
+                AgentState::Error => 3,
+                AgentState::Working => 2,
+                AgentState::Done => 1,
+                AgentState::Idle => 0,
+            });
+        let d = &u.switcher.dot;
+        d.set_visible(elsewhere.is_some());
+        d.set_css_classes(&["raptor-dot", agent_class(elsewhere)]);
+    }
     update_content(ui, &state);
 }
 
@@ -498,7 +568,7 @@ pub fn select(ui: &Shared, server: String, session: String, block: Option<String
         }
         let window = window.or_else(|| if same { u.selected.as_ref().and_then(|s| s.window.clone()) } else { None });
         u.selected = Some(Selection { server: server.clone(), session: session.clone(), window });
-        u.split.set_show_content(true);
+        u.switcher.button.popdown();
         u.core.set_setting("last_session", format!("{server}|{session}").into());
         u.window.application().unwrap().withdraw_notification(&session);
     }
@@ -530,8 +600,8 @@ fn current_session(ui: &Shared, state: &AppState) -> Option<SessionState> {
 fn show_empty(ui: &Shared, state: &AppState) {
     let mut u = ui.borrow_mut();
     u.stack.set_visible_child_name("empty");
-    u.content_title.set_title("Raptor");
-    u.content_title.set_subtitle("");
+    let pick = if state.servers.is_empty() { "No servers" } else { "Pick a session" };
+    u.switcher.set(if state.servers.is_empty() { "Raptor" } else { "No Session" }, pick, true);
     u.window.set_title(Some("Raptor"));
     let online = state.servers.iter().find(|s| matches!(s.connectivity, Connectivity::Online));
     let (icon, title, desc, button) = if state.servers.is_empty() {
@@ -759,8 +829,10 @@ fn update_content(ui: &Shared, state: &AppState) {
     let sub = focused
         .map(|b| if b.pwd.is_empty() { b.display_name() } else { format!("{} · {}", b.display_name(), raptor_core::short_path(&b.pwd)) })
         .unwrap_or_default();
-    u.content_title.set_title(&session.label);
-    u.content_title.set_subtitle(&sub);
+    let srv = state.server(&sel.server);
+    let server_name = srv.map(|s| if s.is_local { "This Computer".to_owned() } else { s.name.clone() }).unwrap_or_default();
+    u.switcher.set(&session.label, &server_name, srv.is_none_or(|s| s.is_local));
+    u.switcher.button.set_tooltip_text(Some(&format!("{sub}\nSwitch Session (Ctrl+Shift+S)")));
     u.window.set_title(Some(&format!("{} – Raptor", session.label)));
 
     // Keyboard focus follows the server's focused pane, unless we just moved it ourselves.
@@ -950,6 +1022,7 @@ fn install_actions(app: &adw::Application, ui: &Shared) {
         }
     };
     add("add-server", &[], Box::new(|u| dialogs::server_dialog(u, None)));
+    add("switch-session", &["<Control><Shift>s"], Box::new(|u| u.borrow().switcher.button.popup()));
     add(
         "new-session",
         &["<Control><Shift>n"],

@@ -1,4 +1,5 @@
-//! The sidebar: what needs you, then each server and its sessions.
+//! The session list in the header's switcher: what needs you, then each
+//! server and its sessions.
 
 use adw::prelude::*;
 use gtk::{gio, glib};
@@ -38,6 +39,62 @@ fn focused(s: &raptor_core::SessionState) -> Option<&raptor_core::BlockState> {
     active.and_then(|w| w.blocks.iter().find(|b| Some(&b.id) == w.focused_block_id.as_ref()).or(w.blocks.first()))
 }
 
+/// Text a search in the switcher matches, kept on each session row.
+const SEARCH: &str = "raptor-search";
+
+fn set_search(row: &gtk::ListBoxRow, text: String) {
+    // SAFETY: SEARCH is only ever stored and read as a String.
+    unsafe { row.set_data(SEARCH, text) };
+}
+
+fn search_text(row: &gtk::ListBoxRow) -> Option<String> {
+    // SAFETY: as above.
+    unsafe { row.data::<String>(SEARCH).map(|p| p.as_ref().clone()) }
+}
+
+/// Typing in the switcher filters the list; Return opens the first match, and
+/// the list starts unfiltered each time it opens.
+pub fn install_filter(list: &gtk::ListBox, entry: &gtk::SearchEntry, pop: &gtk::Popover) {
+    let e = entry.clone();
+    list.set_filter_func(move |row| {
+        let q = e.text().trim().to_lowercase();
+        if q.is_empty() {
+            return true;
+        }
+        search_text(row).is_some_and(|t| t.contains(&q))
+    });
+    let l = list.clone();
+    entry.connect_search_changed(move |_| l.invalidate_filter());
+    let l = list.clone();
+    entry.connect_activate(move |_| {
+        let mut c = l.first_child();
+        while let Some(w) = c {
+            if let Some(r) = w.downcast_ref::<gtk::ListBoxRow>()
+                && r.is_child_visible()
+                && r.is_activatable()
+                && search_text(r).is_some()
+            {
+                r.activate();
+                return;
+            }
+            c = w.next_sibling();
+        }
+    });
+    let l = list.clone();
+    entry.connect_stop_search(move |e| {
+        e.set_text("");
+        if let Some(p) = l.ancestor(gtk::Popover::static_type()).and_downcast::<gtk::Popover>() {
+            p.popdown();
+        }
+    });
+    let (e, l) = (entry.clone(), list.clone());
+    pop.connect_show(move |_| {
+        e.set_text("");
+        l.invalidate_filter();
+        e.grab_focus();
+    });
+}
+
 pub fn rebuild(ui: &Shared, state: &AppState) {
     let k = key(ui, state);
     if ui.borrow().sidebar_key == k {
@@ -71,6 +128,7 @@ pub fn rebuild(ui: &Shared, state: &AppState) {
             let ag = a.block.agent.clone().unwrap();
             let row = gtk::ListBoxRow::new();
             row.set_widget_name(&format!("session|{}|{}|{}", a.server_id, a.session_id, a.block.id));
+            set_search(&row, format!("{} {} {}", a.session_label, a.server_name, a.block.display_name()).to_lowercase());
             row.add_css_class("raptor-needs");
             let b = gtk::Box::new(gtk::Orientation::Horizontal, 10);
             b.set_margin_top(8);
@@ -154,6 +212,7 @@ pub fn rebuild(ui: &Shared, state: &AppState) {
         for s in &srv.sessions {
             let row = gtk::ListBoxRow::new();
             row.set_widget_name(&format!("session|{}|{}", srv.id, s.id));
+            set_search(&row, format!("{} {}", s.label, srv.name).to_lowercase());
             let b = gtk::Box::new(gtk::Orientation::Horizontal, 10);
             b.set_margin_top(6);
             b.set_margin_bottom(6);
