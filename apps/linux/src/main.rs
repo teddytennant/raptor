@@ -770,7 +770,8 @@ fn update_content(ui: &Shared, state: &AppState) {
     let target = window.focused_block_id.clone().or(focused.map(|b| b.id.clone()));
     let want = target.and_then(|b| u.terms.get(&b).cloned());
     let typing_here = u.terms.values().any(|t| t.has_focus());
-    let other_focus = GtkWindowExt::focus(&u.window).is_some_and(|f| !f.is::<gtk::DrawingArea>()) && !fresh.is_empty();
+    // Never take the keyboard from someone typing in a text field (find, rename).
+    let other_focus = GtkWindowExt::focus(&u.window).is_some_and(|f| f.is::<gtk::Text>() || (!f.is::<gtk::DrawingArea>() && !fresh.is_empty()));
     drop(u);
     if let Some(t) = want
         && ui.borrow().pending_focus.is_none()
