@@ -19,7 +19,7 @@ makes a good headless backend). Raptor's own multiplexer server is planned for v
 - **"Needs you" inbox.** Programs that report status (OSC 7501, e.g. coding
   agents) show up at the top: blocked, working, done. You see the last lines of
   output and can reply without opening the terminal. Notifications fire when an
-  agent needs you or finishes. On iOS you can reply straight from the
+  agent needs you or finishes, and you can reply straight from the
   notification.
 - **Fit or mirror.** If nobody else holds a terminal's size, your device takes it
   and the terminal reflows to your screen. If your desktop holds it, Raptor mirrors
@@ -41,7 +41,7 @@ makes a good headless backend). Raptor's own multiplexer server is planned for v
 
 | Path | What | Language |
 | --- | --- | --- |
-| `crates/raptor-proto` | Rex wire protocol: control API rev 8, data handshake, in-band messages, snapshot framing | Rust |
+| `crates/raptor-proto` | Rex wire protocol: control API revisions 8 to 10, data handshake, in-band messages, snapshot framing | Rust |
 | `crates/raptor-client` | Async client: control WebSocket, resumable data streams, Unix/TCP/TLS endpoints | Rust |
 | `crates/raptor-term` | Terminal state on [libghostty-rs](https://github.com/Uzaaft/libghostty-rs): snapshot restore, VT, frames as style runs, selection, scrollback | Rust |
 | `crates/raptor-core` | The app engine every frontend shares: servers, reconnects, live state, agent status, terminals | Rust |
@@ -117,14 +117,15 @@ anything you'd pass to `rex -S`: `my-box` (port 7878), `100.64.0.2:7878`,
 
 | | Builds | Verified |
 | --- | --- | --- |
-| Rust core | ✅ | 18 unit tests, plus a live end-to-end test against Rex on Linux |
-| Android | ✅ APK | Emulator against a real server: add server, sessions, typing, key bar, themes, panes, windows |
-| iOS | ✅ device + Simulator builds | XCUITest against a real server: typing, ctrl/arrow keys, scrolling, pinch, select → copy → paste. Not yet run on a physical iPhone |
+| Rust core | ✅ | 68 unit and fake-server tests, plus 16 live end-to-end tests against a real Rex server: typing, keys, paste, resize and ownership, agent status, reconnect and byte-exact resume across network loss |
+| Android | ✅ APK | Emulator against a real server: add server, sessions, typing and IME, key bar, hardware keys, background agent notifications with inline reply, network loss, rotation, tablet size, themes. Not yet run on a physical phone |
+| iOS | ✅ device + Simulator builds | XCUITest against a real server on iPhone and iPad: typing, IME, hardware keyboard shortcuts, rotation, tiled panes, inbox replies, notification deep links, Dynamic Type. Not yet run on a physical iPhone |
+| macOS | ✅ (ad hoc signed) | Against a real server: rendering, IME and dead keys, Option as Meta, selection, find, mouse reporting, splits and dividers, tabs, inbox replies, reconnect after a stalled server |
 | Linux | ✅ (built on NixOS) | Headless sway against a real server: typing, keys and modifiers, mouse reporting (nvim), selection and copy/paste, tabs, splits and divider drags, reconnects, notifications, 1.5x scale |
 
 ## Roadmap
 
-- v0.2: iPad and tablet layouts showing every pane, a Live Activity for agents, push notifications through a relay, and configurable key bars and themes.
+- v0.2: a Live Activity for agents, push notifications through a relay, and configurable key bars.
 - v2: Raptor's own multiplexer server (Rust), speaking the same protocol.
 
 ## License
