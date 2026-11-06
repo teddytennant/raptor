@@ -130,14 +130,15 @@ data class StatusColors(
     }
 }
 
+// Light themes get deeper shades so status text keeps its contrast.
 private fun status(c: Chrome) = StatusColors(
-    online = Color(0xFF5EE0A8),
-    connecting = Color(0xFFE8B54A),
+    online = Color(if (c.light) 0xFF14855A else 0xFF5EE0A8),
+    connecting = Color(if (c.light) 0xFF9A6A00 else 0xFFE8B54A),
     offline = c.tertiary,
-    working = Color(0xFF6CB6FF),
-    blocked = Color(0xFFF2A93B),
-    done = Color(0xFF5EE0A8),
-    error = Color(0xFFF2667A),
+    working = Color(if (c.light) 0xFF1F6FC4 else 0xFF6CB6FF),
+    blocked = Color(if (c.light) 0xFFA85A00 else 0xFFF2A93B),
+    done = Color(if (c.light) 0xFF14855A else 0xFF5EE0A8),
+    error = Color(if (c.light) 0xFFC42B45 else 0xFFF2667A),
     idle = c.tertiary,
     surfaceRaised = c.raised,
     hairline = c.hairline,
