@@ -1,3 +1,4 @@
+import Network
 import RaptorKit
 import SwiftUI
 import UserNotifications
@@ -14,6 +15,7 @@ struct RaptorApp: App {
         m.onNotify = Notifier.post
         _model = State(initialValue: m)
         Notifier.model = m
+        NetworkWatch.start(m)
     }
 
     var body: some Scene {
@@ -196,6 +198,23 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             return
         }
         await MainActor.run { Notifier.model?.pendingOpen = Focus(serverId: server, sessionId: session, blockId: block) }
+    }
+}
+
+/// Wi-Fi to cellular, a VPN coming up, a new hotspot: the old sockets are dead
+/// even if nothing says so yet, so have the engine check them now.
+enum NetworkWatch {
+    private static let monitor = NWPathMonitor()
+
+    static func start(_ model: RaptorModel) {
+        var last: (NWPath.Status, [NWInterface])?
+        monitor.pathUpdateHandler = { [weak model] path in
+            let now = (path.status, path.availableInterfaces)
+            defer { last = now }
+            guard let prev = last, prev.0 != now.0 || prev.1 != now.1, path.status == .satisfied else { return }
+            DispatchQueue.main.async { MainActor.assumeIsolated { model?.core.verifyConnections() } }
+        }
+        monitor.start(queue: DispatchQueue(label: "network-watch"))
     }
 }
 
