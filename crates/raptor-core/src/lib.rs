@@ -321,13 +321,12 @@ impl Raptor {
         }
     }
 
-    /// Forget a server's live connection without closing it, as if its socket
-    /// had died while the app was frozen. Tests use this; the supervisor will
-    /// reconnect on its own.
+    /// Drop a server's live connection without a close frame, as if the
+    /// network had gone away. Tests use this; the supervisor resumes on its own.
     #[doc(hidden)]
     pub fn disconnect_for_test(&self, server_id: &str) {
         if let Ok(e) = self.entry(server_id) {
-            e.forget_connection();
+            e.drop_connection();
         }
     }
 

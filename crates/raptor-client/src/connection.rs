@@ -50,8 +50,14 @@ pub enum ConnEvent {
     Closed { reason: String },
 }
 
+enum Out {
+    Message(Message),
+    /// Drop the socket without a close frame, so the server keeps the client for a resume.
+    Abort,
+}
+
 struct Inner {
-    out: mpsc::UnboundedSender<Message>,
+    out: mpsc::UnboundedSender<Out>,
     pending: Mutex<HashMap<String, oneshot::Sender<Response>>>,
     next_id: AtomicU64,
     closed: AtomicBool,
@@ -108,7 +114,7 @@ impl Connection {
             return Err(ClientError::Protocol(format!("unexpected protocol {}", welcome.protocol)));
         }
 
-        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Message>();
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Out>();
         let (ev_tx, ev_rx) = mpsc::unbounded_channel();
         let inner = Arc::new(Inner {
             out: out_tx,
@@ -152,7 +158,8 @@ impl Connection {
                         }
                     }
                     out = out_rx.recv() => match out {
-                        Some(m) => if let Err(e) = sink.send(m).await { break e.to_string(); },
+                        Some(Out::Message(m)) => if let Err(e) = sink.send(m).await { break e.to_string(); },
+                        Some(Out::Abort) => break "dropped by client".into(),
                         None => { let _ = sink.send(Message::Close(None)).await; break "closed by client".into(); }
                     },
                     _ = ticker.tick() => {
@@ -208,7 +215,14 @@ impl Connection {
 
     /// Close politely (with a close frame, which ends the client on the server).
     pub fn close(&self) {
-        let _ = self.inner.out.send(Message::Close(None));
+        let _ = self.inner.out.send(Out::Message(Message::Close(None)));
+    }
+
+    /// Drop the socket without a close frame, as a lost network would. The
+    /// server keeps the client, its attachments, and its data streams for a
+    /// minute, so reconnecting with [`Connection::reconnect_token`] resumes it.
+    pub fn abort(&self) {
+        let _ = self.inner.out.send(Out::Abort);
     }
 
     /// Call a method; returns the response's `seq` and its payload.
@@ -229,7 +243,7 @@ impl Connection {
             self.inner.pending.lock().unwrap().remove(&id);
             return Err(ClientError::Protocol("request too large".into()));
         }
-        if self.inner.out.send(Message::text(text)).is_err() {
+        if self.inner.out.send(Out::Message(Message::text(text))).is_err() {
             self.inner.pending.lock().unwrap().remove(&id);
             return Err(ClientError::Closed);
         }

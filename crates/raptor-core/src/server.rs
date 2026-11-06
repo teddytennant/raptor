@@ -101,8 +101,11 @@ impl ServerEntry {
         self.profile.lock().id.clone()
     }
 
-    pub(crate) fn forget_connection(&self) {
-        self.conn.lock().take();
+    /// Drop the live connection as a lost network would; the supervisor resumes it.
+    pub(crate) fn drop_connection(&self) {
+        if let Some(c) = self.conn.lock().take() {
+            c.abort();
+        }
     }
 
     pub fn connection(&self) -> Option<Connection> {
@@ -255,11 +258,11 @@ impl ServerEntry {
             if *stop.borrow() {
                 return;
             }
-            // Don't hold sockets open while a phone app is in the background.
+            // Don't hold sockets open while a phone app is in the background. Drop
+            // them without a close frame: the server then keeps this client (and
+            // its terminal streams) for a minute, so coming back is a quick resume.
             while !*fg.borrow() {
-                if let Some(c) = self.conn.lock().take() {
-                    c.close();
-                }
+                self.drop_connection();
                 self.set_connectivity(Connectivity::Idle, &*sink);
                 tokio::select! {
                     _ = fg.changed() => {}
@@ -282,8 +285,9 @@ impl ServerEntry {
                 Ok((conn, events)) => {
                     token = conn.reconnect_token().map(str::to_owned);
                     let rtt = started.elapsed().as_millis().min(60_000) as u32;
-                    match self.clone().serve(conn, events, &sink, rtt, &mut stop, &mut token).await {
+                    match self.clone().serve(conn, events, &sink, rtt, &mut stop, &mut fg, &mut token).await {
                         Served::Stopped => return,
+                        Served::Background => continue,
                         Served::Lost(reason) => {
                             tracing::info!("connection to {address} lost: {reason}");
                             // After a connection that held up, reconnect right away (the
@@ -320,6 +324,7 @@ impl ServerEntry {
         sink: &Arc<dyn Sink>,
         rtt: u32,
         stop: &mut watch::Receiver<bool>,
+        fg: &mut watch::Receiver<bool>,
         token: &mut Option<String>,
     ) -> Served {
         let boot = match conn.bootstrap(Some(&[]), None).await {
@@ -376,6 +381,12 @@ impl ServerEntry {
                     conn.close();
                     return Served::Stopped;
                 }
+                _ = fg.changed() => if !*fg.borrow() {
+                    *token = conn.reconnect_token().map(str::to_owned);
+                    *self.conn.lock() = None;
+                    conn.abort();
+                    return Served::Background;
+                },
                 _ = self.wake.notified() => {
                     // A manual "reconnect" while online: re-read everything.
                     for id in self.model.lock().order.clone() {
@@ -680,6 +691,7 @@ impl ServerEntry {
 
 pub(crate) enum Served {
     Stopped,
+    Background,
     Lost(String),
 }
 
