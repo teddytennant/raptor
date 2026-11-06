@@ -15,20 +15,7 @@
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
 
-      # Zig 0.17 is not in nixpkgs yet.
-      zig = pkgs.stdenvNoCC.mkDerivation {
-        pname = "zig";
-        version = "0.17.1";
-        src = pkgs.fetchurl {
-          url = "https://ziglang.org/download/0.17.1/zig-x86_64-linux-0.17.1.tar.xz";
-          hash = "sha256-NYGGPjy8/Q/ODvxoLOfp6T2pZmipd3kdNWom0qfpsXo=";
-        };
-        installPhase = ''
-          mkdir -p $out/bin
-          cp -r zig lib $out/
-          ln -s $out/zig $out/bin/zig
-        '';
-      };
+      zig = pkgs.zig_0_17;
 
       raptor = pkgs.rustPlatform.buildRustPackage {
         pname = "raptor";
@@ -36,12 +23,16 @@
         src = pkgs.lib.cleanSource ./.;
         cargoLock = {
           lockFile = ./Cargo.lock;
-          outputHashes."libghostty-vt-0.2.1" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+          outputHashes."libghostty-vt-0.2.1" = "sha256-oy/S2Ir+ltndFcvmMiCyZ5j07w91lKdNxACUJr7I4EU=";
         };
         cargoBuildFlags = [ "-p" "raptor-gtk" ];
         doCheck = false;
-        nativeBuildInputs = [ pkgs.pkg-config pkgs.wrapGAppsHook4 zig ];
+        nativeBuildInputs = [ pkgs.pkg-config pkgs.wrapGAppsHook4 ];
         buildInputs = [ pkgs.gtk4 pkgs.libadwaita ];
+        # Icons like tab-new come from the Adwaita theme, which isn't there outside GNOME.
+        preFixup = ''
+          gappsWrapperArgs+=(--prefix XDG_DATA_DIRS : ${pkgs.adwaita-icon-theme}/share)
+        '';
         env = {
           ZIG = "${zig}/bin/zig";
           GHOSTTY_SOURCE_DIR = "${ghostty}";
@@ -60,7 +51,7 @@
       packages.${system}.default = raptor;
 
       devShells.${system}.default = pkgs.mkShell {
-        nativeBuildInputs = [ pkgs.pkg-config zig ];
+        nativeBuildInputs = [ pkgs.pkg-config ];
         buildInputs = [ pkgs.gtk4 pkgs.libadwaita ];
         shellHook = ''
           export ZIG=''${ZIG:-${zig}/bin/zig}
