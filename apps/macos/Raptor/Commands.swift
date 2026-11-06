@@ -43,8 +43,12 @@ struct RaptorCommands: Commands {
             Button("Select All") { NSApp.sendAction(#selector(NSText.selectAll(_:)), to: nil, from: nil) }
                 .keyboardShortcut("a")
             Divider()
-            Button("Find…") { ws?.findShown = true }
+            Button("Find…") { ws?.showFind() }
                 .keyboardShortcut("f")
+            Button("Find Next") { ws?.findStep(older: false) }
+                .keyboardShortcut("g")
+            Button("Find Previous") { ws?.findStep(older: true) }
+                .keyboardShortcut("g", modifiers: [.command, .shift])
         }
         CommandGroup(replacing: .saveItem) {}
         CommandGroup(replacing: .textFormatting) {}

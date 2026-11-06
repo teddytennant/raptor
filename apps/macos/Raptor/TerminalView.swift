@@ -43,8 +43,6 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
     private let scroller = HistoryScroller()
     private var trackingArea: NSTrackingArea?
     private var lastMouseTracking = false
-    /// Where the last find matched: absolute row (history offset + row) and column.
-    var findPos: (row: Int, col: Int)?
 
     init(controller: TerminalController, prefs: TerminalPrefs) {
         self.controller = controller

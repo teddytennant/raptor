@@ -13,6 +13,10 @@ final class Workspace {
     private(set) var sessionId: String?
     var paletteShown = false
     var findShown = false
+    var findQuery = ""
+    var findMiss = false
+    /// Bumped by each ⌘F, so an open find bar takes the keyboard back.
+    var findRequests = 0
     var addingServer = false
     var replying: AttentionItem?
     var renaming: RenameRequest?
@@ -175,6 +179,19 @@ final class Workspace {
     private func isBusy(_ b: Block) -> Bool {
         let shells: Set<String> = ["bash", "zsh", "fish", "sh", "nu", "dash", "ksh", "tcsh", "login", ""]
         return b.exited == nil && !shells.contains(b.process)
+    }
+
+    func showFind() {
+        findShown = true
+        findRequests += 1
+    }
+
+    /// ⌘G and ⇧⌘G: the next match in the focused terminal, newer or older.
+    func findStep(older: Bool, beep: Bool = true) {
+        guard findShown else { return showFind() }
+        guard !findQuery.isEmpty, let t = focusedTerminal?.terminal else { return }
+        findMiss = !t.find(query: findQuery, older: older)
+        if findMiss, beep { NSSound.beep() }
     }
 
     func toggleZoom(_ blockId: String? = nil) {

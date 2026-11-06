@@ -33,7 +33,7 @@ struct CommandPaletteView: View {
             Item(id: "close-tab", title: "Close Tab", subtitle: "Tab", symbol: "xmark.square", shortcut: "⌥⌘W") { ws.closeTab() },
             Item(id: "new-session", title: "New Session", subtitle: "Session", symbol: "plus.rectangle.on.rectangle", shortcut: "⇧⌘N") { ws.newSession() },
             Item(id: "rename-session", title: "Rename Session…", subtitle: "Session", symbol: "pencil") { ws.renameSession() },
-            Item(id: "find", title: "Find…", subtitle: "Terminal", symbol: "magnifyingglass", shortcut: "⌘F") { ws.findShown = true },
+            Item(id: "find", title: "Find…", subtitle: "Terminal", symbol: "magnifyingglass", shortcut: "⌘F") { ws.showFind() },
             Item(id: "bigger", title: "Bigger Text", subtitle: "View", symbol: "textformat.size.larger", shortcut: "⌘+") { app.biggerText() },
             Item(id: "smaller", title: "Smaller Text", subtitle: "View", symbol: "textformat.size.smaller", shortcut: "⌘−") { app.smallerText() },
             Item(id: "add-server", title: "Add Server…", subtitle: "Servers", symbol: "plus.circle") { ws.addingServer = true },
@@ -148,27 +148,30 @@ struct CommandPaletteView: View {
     }
 }
 
-/// ⌘F: searches the focused terminal's screen and history.
+/// ⌘F: searches the focused terminal's screen and history, upward as you type.
 struct FindBar: View {
-    let ws: Workspace
+    @Bindable var ws: Workspace
     @Environment(\.chrome) private var c
-    @State private var query = ""
-    @State private var notFound = false
     @FocusState private var focused: Bool
 
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").foregroundStyle(c.secondary)
-            TextField("Find", text: $query)
+            TextField("Find", text: $ws.findQuery)
                 .textFieldStyle(.plain)
                 .frame(width: 180)
                 .focused($focused)
-                .onSubmit { find(older: !NSEvent.modifierFlags.contains(.shift)) }
-            if notFound { Text("Not found").font(.system(size: 11)).foregroundStyle(Palette.error) }
-            Button { find(older: true) } label: { Image(systemName: "chevron.up") }
-                .help("Find previous (older)").keyboardShortcut("g", modifiers: [.command, .shift])
-            Button { find(older: false) } label: { Image(systemName: "chevron.down") }
-                .help("Find next (newer)").keyboardShortcut("g")
+                .onSubmit { ws.findStep(older: true) }
+                .onKeyPress(.return, phases: .down) { press in
+                    guard press.modifiers.contains(.shift) else { return .ignored }
+                    ws.findStep(older: false)
+                    return .handled
+                }
+            if ws.findMiss { Text("Not found").font(.system(size: 11)).foregroundStyle(Palette.error) }
+            Button { ws.findStep(older: true) } label: { Image(systemName: "chevron.up") }
+                .help("Find previous (older)")
+            Button { ws.findStep(older: false) } label: { Image(systemName: "chevron.down") }
+                .help("Find next (newer)")
             Button("Done") { close() }
         }
         .buttonStyle(.borderless)
@@ -178,18 +181,20 @@ struct FindBar: View {
         .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(c.glassStroke))
         .shadow(color: .black.opacity(0.25), radius: 10, y: 4)
         .onAppear { focused = true }
-        .onChange(of: query) { _, _ in notFound = false }
+        .onChange(of: ws.findRequests) { focused = true }
+        .onChange(of: ws.findQuery) {
+            ws.focusedTerminal?.terminal?.resetFind()
+            ws.findMiss = false
+            ws.findStep(older: true, beep: false)
+        }
         .onKeyPress(.escape) { close(); return .handled }
-    }
-
-    private func find(older: Bool) {
-        guard !query.isEmpty, let t = ws.focusedTerminal else { return }
-        notFound = !t.find(query, older: older)
     }
 
     private func close() {
         ws.findShown = false
-        ws.focusedTerminal?.resetFind()
-        if let t = ws.focusedTerminal { t.window?.makeFirstResponder(t) }
+        ws.findMiss = false
+        guard let t = ws.focusedTerminal else { return }
+        t.terminal?.resetFind()
+        t.window?.makeFirstResponder(t)
     }
 }
