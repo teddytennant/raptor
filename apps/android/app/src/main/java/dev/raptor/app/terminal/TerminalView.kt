@@ -42,6 +42,49 @@ private const val STYLE_STRIKE = 1 shl 3
 private const val STYLE_OVERLINE = 1 shl 4
 private const val STYLE_SELECTED = 1 shl 5
 
+/**
+ * Lines for U+2500..U+254F and U+2574..U+257F, four chars per code point: up,
+ * right, down, left, each 0 (none), 1 (light) or 2 (heavy). Dots mean "use the font".
+ */
+private const val BOX_LINES =
+    "0101020210102020................................0110021001200220001100120021002211001200210022001001100220012002111012102110112021202210122022201011101220111021202120121022202201110112021102120121012202210222110111021201120221012102220122021111111212111212211111212121211222111122122122121222212222212222................"
+private const val BOX_HALF = "000110000100001000022000020000200201102001022010"
+private const val QUADRANTS = "481D97B26E"
+
+private fun boxLines(cp: Int): String? {
+    val s = when (cp) {
+        in 0x2500..0x254F -> BOX_LINES.substring((cp - 0x2500) * 4, (cp - 0x2500) * 4 + 4)
+        in 0x2574..0x257F -> BOX_HALF.substring((cp - 0x2574) * 4, (cp - 0x2574) * 4 + 4)
+        else -> return null
+    }
+    return s.takeIf { it[0] != '.' }
+}
+
+/** Whether the cell ending at [end] and the next one are parts of one emoji. */
+private fun joinsNext(s: String, start: Int, end: Int): Boolean {
+    val next = s.codePointAt(end)
+    if (next in 0x1F3FB..0x1F3FF || s.codePointBefore(end) == 0x200D) return true
+    return end - start == 2 && s.codePointAt(start) in 0x1F1E6..0x1F1FF && next in 0x1F1E6..0x1F1FF
+}
+
+/**
+ * End of the cell that starts at [i]: one code point plus whatever the terminal
+ * attaches to it (combining marks, joiners, variation selectors). The core
+ * gives each other code point its own cell, emoji modifiers and flags included.
+ */
+private fun cellEnd(s: String, i: Int): Int {
+    var end = i + Character.charCount(s.codePointAt(i))
+    while (end < s.length) {
+        val cp = s.codePointAt(end)
+        val t = Character.getType(cp)
+        val attaches = t == Character.NON_SPACING_MARK.toInt() || t == Character.ENCLOSING_MARK.toInt() ||
+            t == Character.COMBINING_SPACING_MARK.toInt() || cp == 0x200D || cp in 0xFE00..0xFE0F || cp in 0xE0100..0xE01EF
+        if (!attaches) break
+        end += Character.charCount(cp)
+    }
+    return end
+}
+
 /** Sticky modifiers from the on-screen key bar, applied to the next key typed. */
 class Modifiers {
     var ctrl = false
@@ -389,77 +432,138 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
     }
 
     private fun drawRunText(canvas: Canvas, s: String, widths: ByteArray, x0: Float, y: Float) {
-        // Fast path: every grapheme is one narrow cell and one UTF-16 unit.
-        if (s.length == widths.size && widths.all { it.toInt() == 1 }) {
-            if (s.all { it.code < 0x2500 || it.code > 0x259F }) {
-                canvas.drawText(s, x0, y, text)
-                return
-            }
+        // Fast path: Latin text the terminal font covers, one cell per char.
+        if (s.length == widths.size && s.all { it.code < 0x250 }) {
+            canvas.drawText(s, x0, y, text)
+            return
         }
-        // Place each grapheme on its cell so fallback fonts can't drift off the grid.
+        // Place each cell's text on its own column so fallback fonts can't drift off the grid.
         var col = 0
         var i = 0
         var g = 0
         while (i < s.length) {
-            val cp = s.codePointAt(i)
-            var end = i + Character.charCount(cp)
-            // Absorb combining marks / ZWJ sequences into this grapheme.
-            while (end < s.length) {
-                val next = s.codePointAt(end)
-                val t = Character.getType(next)
-                if (t == Character.NON_SPACING_MARK.toInt() || t == Character.ENCLOSING_MARK.toInt() || next == 0x200D || next == 0xFE0F || (end > 0 && s.codePointBefore(end) == 0x200D)) {
-                    end += Character.charCount(next)
-                } else break
+            var end = cellEnd(s, i)
+            var w = widths.getOrNull(g++)?.toInt() ?: 1
+            // Emoji the core splits over several cells (families, skin tones, flags) still draw as one picture.
+            while (end < s.length && joinsNext(s, i, end)) {
+                w += widths.getOrNull(g++)?.toInt() ?: 1
+                end = cellEnd(s, end)
             }
-            val w = widths.getOrNull(g)?.toInt() ?: 1
             val x = x0 + col * cellW
-            if (!drawBoxChar(canvas, cp, x, y - baseline, w)) canvas.drawText(s, i, end, x, y, text)
+            if (!drawBoxChar(canvas, s.codePointAt(i), x, y - baseline, w)) drawCell(canvas, s, i, end, x, y, w)
             col += w
             i = end
-            g++
         }
     }
 
-    /** Draw box-drawing and block characters as geometry so lines join seamlessly. */
+    /** Draws one cell's text, shrinking glyphs that are too wide for it (emoji in a narrow cell, symbols from fallback fonts). */
+    private fun drawCell(canvas: Canvas, s: String, start: Int, end: Int, x: Float, y: Float, cells: Int) {
+        if (end == start + 1 && s[start] == ' ') return
+        val room = cellW * cells
+        val w = text.measureText(s, start, end)
+        if (w <= room * 1.05f) {
+            canvas.drawText(s, start, end, if (cells > 1) x + (room - w) / 2 else x, y, text)
+            return
+        }
+        canvas.save()
+        val k = room / w
+        canvas.scale(k, k, x, y - baseline + cellH / 2)
+        canvas.drawText(s, start, end, x, y, text)
+        canvas.restore()
+    }
+
+    private val boxPath = android.graphics.Path()
+
+    /** Draw box-drawing, block and braille characters as geometry so they join seamlessly. */
     private fun drawBoxChar(canvas: Canvas, cp: Int, x: Float, top: Float, w: Int): Boolean {
-        if (cp !in 0x2500..0x259F) return false
+        if (cp !in 0x2500..0x259F && cp !in 0x2800..0x28FF && cp !in 0xE0B0..0xE0B3) return false
         val cw = cellW * w
         val cx = x + cw / 2
         val cy = top + cellH / 2
-        fill.color = text.color
-        val t = max(1f, (density * 0.9f).roundToInt().toFloat())
-        val T = t * 2
-        fun h(x1: Float, x2: Float, th: Float = t) = canvas.drawRect(x1, cy - th / 2, x2, cy + th / 2, fill)
-        fun v(y1: Float, y2: Float, th: Float = t) = canvas.drawRect(cx - th / 2, y1, cx + th / 2, y2, fill)
         val r = x + cw
         val b = top + cellH
+        fill.color = text.color
+        val t = max(1f, (density * 0.9f).roundToInt().toFloat())
+        val lines = boxLines(cp)
+        if (lines != null) {
+            fun th(c: Char) = when (c) { '1' -> t; '2' -> t * 2; else -> 0f }
+            val (up, right, down, left) = lines.map(::th)
+            val hv = max(up, down) / 2
+            val hh = max(left, right) / 2
+            if (left > 0) canvas.drawRect(x, cy - left / 2, cx + hv, cy + left / 2, fill)
+            if (right > 0) canvas.drawRect(cx - hv, cy - right / 2, r, cy + right / 2, fill)
+            if (up > 0) canvas.drawRect(cx - up / 2, top, cx + up / 2, cy + hh, fill)
+            if (down > 0) canvas.drawRect(cx - down / 2, cy - hh, cx + down / 2, b, fill)
+            return true
+        }
+        // Double lines: two light strokes with a light-stroke gap.
+        val a = t / 2
+        val o = t * 1.5f
+        fun rect(l: Float, tp: Float, rt: Float, bt: Float) = canvas.drawRect(l, tp, rt, bt, fill)
         when (cp) {
-            0x2500 -> h(x, r); 0x2501 -> h(x, r, T)
-            0x2502 -> v(top, b); 0x2503 -> v(top, b, T)
-            0x250C, 0x256D -> { h(cx - t / 2, r); v(cy - t / 2, b) }
-            0x2510, 0x256E -> { h(x, cx + t / 2); v(cy - t / 2, b) }
-            0x2514, 0x2570 -> { h(cx - t / 2, r); v(top, cy + t / 2) }
-            0x2518, 0x256F -> { h(x, cx + t / 2); v(top, cy + t / 2) }
-            0x251C -> { v(top, b); h(cx, r) }
-            0x2524 -> { v(top, b); h(x, cx) }
-            0x252C -> { h(x, r); v(cy, b) }
-            0x2534 -> { h(x, r); v(top, cy) }
-            0x253C -> { h(x, r); v(top, b) }
-            0x2550 -> { canvas.drawRect(x, cy - T, r, cy - T + t, fill); canvas.drawRect(x, cy + T - t, r, cy + T, fill) }
-            0x2551 -> { canvas.drawRect(cx - T, top, cx - T + t, b, fill); canvas.drawRect(cx + T - t, top, cx + T, b, fill) }
-            0x2580 -> canvas.drawRect(x, top, r, cy, fill)
-            0x2584 -> canvas.drawRect(x, cy, r, b, fill)
-            0x2588 -> canvas.drawRect(x, top, r, b, fill)
-            0x258C -> canvas.drawRect(x, top, cx, b, fill)
-            0x2590 -> canvas.drawRect(cx, top, r, b, fill)
-            0x2591, 0x2592, 0x2593 -> {
-                val a = fill.alpha
-                fill.alpha = when (cp) { 0x2591 -> 64; 0x2592 -> 128; else -> 192 }
-                canvas.drawRect(x, top, r, b, fill)
-                fill.alpha = a
+            0x2550 -> { rect(x, cy - o, r, cy - a); rect(x, cy + a, r, cy + o) }
+            0x2551 -> { rect(cx - o, top, cx - a, b); rect(cx + a, top, cx + o, b) }
+            0x2554 -> { rect(cx - o, cy - o, r, cy - a); rect(cx - o, cy - o, cx - a, b); rect(cx + a, cy + a, r, cy + o); rect(cx + a, cy + a, cx + o, b) }
+            0x2557 -> { rect(x, cy - o, cx + o, cy - a); rect(cx + a, cy - o, cx + o, b); rect(x, cy + a, cx - a, cy + o); rect(cx - o, cy + a, cx - a, b) }
+            0x255A -> { rect(cx - o, cy + a, r, cy + o); rect(cx - o, top, cx - a, cy + o); rect(cx + a, cy - o, r, cy - a); rect(cx + a, top, cx + o, cy - a) }
+            0x255D -> { rect(x, cy + a, cx + o, cy + o); rect(cx + a, top, cx + o, cy + o); rect(x, cy - o, cx - a, cy - a); rect(cx - o, top, cx - a, cy - a) }
+            in 0x256D..0x2570 -> {
+                // Rounded corners.
+                val rad = min(cw, cellH) / 2
+                boxPath.reset()
+                when (cp) {
+                    0x256D -> { boxPath.moveTo(cx, b); boxPath.lineTo(cx, cy + rad); boxPath.arcTo(cx, cy, cx + 2 * rad, cy + 2 * rad, 180f, 90f, false); boxPath.lineTo(r, cy) }
+                    0x256E -> { boxPath.moveTo(x, cy); boxPath.lineTo(cx - rad, cy); boxPath.arcTo(cx - 2 * rad, cy, cx, cy + 2 * rad, 270f, 90f, false); boxPath.lineTo(cx, b) }
+                    0x256F -> { boxPath.moveTo(cx, top); boxPath.lineTo(cx, cy - rad); boxPath.arcTo(cx - 2 * rad, cy - 2 * rad, cx, cy, 0f, 90f, false); boxPath.lineTo(x, cy) }
+                    else -> { boxPath.moveTo(cx, top); boxPath.lineTo(cx, cy - rad); boxPath.arcTo(cx, cy - 2 * rad, cx + 2 * rad, cy, 180f, -90f, false); boxPath.lineTo(r, cy) }
+                }
+                line.color = fill.color
+                line.style = Paint.Style.STROKE
+                line.strokeWidth = t
+                canvas.drawPath(boxPath, line)
             }
-            in 0x2581..0x2587 -> canvas.drawRect(x, b - cellH * (cp - 0x2580) / 8f, r, b, fill)
-            in 0x2589..0x258F -> canvas.drawRect(x, top, x + cw * (0x2590 - cp) / 8f, b, fill)
+            in 0xE0B0..0xE0B3 -> {
+                // Powerline separators, full cell height so prompts join without seams.
+                boxPath.reset()
+                if (cp < 0xE0B2) { boxPath.moveTo(x, top); boxPath.lineTo(r, cy); boxPath.lineTo(x, b) } else { boxPath.moveTo(r, top); boxPath.lineTo(x, cy); boxPath.lineTo(r, b) }
+                line.color = fill.color
+                line.strokeWidth = t
+                line.style = if (cp % 2 == 0) Paint.Style.FILL else Paint.Style.STROKE
+                if (cp % 2 == 0) boxPath.close()
+                canvas.drawPath(boxPath, line)
+            }
+            0x2580 -> rect(x, top, r, cy)
+            0x2588 -> rect(x, top, r, b)
+            0x2590 -> rect(cx, top, r, b)
+            0x2594 -> rect(x, top, r, top + cellH / 8)
+            0x2595 -> rect(r - cw / 8, top, r, b)
+            0x2591, 0x2592, 0x2593 -> {
+                val alpha = fill.alpha
+                fill.alpha = when (cp) { 0x2591 -> 64; 0x2592 -> 128; else -> 192 }
+                rect(x, top, r, b)
+                fill.alpha = alpha
+            }
+            in 0x2581..0x2587 -> rect(x, b - cellH * (cp - 0x2580) / 8f, r, b)
+            in 0x2589..0x258F -> rect(x, top, x + cw * (0x2590 - cp) / 8f, b)
+            in 0x2596..0x259F -> {
+                // Quadrants: bits are upper left, upper right, lower left, lower right.
+                val q = QUADRANTS[cp - 0x2596].digitToInt(16)
+                if (q and 1 != 0) rect(x, top, cx, cy)
+                if (q and 2 != 0) rect(cx, top, r, cy)
+                if (q and 4 != 0) rect(x, cy, cx, b)
+                if (q and 8 != 0) rect(cx, cy, r, b)
+            }
+            in 0x2800..0x28FF -> {
+                // Braille: two columns of four dots (used by graphs in btop and friends).
+                val bits = cp - 0x2800
+                val dot = min(cw / 4, cellH / 8) * 0.8f
+                for (i in 0 until 8) {
+                    if (bits and (1 shl i) == 0) continue
+                    val c = if (i in 3..5 || i == 7) 1 else 0
+                    val rw = when (i) { 6, 7 -> 3; in 3..5 -> i - 3; else -> i }
+                    canvas.drawCircle(x + cw * (1 + 2 * c) / 4, top + cellH * (1 + 2 * rw) / 8, dot, fill)
+                }
+            }
             else -> return false
         }
         return true
@@ -509,9 +613,9 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
         var i = 0
         var g = 0
         while (i < s.length) {
-            val n = Character.charCount(s.codePointAt(i))
-            if (g == index) return s.substring(i, i + n)
-            i += n
+            val end = cellEnd(s, i)
+            if (g == index) return s.substring(i, end)
+            i = end
             g++
         }
         return ""
