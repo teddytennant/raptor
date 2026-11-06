@@ -1,5 +1,6 @@
 package dev.raptor.app.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInHorizontally
@@ -37,6 +38,9 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.filled.KeyboardCommandKey
 import androidx.compose.material.icons.filled.CloseFullscreen
 import androidx.compose.material.icons.filled.OpenInFull
@@ -50,6 +54,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -74,12 +80,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.input.key.Key as HwKey
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -90,7 +105,12 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -186,8 +206,30 @@ fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?,
         var bottomH by remember { mutableIntStateOf(0) }
         val handle = remember { mutableStateOf<TermHandle?>(null) }
         var showPalette by remember { mutableStateOf(false) }
+        var finding by remember { mutableStateOf(false) }
+        var findQuery by remember { mutableStateOf("") }
+        var findMiss by remember { mutableStateOf(false) }
+        var findRequest by remember { mutableIntStateOf(0) }
         var slideDir by remember { mutableIntStateOf(1) }
         val panes = session?.windows.orEmpty().flatMap { w -> w.blocks.map { w.id to it.id } }
+        fun openFind() {
+            finding = true
+            findRequest++
+        }
+        fun findStep(older: Boolean) {
+            val t = handle.value?.view?.terminal ?: return
+            if (findQuery.isNotEmpty()) findMiss = !t.find(findQuery, older)
+        }
+        // Hide the bar and give the keyboard back to the terminal, where it was.
+        fun closeFind() {
+            finding = false
+            findMiss = false
+            handle.value?.view?.let { v ->
+                v.terminal?.resetFind()
+                v.requestFocus()
+            }
+        }
+        BackHandler(enabled = finding) { closeFind() }
         // The terminal view keeps the first swipe callback it was given, so
         // read the session as it is now, not as it was then.
         val sessionNow by rememberUpdatedState(session)
@@ -247,6 +289,7 @@ fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?,
                         onColors = { bg, fg -> termColors = bg to fg },
                         onSwipe = { swipeNow.value(it) },
                         onPalette = { showPalette = true },
+                        onFind = ::openFind,
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
@@ -280,7 +323,7 @@ fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?,
                         }
                         Spacer(Modifier.width(8.dp))
                     }
-                    MoreMenu(serverId, sid, blockId, handle.value, onClosePane = ::closePane) { showPalette = true }
+                    MoreMenu(serverId, sid, blockId, handle.value, onClosePane = ::closePane, onFind = ::openFind) { showPalette = true }
                 }
                 if (session != null && session.windows.size > 1) {
                     Spacer(Modifier.height(8.dp))
@@ -293,9 +336,23 @@ fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?,
                 }
             }
 
-            // ---- bottom: the key bar while typing; otherwise the terminal runs to the edge ----
+            // ---- bottom: find, or the key bar while typing; otherwise the terminal runs to the edge ----
             Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().onSizeChanged { bottomH = it.height }) {
-                if (ime && dev.raptor.app.ui.Prefs.flag(dev.raptor.app.ui.Prefs.KEY_BAR)) activeKeyBar.value?.invoke()
+                if (finding) {
+                    FindBar(
+                        findQuery,
+                        findMiss,
+                        findRequest,
+                        onQuery = { q ->
+                            findQuery = q
+                            handle.value?.view?.terminal?.resetFind()
+                            findMiss = false
+                            findStep(older = true)
+                        },
+                        onStep = ::findStep,
+                        onClose = ::closeFind,
+                    )
+                } else if (ime && dev.raptor.app.ui.Prefs.flag(dev.raptor.app.ui.Prefs.KEY_BAR)) activeKeyBar.value?.invoke()
                 else Spacer(Modifier.fillMaxWidth().navigationBarsPadding())
             }
         }
@@ -306,6 +363,7 @@ fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?,
                 add(PaletteItem("next-pane", "Next Tab", glyph = "→", keywords = "switch swipe window pane") { swipe(1) })
                 add(PaletteItem("prev-pane", "Previous Tab", glyph = "←", keywords = "switch swipe window pane") { swipe(-1) })
                 add(PaletteItem("new-window", "New Window", glyph = "+") { scope.launch { runCatching { app.core.newWindow(serverId, sid) } } })
+                add(PaletteItem("find", "Find…", glyph = "⌕", keywords = "search scrollback history") { openFind() })
                 blockId?.let { bid ->
                     add(PaletteItem("split-right", "Split Right", glyph = "▥") { scope.launch { runCatching { app.core.split(serverId, sid, bid, false) } } })
                     add(PaletteItem("split-down", "Split Down", glyph = "▤") { scope.launch { runCatching { app.core.split(serverId, sid, bid, true) } } })
@@ -464,6 +522,7 @@ private fun LiveTerminal(
     onColors: (Int, Int) -> Unit,
     onSwipe: (Int) -> Unit,
     onPalette: () -> Unit,
+    onFind: () -> Unit,
     modifier: Modifier,
 ) {
     val app = RaptorApplication.instance
@@ -484,6 +543,7 @@ private fun LiveTerminal(
     view.onColors = onColors
     view.onSwipePane = onSwipe
     view.onPalette = onPalette
+    view.onFind = onFind
     if (view.insetTop != insetTop) view.insetTop = insetTop
     if (view.insetBottom != insetBottom) view.insetBottom = insetBottom
 
@@ -573,7 +633,7 @@ private fun LiveTerminal(
 }
 
 @Composable
-private fun MoreMenu(serverId: String, sessionId: String, blockId: String?, h: TermHandle?, onClosePane: (String) -> Unit, onPalette: () -> Unit) {
+private fun MoreMenu(serverId: String, sessionId: String, blockId: String?, h: TermHandle?, onClosePane: (String) -> Unit, onFind: () -> Unit, onPalette: () -> Unit) {
     val app = RaptorApplication.instance
     val scope = rememberCoroutineScope()
     var menu by remember { mutableStateOf(false) }
@@ -582,6 +642,7 @@ private fun MoreMenu(serverId: String, sessionId: String, blockId: String?, h: T
         GlassCircle(onClick = { menu = true }) { Icon(Icons.Default.MoreHoriz, "More", tint = Ink.text, modifier = Modifier.size(20.dp)) }
         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = Ink.raised, shape = RoundedCornerShape(14.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Ink.glassStroke), shadowElevation = 12.dp) {
             RaptorMenuItem("Command Palette", Icons.Default.KeyboardCommandKey) { menu = false; onPalette() }
+            RaptorMenuItem("Find…", Icons.Default.Search) { menu = false; onFind() }
             RaptorMenuItem("New Window", Icons.Default.Add) { menu = false; scope.launch { runCatching { app.core.newWindow(serverId, sessionId) } } }
             HorizontalDivider(color = Ink.hairline)
             if (h != null) {
@@ -625,6 +686,73 @@ private fun MoreMenu(serverId: String, sessionId: String, blockId: String?, h: T
                 )
             }
         }
+    }
+}
+
+/**
+ * Find in the screen and history, upward as you type. It takes the key bar's place:
+ * Search or Enter looks older, Shift+Enter newer, Esc closes.
+ */
+@Composable
+private fun FindBar(query: String, miss: Boolean, request: Int, onQuery: (String) -> Unit, onStep: (older: Boolean) -> Unit, onClose: () -> Unit) {
+    val focus = remember { FocusRequester() }
+    val error = LocalStatus.current.error
+    var field by remember { mutableStateOf(TextFieldValue(query)) }
+    LaunchedEffect(request) {
+        // Reopening selects the last query, so typing replaces it.
+        field = field.copy(selection = TextRange(0, field.text.length))
+        runCatching { focus.requestFocus() }
+    }
+    Row(
+        Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 6.dp, vertical = 6.dp)
+            .glass(RoundedCornerShape(14.dp))
+            .border(1.dp, if (miss) error.copy(alpha = 0.6f) else Color.Transparent, RoundedCornerShape(14.dp))
+            .height(48.dp).padding(start = 12.dp, end = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Default.Search, null, tint = if (miss) error else Ink.secondary, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(10.dp))
+        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+            if (field.text.isEmpty()) Text("Find in terminal", color = Ink.tertiary, fontSize = 16.sp)
+            BasicTextField(
+                field,
+                { v ->
+                    val changed = v.text != field.text
+                    field = v
+                    if (changed) onQuery(v.text)
+                },
+                singleLine = true,
+                textStyle = TextStyle(color = if (miss) error else Ink.text, fontSize = 16.sp),
+                cursorBrush = SolidColor(Ink.accent),
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { onStep(true) }),
+                modifier = Modifier.fillMaxWidth().focusRequester(focus).onPreviewKeyEvent { e ->
+                    when {
+                        e.key == HwKey.Enter || e.key == HwKey.NumPadEnter -> {
+                            if (e.type == KeyEventType.KeyDown) onStep(!e.isShiftPressed)
+                            true
+                        }
+                        e.key == HwKey.Escape -> {
+                            if (e.type == KeyEventType.KeyDown) onClose()
+                            true
+                        }
+                        else -> false
+                    }
+                },
+            )
+        }
+        if (miss) Text("No match", color = error, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 6.dp))
+        Box(Modifier.padding(horizontal = 2.dp).size(width = 1.dp, height = 22.dp).background(Ink.hairline))
+        FindButton(Icons.Default.KeyboardArrowUp, "Find older") { onStep(true) }
+        FindButton(Icons.Default.KeyboardArrowDown, "Find newer") { onStep(false) }
+        FindButton(Icons.Default.Close, "Close find", onClose)
+    }
+}
+
+@Composable
+private fun FindButton(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
+    Box(Modifier.size(44.dp).clip(CircleShape).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
+        Icon(icon, label, tint = Ink.text, modifier = Modifier.size(22.dp))
     }
 }
 

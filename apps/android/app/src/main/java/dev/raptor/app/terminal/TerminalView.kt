@@ -135,6 +135,8 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
     var onSwipePane: ((Int) -> Unit)? = null
     /** Ctrl+Shift+P on a hardware keyboard. */
     var onPalette: (() -> Unit)? = null
+    /** Ctrl+Shift+F on a hardware keyboard. */
+    var onFind: (() -> Unit)? = null
     var control = false
         set(value) {
             field = value
@@ -1074,6 +1076,7 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
         if (ctrl && shift && keyCode == KeyEvent.KEYCODE_V) { pasteClipboard(); return true }
         if (ctrl && shift && keyCode == KeyEvent.KEYCODE_C) { t.selectionText()?.let(::copy); return true }
         if (ctrl && shift && keyCode == KeyEvent.KEYCODE_P) { onPalette?.invoke(); return true }
+        if (ctrl && shift && keyCode == KeyEvent.KEYCODE_F) { onFind?.invoke(); return true }
         if (ctrl && keyCode == KeyEvent.KEYCODE_TAB) { onSwipePane?.invoke(if (shift) -1 else 1); return true }
         val k: Key? = when (keyCode) {
             KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> Key.Enter
