@@ -115,9 +115,45 @@ pub const DEFAULT_FG: Rgb = Rgb::new(0xe6, 0xed, 0xf3);
 pub const DEFAULT_BG: Rgb = Rgb::new(0x0d, 0x11, 0x17);
 pub const DEFAULT_CURSOR: Rgb = Rgb::new(0x34, 0xd3, 0x99);
 
-fn apply(t: &mut Terminal, th: &ColorTheme) {
-    t.set_default_colors(Some(th.foreground), Some(th.background), Some(th.cursor));
-    t.set_ansi_palette(Some(&th.ansi));
+/// The default colors from the stream's last `theme` message.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct ServerTheme {
+    foreground: Option<Rgb>,
+    background: Option<Rgb>,
+    cursor: Option<Rgb>,
+    palette: Vec<(u8, Rgb)>,
+}
+
+impl ServerTheme {
+    fn parse(foreground: &Option<String>, background: &Option<String>, cursor: &Option<String>, palette: &[String]) -> Self {
+        let hex = |s: &Option<String>| s.as_deref().and_then(Rgb::parse_hex);
+        let palette = palette
+            .iter()
+            .filter_map(|e| {
+                let (i, c) = e.split_once('=')?;
+                Some((i.trim().parse().ok()?, Rgb::parse_hex(c)?))
+            })
+            .collect();
+        Self { foreground: hex(foreground), background: hex(background), cursor: hex(cursor), palette }
+    }
+}
+
+/// The user's theme wins; without one, the server's colors over Raptor's defaults.
+fn apply_colors(t: &mut Terminal, forced: Option<&ColorTheme>, server: &ServerTheme) {
+    match forced {
+        Some(th) => {
+            t.set_default_colors(Some(th.foreground), Some(th.background), Some(th.cursor));
+            t.set_ansi_palette(Some(&th.ansi));
+        }
+        None => {
+            t.set_default_colors(
+                Some(server.foreground.unwrap_or(DEFAULT_FG)),
+                Some(server.background.unwrap_or(DEFAULT_BG)),
+                Some(server.cursor.unwrap_or(DEFAULT_CURSOR)),
+            );
+            t.set_palette(&server.palette);
+        }
+    }
 }
 
 enum Input {
@@ -142,6 +178,7 @@ pub struct TerminalSession {
     resize_gen: Arc<AtomicU64>,
     control: AtomicBool,
     forced: Mutex<Option<ColorTheme>>,
+    server_theme: Mutex<ServerTheme>,
     /// Methods are called from UI threads, so spawn on the engine's runtime explicitly.
     rt: tokio::runtime::Handle,
 }
@@ -165,6 +202,7 @@ impl TerminalSession {
             resize_gen: Arc::new(AtomicU64::new(0)),
             control: AtomicBool::new(false),
             forced: Mutex::new(None),
+            server_theme: Mutex::new(ServerTheme::default()),
             rt: tokio::runtime::Handle::current(),
         });
         this.rt.spawn(this.clone().stream_task());
@@ -256,11 +294,9 @@ impl TerminalSession {
                             let r = {
                                 let mut t = self.term.lock();
                                 let r = t.restore(&s);
-                                // Raptor's palette unless the server sends a theme (which follows).
-                                t.set_default_colors(Some(DEFAULT_FG), Some(DEFAULT_BG), Some(DEFAULT_CURSOR));
-                                if let Some(th) = *self.forced.lock() {
-                                    apply(&mut t, &th);
-                                }
+                                // A new stream sends its theme after the snapshot, unless every color is built in.
+                                *self.server_theme.lock() = ServerTheme::default();
+                                apply_colors(&mut t, self.forced.lock().as_ref(), &ServerTheme::default());
                                 r
                             };
                             if let Err(e) = r { tracing::warn!("restore: {e}"); }
@@ -284,11 +320,13 @@ impl TerminalSession {
                             };
                             if changed { self.listener.size_changed(cols as u16, rows as u16); self.dirty(); }
                         }
-                        DataEvent::Theme { .. } if self.forced.lock().is_some() => {}
-                        DataEvent::Theme { foreground, background, cursor, .. } => {
-                            let p = |s: &Option<String>, d: Rgb| s.as_deref().and_then(Rgb::parse_hex).or(Some(d));
-                            self.term.lock().set_default_colors(p(&foreground, DEFAULT_FG), p(&background, DEFAULT_BG), p(&cursor, DEFAULT_CURSOR));
-                            self.dirty();
+                        DataEvent::Theme { foreground, background, cursor, palette } => {
+                            let theme = ServerTheme::parse(&foreground, &background, &cursor, &palette);
+                            if self.forced.lock().is_none() {
+                                apply_colors(&mut self.term.lock(), None, &theme);
+                                self.dirty();
+                            }
+                            *self.server_theme.lock() = theme;
                         }
                         DataEvent::ChildExited { exit_code } => self.set_status(TerminalStatus::Exited { code: exit_code }),
                         DataEvent::Reconnecting => self.set_status(TerminalStatus::Reconnecting),
@@ -436,15 +474,7 @@ impl TerminalSession {
     /// Force a theme (or `None` to go back to the server's colors).
     pub fn set_theme(&self, theme: Option<ColorTheme>) {
         *self.forced.lock() = theme;
-        let mut t = self.term.lock();
-        match theme {
-            Some(th) => apply(&mut t, &th),
-            None => {
-                t.set_ansi_palette(None);
-                t.set_default_colors(Some(DEFAULT_FG), Some(DEFAULT_BG), Some(DEFAULT_CURSOR));
-            }
-        }
-        drop(t);
+        apply_colors(&mut self.term.lock(), theme.as_ref(), &self.server_theme.lock());
         self.dirty();
     }
 
@@ -567,5 +597,18 @@ impl TerminalSession {
 impl Drop for TerminalSession {
     fn drop(&mut self) {
         let _ = self.stop.send(true);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn server_theme_parse() {
+        let t = ServerTheme::parse(&Some("#102030".into()), &None, &Some("aabbcc".into()), &["1=#ff0000".into(), "300=#000000".into(), "x".into()]);
+        assert_eq!(t.foreground, Some(Rgb::new(0x10, 0x20, 0x30)));
+        assert_eq!(t.cursor, Some(Rgb::new(0xaa, 0xbb, 0xcc)));
+        assert_eq!(t.palette, [(1, Rgb::new(0xff, 0, 0))]);
     }
 }

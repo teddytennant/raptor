@@ -553,11 +553,20 @@ impl Terminal {
 
     /// Replace the 16 ANSI colors (themes), keeping the 256-color cube; `None` restores the built-in palette.
     pub fn set_ansi_palette(&mut self, ansi: Option<&[Rgb; 16]>) {
+        let entries: Vec<(u8, Rgb)> = ansi.into_iter().flatten().enumerate().map(|(i, c)| (i as u8, *c)).collect();
+        self.set_palette(&entries);
+    }
+
+    /// Change entries of the built-in 256-color palette; every other entry
+    /// goes back to its built-in color.
+    pub fn set_palette(&mut self, entries: &[(u8, Rgb)]) {
         let _ = self.raw.set_default_color_palette(None);
-        let Some(ansi) = ansi else { return };
+        if entries.is_empty() {
+            return;
+        }
         let Ok(Palette(mut pal)) = self.raw.default_color_palette() else { return };
-        for (i, c) in ansi.iter().enumerate() {
-            pal[i] = (*c).into();
+        for &(i, c) in entries {
+            pal[i as usize] = c.into();
         }
         let _ = self.raw.set_default_color_palette(Some(Palette(pal)));
     }
@@ -623,6 +632,10 @@ mod tests {
         assert_eq!(t.frame().lines[0].runs[0].fg, Rgb::new(0xff, 0x00, 0x7f));
         t.set_ansi_palette(None);
         assert_ne!(t.frame().lines[0].runs[0].fg, Rgb::new(0xff, 0x00, 0x7f));
+        t.set_palette(&[(1, Rgb::new(9, 9, 9)), (200, Rgb::new(1, 1, 1))]);
+        t.write_vt(b"\x1b[38;5;200mY");
+        let runs = &t.frame().lines[0].runs;
+        assert_eq!((runs[0].fg, runs[1].fg), (Rgb::new(9, 9, 9), Rgb::new(1, 1, 1)));
     }
 
     #[test]
