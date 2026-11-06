@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -178,7 +179,8 @@ fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?,
     val chrome = if (theme.ansi == null && tc != null) Chrome.of(Color(tc.first), Color(tc.second), Color(theme.accent)) else Chrome.of(theme)
 
     RaptorTheme(chrome) {
-        val ime = WindowInsets.isImeVisible
+        // Follows the keyboard frame by frame, so the key bar leaves with it.
+        val ime = WindowInsets.ime.getBottom(LocalDensity.current) > 0
         val density = LocalDensity.current
         var topH by remember { mutableIntStateOf(0) }
         var bottomH by remember { mutableIntStateOf(0) }
