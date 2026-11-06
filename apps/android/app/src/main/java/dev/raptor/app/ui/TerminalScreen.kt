@@ -524,6 +524,8 @@ private fun LiveTerminal(
         control = term != null && Prefs.flag(Prefs.FIT_ON_OPEN)
         view.control = control
         // Don't pop the keyboard on open: look first, tap the terminal to type.
+        // Take focus though, so a hardware keyboard types straight away.
+        view.post { view.requestFocus() }
         onDispose {
             choreographer.removeFrameCallback(frameCb)
             view.terminal = null
