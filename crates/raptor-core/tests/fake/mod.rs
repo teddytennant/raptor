@@ -23,6 +23,8 @@ pub struct Options {
     pub drop_on_first_request: bool,
     /// Answer these methods only after a delay.
     pub delays: Vec<(&'static str, Duration)>,
+    /// Refuse every data connection with this REJECT reason.
+    pub data_reject: Option<u8>,
 }
 
 pub struct Fake {
@@ -30,6 +32,7 @@ pub struct Fake {
     /// Every request in the order it arrived: (method, payload).
     pub log: Arc<Mutex<Vec<(String, Value)>>>,
     pub control_connects: Arc<AtomicUsize>,
+    pub data_connects: Arc<AtomicUsize>,
     _rt: tokio::runtime::Runtime,
 }
 
@@ -40,11 +43,12 @@ impl Fake {
         let addr = listener.local_addr().unwrap().to_string();
         let log = Arc::new(Mutex::new(Vec::new()));
         let control_connects = Arc::new(AtomicUsize::new(0));
+        let data_connects = Arc::new(AtomicUsize::new(0));
         let opts = Arc::new(opts);
-        let (l, c) = (log.clone(), control_connects.clone());
+        let (l, c, d) = (log.clone(), control_connects.clone(), data_connects.clone());
         rt.spawn(async move {
             while let Ok((tcp, _)) = listener.accept().await {
-                let (l, c, opts) = (l.clone(), c.clone(), opts.clone());
+                let (l, c, d, opts) = (l.clone(), c.clone(), d.clone(), opts.clone());
                 tokio::spawn(async move {
                     let path = Arc::new(Mutex::new(String::new()));
                     let p = path.clone();
@@ -62,12 +66,13 @@ impl Fake {
                         c.fetch_add(1, Ordering::SeqCst);
                         control(ws, l, opts).await;
                     } else {
-                        data(ws).await;
+                        d.fetch_add(1, Ordering::SeqCst);
+                        data(ws, opts.data_reject).await;
                     }
                 });
             }
         });
-        Self { addr, log, control_connects, _rt: rt }
+        Self { addr, log, control_connects, data_connects, _rt: rt }
     }
 
     pub fn methods(&self) -> Vec<String> {
@@ -134,8 +139,13 @@ async fn control(ws: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>, 
     }
 }
 
-async fn data(mut ws: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>) {
+async fn data(mut ws: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>, reject: Option<u8>) {
     let Some(Ok(Message::Binary(_hello))) = ws.next().await else { return };
+    if let Some(r) = reject {
+        let _ = ws.send(Message::binary(vec![0x82, r])).await;
+        let _ = ws.close(None).await;
+        return;
+    }
     let mut w = vec![0x81];
     w.extend([1u8; 16]);
     w.extend([0, 0, 0]);

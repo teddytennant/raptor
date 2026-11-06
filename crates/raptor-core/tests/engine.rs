@@ -147,3 +147,24 @@ fn held_arrow_keys_pipeline() {
     eprintln!("10 keys reached the server in {took:?}");
     assert!(took < Duration::from_millis(300), "{took:?}");
 }
+
+#[test]
+fn unavailable_stream_ends() {
+    let fake = Fake::start(Options { data_reject: Some(0x03), ..Default::default() });
+    let (raptor, id) = online(&fake);
+    let term = raptor.open_terminal(&id, fake::SESSION, fake::BLOCK, Arc::new(NoTerm)).unwrap();
+    assert!(wait(3.0, || matches!(term.status(), TerminalStatus::Ended { .. })), "{:?}", term.status());
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(fake.data_connects.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn refused_streams_back_off() {
+    // "Already connected": a fresh ticket may work later, but not in a tight loop.
+    let fake = Fake::start(Options { data_reject: Some(0x02), ..Default::default() });
+    let (raptor, id) = online(&fake);
+    let _term = raptor.open_terminal(&id, fake::SESSION, fake::BLOCK, Arc::new(NoTerm)).unwrap();
+    std::thread::sleep(Duration::from_secs(2));
+    let n = fake.data_connects.load(Ordering::SeqCst);
+    assert!((2..=6).contains(&n), "{n} data connections in 2 s");
+}

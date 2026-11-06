@@ -104,9 +104,10 @@ async fn run(
         if *stop.borrow() {
             return;
         }
+        let fresh = ticket.is_some();
         let attempt = match (ticket.take(), &session) {
-            (Some(t), _) => connect(&endpoint, Hand::Hello(t)).await.map(|r| (r, true)),
-            (None, Some((w, n))) => connect(&endpoint, Hand::Resume(w.reconnect_token, *n)).await.map(|r| (r, false)),
+            (Some(t), _) => connect(&endpoint, Hand::Hello(t)).await,
+            (None, Some((w, n))) => connect(&endpoint, Hand::Resume(w.reconnect_token, *n)).await,
             (None, None) => {
                 let _ = tx.send(DataEvent::NeedsTicket);
                 tokio::select! {
@@ -117,7 +118,7 @@ async fn run(
         };
 
         let (mut ws, welcome) = match attempt {
-            Ok(((ws, w), fresh)) => {
+            Ok((ws, w)) => {
                 if fresh {
                     splitter = StreamSplitter::new(w.nonce);
                     framer = Some(SnapshotFramer::new());
@@ -133,14 +134,24 @@ async fn run(
             }
             Err(ClientError::Handshake(HandshakeError::Rejected(r))) => {
                 tracing::info!("data handshake rejected: {r}");
+                // A refused HELLO that no ticket can fix (the block closed) is the end.
+                if fresh && !r.retryable() {
+                    let _ = tx.send(DataEvent::Ended { reason: r.to_string() });
+                    return;
+                }
+                // Otherwise start over with a new ticket, but not in a tight loop.
                 session = None;
-                continue; // asks for a ticket
+                if fresh {
+                    tokio::select! {
+                        _ = tokio::time::sleep(backoff) => {}
+                        _ = stop.changed() => return,
+                    }
+                    backoff = (backoff * 2).min(Duration::from_secs(5));
+                }
+                continue;
             }
             Err(e) => {
                 tracing::debug!("data connect failed: {e}");
-                if session.is_none() && ticket.is_none() {
-                    continue;
-                }
                 tokio::select! {
                     _ = tokio::time::sleep(backoff) => {}
                     t = ticket_rx.recv() => if let Some(t) = t { ticket = Some(t); session = None; },
