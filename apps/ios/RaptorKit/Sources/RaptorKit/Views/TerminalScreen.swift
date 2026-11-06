@@ -50,6 +50,30 @@ public struct TerminalScreen: View {
                     .id(b)
                     .transition(.asymmetric(insertion: .move(edge: slideEdge), removal: .move(edge: slideEdge == .trailing ? .leading : .trailing)))
                     .ignoresSafeArea(.container, edges: [.top, .bottom])
+            } else if let session, session.windows.isEmpty {
+                ContentUnavailableView {
+                    Label("No windows", systemImage: "macwindow")
+                } description: {
+                    Text("Everything in \(session.label) has exited.")
+                } actions: {
+                    Button("New Window") { Task { try? await model.core.newWindow(serverId: serverId, sessionId: sessionId) } }
+                        .buttonStyle(.borderedProminent)
+                    Button("End Session", role: .destructive) {
+                        Task { try? await model.core.destroySession(serverId: serverId, sessionId: sessionId) }
+                    }
+                }
+                .foregroundStyle(c.text)
+                .tint(c.accent)
+            } else if case .offline(let error, _) = server?.connectivity {
+                ContentUnavailableView {
+                    Label("Can't reach \(server.map(serverTitle) ?? "the server")", systemImage: "wifi.exclamationmark")
+                } description: {
+                    Text(error)
+                } actions: {
+                    Button("Try Again") { model.core.reconnect(serverId: serverId) }.buttonStyle(.borderedProminent)
+                }
+                .foregroundStyle(c.text)
+                .tint(c.accent)
             } else {
                 ProgressView().tint(c.accent).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
