@@ -48,6 +48,7 @@ fn local_items(ui: &Shared) -> Vec<Item> {
     act("Sessions", "+", "New Session", "new-session");
     act("Sessions", "✎", "Rename Session…", "rename-session");
     act("Sessions", "⏻", "End Session…", "end-session");
+    act("View", "⌕", "Find…", "find");
     act("View", "A", "Bigger Text", "font-bigger");
     act("View", "a", "Smaller Text", "font-smaller");
     act("View", "=", "Reset Text Size", "font-reset");

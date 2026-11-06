@@ -79,6 +79,8 @@ pub struct Ui {
     pub prefs: Prefs,
     pub theme_id: String,
     theme_css: gtk::CssProvider,
+    find_bar: gtk::SearchBar,
+    find_entry: gtk::SearchEntry,
 }
 
 thread_local! {
@@ -217,6 +219,18 @@ fn build(app: &adw::Application) {
     let content_view = adw::ToolbarView::new();
     content_view.add_top_bar(&content_header);
     content_view.add_top_bar(&tab_bar);
+    let find_entry = gtk::SearchEntry::builder().placeholder_text("Find in terminal").width_chars(28).build();
+    let find_older = gtk::Button::from_icon_name("go-up-symbolic");
+    find_older.set_tooltip_text(Some("Find Older (Enter)"));
+    let find_newer = gtk::Button::from_icon_name("go-down-symbolic");
+    find_newer.set_tooltip_text(Some("Find Newer (Shift+Enter)"));
+    let find_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    find_box.append(&find_entry);
+    find_box.append(&find_older);
+    find_box.append(&find_newer);
+    let find_bar = gtk::SearchBar::builder().child(&find_box).show_close_button(true).build();
+    find_bar.connect_entry(&find_entry);
+    content_view.add_top_bar(&find_bar);
     content_view.set_content(Some(&toasts));
     let content_page = adw::NavigationPage::builder().title("Session").child(&content_view).build();
 
@@ -270,7 +284,10 @@ fn build(app: &adw::Application) {
         prefs,
         theme_id: theme_id.clone(),
         theme_css,
+        find_bar: find_bar.clone(),
+        find_entry: find_entry.clone(),
     }));
+    install_find(&ui, &find_entry, &find_older, &find_newer);
     apply_theme(&ui, &theme_id);
 
     let u = ui.clone();
@@ -902,6 +919,7 @@ fn session_menu() -> gio::Menu {
     a.append(Some("Close Pane"), Some("app.close-pane"));
     m.append_section(None, &a);
     let v = gio::Menu::new();
+    v.append(Some("Find…"), Some("app.find"));
     v.append(Some("Bigger Text"), Some("app.font-bigger"));
     v.append(Some("Smaller Text"), Some("app.font-smaller"));
     v.append(Some("Reset Text Size"), Some("app.font-reset"));
@@ -994,6 +1012,16 @@ fn install_actions(app: &adw::Application, ui: &Shared) {
         }),
     );
     add("palette", &["<Control><Shift>p"], Box::new(palette::open));
+    add(
+        "find",
+        &["<Control><Shift>f"],
+        Box::new(|u| {
+            let (bar, entry) = (u.borrow().find_bar.clone(), u.borrow().find_entry.clone());
+            bar.set_search_mode(true);
+            entry.grab_focus();
+            entry.select_region(0, -1);
+        }),
+    );
     add("preferences", &["<Control>comma"], Box::new(dialogs::preferences));
     add("shortcuts", &["<Control>question", "<Control><Shift>question"], Box::new(dialogs::shortcuts));
     add("about", &[], Box::new(dialogs::about));
@@ -1031,9 +1059,67 @@ fn install_actions(app: &adw::Application, ui: &Shared) {
     set_session_actions(&ui.borrow().window, false);
 }
 
+fn install_find(ui: &Shared, entry: &gtk::SearchEntry, older: &gtk::Button, newer: &gtk::Button) {
+    let step = |ui: &Shared, older: bool| {
+        let entry = ui.borrow().find_entry.clone();
+        let Some(s) = focused_term(ui).and_then(|t| t.session()) else { return };
+        let found = s.find(&entry.text(), older);
+        if found || entry.text().is_empty() { entry.remove_css_class("error") } else { entry.add_css_class("error") }
+    };
+    let u = ui.clone();
+    entry.connect_search_changed(move |e| {
+        if let Some(s) = focused_term(&u).and_then(|t| t.session()) {
+            s.reset_find();
+        }
+        e.remove_css_class("error");
+        if !e.text().is_empty() {
+            step(&u, true);
+        }
+    });
+    let u = ui.clone();
+    entry.connect_activate(move |_| step(&u, true));
+    let u = ui.clone();
+    entry.connect_previous_match(move |_| step(&u, true));
+    let u = ui.clone();
+    entry.connect_next_match(move |_| step(&u, false));
+    let u = ui.clone();
+    older.connect_clicked(move |_| step(&u, true));
+    let u = ui.clone();
+    newer.connect_clicked(move |_| step(&u, false));
+    // Shift+Enter goes the other way.
+    let keys = gtk::EventControllerKey::new();
+    let u = ui.clone();
+    keys.connect_key_pressed(move |_, key, _, mods| {
+        if mods.contains(gdk::ModifierType::SHIFT_MASK) && matches!(key, gdk::Key::Return | gdk::Key::KP_Enter) {
+            step(&u, false);
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    entry.add_controller(keys);
+    let u = ui.clone();
+    ui.borrow().find_bar.connect_search_mode_enabled_notify(move |bar| {
+        if bar.is_search_mode() {
+            return;
+        }
+        if let Some(t) = focused_term(&u) {
+            if let Some(s) = t.session() {
+                s.reset_find();
+            }
+            t.grab_focus();
+        }
+    });
+}
+
 fn focused_term(ui: &Shared) -> Option<TermView> {
+    let shown = current_target(ui).and_then(|(_, _, b)| b);
     let u = ui.borrow();
-    u.terms.values().find(|t| t.has_focus()).or_else(|| u.last_focused.as_ref().and_then(|b| u.terms.get(b))).cloned()
+    u.terms
+        .values()
+        .find(|t| t.has_focus())
+        .or_else(|| u.last_focused.as_ref().and_then(|b| u.terms.get(b)))
+        .or_else(|| shown.and_then(|b| u.terms.get(&b)))
+        .cloned()
 }
 
 pub fn set_font(ui: &Shared, delta: Option<f64>) {

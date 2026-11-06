@@ -337,6 +337,7 @@ const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
             ("Copy", "<Control><Shift>c"),
             ("Paste", "<Control><Shift>v"),
             ("Paste Selection", "Middle click"),
+            ("Find in Scrollback", "<Control><Shift>f"),
             ("Scroll a Page", "<Shift>Page_Up"),
             ("Scroll to Top/Bottom", "<Shift>Home"),
             ("Previous/Next Prompt", "<Control><Shift>Up"),
