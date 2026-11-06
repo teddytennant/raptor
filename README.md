@@ -87,11 +87,15 @@ the simulator:
 the iOS renderer, and `swift run raptor-snap views <server> dir/` renders the
 screens offscreen.
 
-**Linux** (GTK 4.12+, libadwaita 1.5+):
+**Linux** (GTK 4.12+, libadwaita 1.5+, Pango 1.56+):
 
 ```sh
 cargo run -p raptor-gtk --release
 ```
+
+With Nix, `nix develop` gives a shell with GTK, libadwaita and Zig, and
+`nix build` builds the app with its desktop entry, icon and fonts
+(`nix profile install .` to install it).
 
 Raptor finds the local Rex server's socket automatically. For a remote one, use
 anything you'd pass to `rex -S`: `my-box` (port 7878), `100.64.0.2:7878`,
@@ -104,7 +108,7 @@ anything you'd pass to `rex -S`: `my-box` (port 7878), `100.64.0.2:7878`,
 | Rust core | ✅ | 18 unit tests, plus a live end-to-end test against Rex on Linux |
 | Android | ✅ APK | Emulator against a real server: add server, sessions, typing, key bar, themes, panes, windows |
 | iOS | ✅ device + Simulator builds | XCUITest against a real server: typing, ctrl/arrow keys, scrolling, pinch, select → copy → paste. Not yet run on a physical iPhone |
-| Linux | ✅ (built on NixOS) | Headless sway with real input devices: typing, ctrl+c, history, tab, tiled panes, copy/paste |
+| Linux | ✅ (built on NixOS) | Headless sway against a real server: typing, keys and modifiers, mouse reporting (nvim), selection and copy/paste, tabs, splits and divider drags, reconnects, notifications, 1.5x scale |
 
 ## Roadmap
 
@@ -114,6 +118,7 @@ anything you'd pass to `rex -S`: `my-box` (port 7878), `100.64.0.2:7878`,
 ## License
 
 MIT. libghostty-rs and libghostty-vt are MIT-licensed by Mitchell Hashimoto and contributors.
-JetBrains Mono is under the SIL Open Font License. Rex is a product of
+JetBrains Mono and the other bundled fonts are under the SIL Open Font License;
+Symbols Nerd Font is under the licenses in `assets/fonts/licenses`. Rex is a product of
 Superlogical. Raptor is an independent project, not affiliated with or endorsed
 by Superlogical.
