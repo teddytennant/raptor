@@ -170,6 +170,23 @@ final class TourUITests: XCTestCase {
         shot("rotate-back")
     }
 
+    /// The driver prints "resumed" into the session while the app is away.
+    func testBackgroundResume() throws {
+        open(env["RAPTOR_TEST_SESSION"] ?? "raptor-demo")
+        XCTAssertTrue(app.textViews["Terminal"].waitForExistence(timeout: 15))
+        sleep(2)
+        XCUIDevice.shared.press(.home)
+        sleep(UInt32(env["RAPTOR_AWAY"] ?? "50") ?? 50)
+        app.activate()
+        let start = Date()
+        shot("resume-0")
+        sleep(1)
+        shot("resume-1")
+        sleep(3)
+        shot("resume-4")
+        print("RESUME took-at-least", Date().timeIntervalSince(start))
+    }
+
     func testOtherSessions() throws {
         for s in ["api", "monitor", "editor", "build"] {
             open(s)
