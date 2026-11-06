@@ -110,6 +110,14 @@ public final class TerminalUIView: UIView, UITextInputTraits, UIGestureRecognize
     /// Space covered by floating chrome; the grid is sized to what's left.
     public var insetTop: CGFloat = 0 { didSet { if insetTop != oldValue { pushGrid(); setNeedsDisplay() } } }
     public var insetBottom: CGFloat = 0 { didSet { if insetBottom != oldValue { pushGrid(); setNeedsDisplay() } } }
+    /// The background runs under the home indicator; the rows stop above it.
+    private var bottomInset: CGFloat { insetBottom + safeAreaInsets.bottom }
+
+    public override func safeAreaInsetsDidChange() {
+        super.safeAreaInsetsDidChange()
+        pushGrid()
+        setNeedsDisplay()
+    }
     /// Called when the terminal's default colors change, so chrome can match.
     public var onColors: ((UInt32, UInt32) -> Void)?
     /// Chrome colors for the key bar and keyboard appearance.
@@ -207,7 +215,7 @@ public final class TerminalUIView: UIView, UITextInputTraits, UIGestureRecognize
 
     private func offsetY() -> CGFloat {
         guard let f = frameCache else { return 0 }
-        let visible = bounds.height - insetTop - insetBottom
+        let visible = bounds.height - insetTop - bottomInset
         let content = CGFloat(f.rows) * renderer.metrics.height * scale + padding * 2
         guard content > visible else { return 0 }
         let anchor = CGFloat((f.cursor.map { Int($0.row) } ?? Int(f.rows) - 1) + 1)
@@ -222,7 +230,7 @@ public final class TerminalUIView: UIView, UITextInputTraits, UIGestureRecognize
 
     private func pushGrid() {
         guard bounds.width > 0, let t = controller.terminal else { return }
-        let g = renderer.grid(for: CGSize(width: bounds.width, height: max(40, bounds.height - insetTop - insetBottom)), padding: padding)
+        let g = renderer.grid(for: CGSize(width: bounds.width, height: max(40, bounds.height - insetTop - bottomInset)), padding: padding)
         let s = window?.screen.scale ?? 3
         t.setDeviceGrid(cols: UInt16(g.cols), rows: UInt16(g.rows),
                         cellWidthPx: UInt32((renderer.metrics.width * s).rounded()), cellHeightPx: UInt32((renderer.metrics.height * s).rounded()))

@@ -11,9 +11,9 @@ public struct TerminalScreen: View {
     @State private var termColors: (UInt32, UInt32)?
     @State private var controller: TerminalController?
     @State private var topInset: CGFloat = 0
-    @State private var bottomInset: CGFloat = 0
-    @State private var keyboard = false
     @State private var showPalette = false
+    @State private var keyboard = false
+    @Environment(\.verticalSizeClass) private var vsize
     @State private var slideEdge: Edge = .trailing
     /// Set by the app root: the left button and the title open the session
     /// switcher, and switching sessions goes through the root.
@@ -54,7 +54,7 @@ public struct TerminalScreen: View {
             c.bg.ignoresSafeArea()
             if let b = blockId {
                 LiveTerminal(serverId: serverId, sessionId: sessionId, blockId: b, theme: model.theme, chrome: c,
-                             insetTop: topInset, insetBottom: bottomInset, controller: $controller,
+                             insetTop: topInset, controller: $controller,
                              onSwipe: { swipe($0, session: session) }) { termColors = ($0, $1) }
                     .id(b)
                     .transition(.asymmetric(insertion: .move(edge: slideEdge), removal: .move(edge: slideEdge == .trailing ? .leading : .trailing)))
@@ -123,10 +123,9 @@ public struct TerminalScreen: View {
         .toolbar(.hidden, for: .navigationBar)
         .statusBarHidden(false)
         .onPreferenceChange(TopInsetKey.self) { topInset = $0 }
-        .onPreferenceChange(BottomInsetKey.self) { bottomInset = keyboard ? 0 : $0 }
-        .animation(.snappy(duration: 0.25), value: keyboard)
+        .animation(.snappy(duration: 0.25), value: vsize == .compact && keyboard)
         #if os(iOS)
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboard = true; bottomInset = 0 }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboard = true }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboard = false }
         #endif
         .onAppear { pick(session) }
@@ -335,10 +334,6 @@ private struct TopInsetKey: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
-private struct BottomInsetKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
-}
 
 /// The window's pane layout in miniature. Tap a pane to switch to it.
 private struct PaneMap: View {
@@ -471,7 +466,6 @@ struct LiveTerminal: View {
     let theme: ThemeSpec
     let chrome: Chrome
     let insetTop: CGFloat
-    let insetBottom: CGFloat
     @Binding var controller: TerminalController?
     var onSwipe: (Int) -> Void
     var onColors: (UInt32, UInt32) -> Void
@@ -480,7 +474,7 @@ struct LiveTerminal: View {
     var body: some View {
         ZStack {
             if let ctl = own {
-                TerminalSurface(controller: ctl, fontSize: fontSize, chrome: chrome, insetTop: insetTop, insetBottom: insetBottom,
+                TerminalSurface(controller: ctl, fontSize: fontSize, chrome: chrome, insetTop: insetTop,
                                 appearance: TerminalAppearance(model), onColors: onColors, onSwipe: onSwipe) {
                     model.core.setSetting(key: "font_size", value: String(Double($0)))
                 }
@@ -522,7 +516,6 @@ struct TerminalSurface: UIViewRepresentable {
     let fontSize: CGFloat
     let chrome: Chrome
     let insetTop: CGFloat
-    let insetBottom: CGFloat
     let appearance: TerminalAppearance
     var onColors: (UInt32, UInt32) -> Void
     var onSwipe: (Int) -> Void
@@ -546,7 +539,6 @@ struct TerminalSurface: UIViewRepresentable {
         }
         v.chrome = chrome
         v.insetTop = insetTop
-        v.insetBottom = insetBottom
         v.onColors = onColors
         v.onSwipePane = onSwipe
     }
@@ -558,7 +550,6 @@ struct TerminalSurface: NSViewRepresentable {
     let fontSize: CGFloat
     let chrome: Chrome
     let insetTop: CGFloat
-    let insetBottom: CGFloat
     let appearance: TerminalAppearance
     var onColors: (UInt32, UInt32) -> Void
     var onSwipe: (Int) -> Void
