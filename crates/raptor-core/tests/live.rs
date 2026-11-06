@@ -53,6 +53,10 @@ impl T {
     }
 }
 
+/// Tests that check a stream resumes byte for byte run one at a time: a busy
+/// test server sometimes ends a dropped client instead of keeping it.
+static RESUME: Mutex<()> = Mutex::new(());
+
 fn wait<F: FnMut() -> bool>(secs: u64, mut f: F) -> bool {
     let end = Instant::now() + Duration::from_secs(secs);
     while Instant::now() < end {
@@ -366,6 +370,7 @@ fn reply_without_live_connection() {
 
 #[test]
 fn background_resumes_streams() {
+    let _one = RESUME.lock();
     let Some(l) = Live::new() else { return };
     let (term, tl) = l.open(&l.bid);
     l.raptor.set_foreground(false);
@@ -385,6 +390,7 @@ fn background_resumes_streams() {
 
 #[test]
 fn forced_disconnect_keeps_output() {
+    let _one = RESUME.lock();
     let Some(l) = Live::new() else { return };
     let (term, tl) = l.open(&l.bid);
     l.raptor.disconnect_for_test(&l.id);
@@ -442,6 +448,7 @@ impl Proxy {
 
 #[test]
 fn network_loss_resumes_byte_exact() {
+    let _one = RESUME.lock();
     let Ok(target) = std::env::var("RAPTOR_TEST_SERVER") else { return };
     let proxy = Proxy::start(&target);
     let Some(l) = Live::via(Some(&proxy.addr)) else { return };
