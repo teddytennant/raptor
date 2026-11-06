@@ -108,6 +108,21 @@ pub struct WindowState {
     pub focused_block_id: Option<String>,
     pub zoomed_block_id: Option<String>,
     pub blocks: Vec<BlockState>,
+    /// The tiled layout's borders, outermost first.
+    pub splits: Vec<SplitState>,
+}
+
+/// A border in a window's tiled layout, so a desktop UI can drag it.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SplitState {
+    /// The whole split, `[x, y, w, h]` within the window, as fractions.
+    pub rect: [f64; 4],
+    /// Side by side (a vertical border) rather than one above the other.
+    pub horizontal: bool,
+    pub ratio: f64,
+    /// A block on each side; together they name this split to `resize_pane`.
+    pub before: String,
+    pub after: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

@@ -183,6 +183,7 @@ impl ServerEntry {
                                     focused_block_id: w.focused_block_id.clone(),
                                     zoomed_block_id: w.zoomed_block_id.clone(),
                                     blocks,
+                                    splits: splits(w),
                                 }
                             })
                             .collect()
@@ -740,6 +741,25 @@ fn notification_name(title: &str, process: &str) -> String {
     if name.is_empty() { process.to_owned() } else { name }
 }
 
+fn splits(w: &raptor_proto::Window) -> Vec<SplitState> {
+    fn first(n: &raptor_proto::LayoutNode) -> Option<String> {
+        n.block_id.clone().or_else(|| n.split.as_ref().and_then(|s| first(&s.before)))
+    }
+    fn walk(n: &raptor_proto::LayoutNode, out: &mut Vec<SplitState>) {
+        let Some(s) = &n.split else { return };
+        if let (Some(before), Some(after)) = (first(&s.before), first(&s.after)) {
+            out.push(SplitState { rect: n.rect, horizontal: s.direction != "vertical", ratio: s.ratio, before, after });
+        }
+        walk(&s.before, out);
+        walk(&s.after, out);
+    }
+    let mut out = Vec::new();
+    if let Some(n) = w.layers.iter().find(|l| l.kind == "tiled").and_then(|l| l.layout.as_ref()) {
+        walk(n, &mut out);
+    }
+    out
+}
+
 #[cfg(test)]
 mod name_tests {
     use super::notification_name as n;
@@ -753,5 +773,27 @@ mod name_tests {
         assert_eq!(n("cargo test -p core /home/me/x", "cargo"), "cargo");
         assert_eq!(n("", "htop"), "htop");
         assert_eq!(n("bad\u{7}bell", "zsh"), "zsh");
+    }
+}
+
+#[cfg(test)]
+mod split_tests {
+    use serde_json::json;
+
+    #[test]
+    fn layout_splits() {
+        let w: raptor_proto::Window = serde_json::from_value(json!({"window_id": "w", "layers": [{
+            "kind": "tiled", "bounds": [0,0,1,1],
+            "layout": {"rect": [0,0,1,1], "split": {"direction": "horizontal", "ratio": 0.6,
+                "before": {"rect": [0,0,0.6,1], "block_id": "a"},
+                "after": {"rect": [0.6,0,0.4,1], "split": {"direction": "vertical", "ratio": 0.5,
+                    "before": {"rect": [0.6,0,0.4,0.5], "block_id": "b"},
+                    "after": {"rect": [0.6,0.5,0.4,0.5], "block_id": "c"}}}}},
+            "blocks": [{"block_id": "a"}, {"block_id": "b"}, {"block_id": "c"}]}]}))
+        .unwrap();
+        let s = super::splits(&w);
+        assert_eq!(s.len(), 2);
+        assert!(s[0].horizontal && s[0].before == "a" && s[0].after == "b" && s[0].ratio == 0.6);
+        assert!(!s[1].horizontal && s[1].rect == [0.6, 0.0, 0.4, 1.0] && s[1].before == "b" && s[1].after == "c");
     }
 }
