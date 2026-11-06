@@ -58,7 +58,7 @@ final class PaneContainerView: NSView {
                 addSubview(p, positioned: .below, relativeTo: dividers.first)
                 return p
             }()
-            pane.update(block: b, focused: b.id == focusedId, multiple: visibleBlocks(w).count > 1, chrome: chrome)
+            pane.update(block: b, focused: b.id == focusedId, multiple: w.blocks.count > 1, zoomed: w.zoomedBlockId == b.id, chrome: chrome)
         }
         for (id, p) in panes where !seen.contains(id) {
             p.removeFromSuperview()
@@ -253,13 +253,13 @@ final class PaneView: NSView {
 
     override var isFlipped: Bool { true }
 
-    func update(block b: Block, focused: Bool, multiple: Bool, chrome: Chrome) {
+    func update(block b: Block, focused: Bool, multiple: Bool, zoomed: Bool, chrome: Chrome) {
         terminal.isFocusedPane = focused
         showsHeader = multiple
         header.isHidden = !multiple
         let id = b.id
         header.rootView = PaneHeader(
-            title: runningName(b) ?? b.name, detail: b.shortPwd, agent: b.agent, focused: focused, chrome: chrome,
+            title: runningName(b) ?? b.name, detail: b.shortPwd, agent: b.agent, focused: focused, zoomed: zoomed, chrome: chrome,
             onAction: { [weak ws] a in ws?.run(a, blockId: id) }
         )
         // Unfocused panes recede a little so the focused one reads first.
@@ -302,6 +302,7 @@ struct PaneHeader: View {
     var detail: String
     var agent: AgentStatus?
     var focused: Bool
+    var zoomed = false
     var chrome: Chrome
     var onAction: (PaneAction) -> Void
     @State private var hover = false
@@ -322,7 +323,14 @@ struct PaneHeader: View {
                     .background(Palette.agent(a.state).opacity(0.14), in: Capsule())
             }
             Spacer(minLength: 4)
-            if hover || focused {
+            if zoomed {
+                Button { onAction(.zoom) } label: {
+                    Label("Zoomed", systemImage: "arrow.down.right.and.arrow.up.left").font(.system(size: 10.5, weight: .medium))
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(chrome.accent)
+                .help("Show all panes (⇧⌘↩)")
+            } else if hover || focused {
                 HStack(spacing: 2) {
                     button(.splitRight, "Split right")
                     button(.splitDown, "Split down")
