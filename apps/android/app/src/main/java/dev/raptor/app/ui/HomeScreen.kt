@@ -65,6 +65,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
@@ -368,7 +370,7 @@ private fun NeedsRow(item: AttentionItem, onOpen: () -> Unit) {
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
-            IconButton(onClick = { send() }, enabled = reply.isNotEmpty()) {
+            IconButton(onClick = { send() }, enabled = reply.isNotEmpty(), modifier = Modifier.semantics { contentDescription = "Send reply" }) {
                 SendGlyph(if (reply.isNotEmpty()) Ink.accent else Ink.tertiary, 24.dp)
             }
         }

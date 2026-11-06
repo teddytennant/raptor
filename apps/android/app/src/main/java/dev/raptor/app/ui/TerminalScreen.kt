@@ -83,6 +83,12 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -633,28 +639,29 @@ private fun StatusOverlay(status: TerminalStatus, modifier: Modifier) {
     }
 }
 
-private data class BarKey(val label: String, val key: Key? = null, val text: String? = null, val repeat: Boolean = false)
+private data class BarKey(val label: String, val key: Key? = null, val text: String? = null, val repeat: Boolean = false, val spoken: String = label)
 
 private val mainKeys = listOf(
-    BarKey("esc", Key.Escape),
-    BarKey("tab", Key.Tab),
-    BarKey("ctrl"),
-    BarKey("alt"),
-    BarKey("←", Key.Left, repeat = true),
-    BarKey("↓", Key.Down, repeat = true),
-    BarKey("↑", Key.Up, repeat = true),
-    BarKey("→", Key.Right, repeat = true),
+    BarKey("esc", Key.Escape, spoken = "Escape"),
+    BarKey("tab", Key.Tab, spoken = "Tab"),
+    BarKey("ctrl", spoken = "Control"),
+    BarKey("alt", spoken = "Alt"),
+    BarKey("←", Key.Left, repeat = true, spoken = "Left arrow"),
+    BarKey("↓", Key.Down, repeat = true, spoken = "Down arrow"),
+    BarKey("↑", Key.Up, repeat = true, spoken = "Up arrow"),
+    BarKey("→", Key.Right, repeat = true, spoken = "Right arrow"),
 )
 
 private val moreKeys = listOf(
-    BarKey("|", text = "|"),
-    BarKey("~", text = "~"),
-    BarKey("/", text = "/"),
-    BarKey("-", text = "-"),
-    BarKey("`", text = "`"),
-    BarKey("home", Key.Home),
-    BarKey("end", Key.End),
-    BarKey("pgup", Key.PageUp, repeat = true),
+    BarKey("|", text = "|", spoken = "Pipe"),
+    BarKey("~", text = "~", spoken = "Tilde"),
+    BarKey("/", text = "/", spoken = "Slash"),
+    BarKey("-", text = "-", spoken = "Dash"),
+    BarKey("`", text = "`", spoken = "Backtick"),
+    BarKey("home", Key.Home, spoken = "Home"),
+    BarKey("end", Key.End, spoken = "End"),
+    BarKey("pgup", Key.PageUp, repeat = true, spoken = "Page up"),
+    BarKey("pgdn", Key.PageDown, repeat = true, spoken = "Page down"),
 )
 
 /** Terminal keys on a glass strip right above the soft keyboard. Two pages, no scrolling. */
@@ -696,13 +703,15 @@ private fun KeyBar(view: TerminalView, mods: Modifiers) {
             val locked = (k.label == "ctrl" && mods.ctrlLocked) || (k.label == "alt" && mods.altLocked)
             BarButton(
                 label = k.label,
+                spoken = k.spoken,
+                selected = if (k.key == null && k.text == null) on || locked else null,
                 background = when { locked -> Ink.accent; on -> Ink.accent.copy(alpha = 0.3f); else -> Color.Transparent },
                 foreground = if (locked) Ink.bg else Ink.text,
                 repeat = k.repeat,
                 modifier = Modifier.weight(1f),
             ) { press(k) }
         }
-        BarButton(label = if (more) "abc" else "•••", background = Color.Transparent, foreground = Ink.secondary, modifier = Modifier.weight(1f)) {
+        BarButton(label = if (more) "abc" else "•••", spoken = if (more) "Main keys" else "More keys", background = Color.Transparent, foreground = Ink.secondary, modifier = Modifier.weight(1f)) {
             hv.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
             more = !more
         }
@@ -710,7 +719,7 @@ private fun KeyBar(view: TerminalView, mods: Modifiers) {
 }
 
 @Composable
-private fun BarButton(label: String, background: Color, foreground: Color, modifier: Modifier, repeat: Boolean = false, onPress: () -> Unit) {
+private fun BarButton(label: String, spoken: String, background: Color, foreground: Color, modifier: Modifier, repeat: Boolean = false, selected: Boolean? = null, onPress: () -> Unit) {
     var down by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val downColor = Ink.keyDown
@@ -719,6 +728,12 @@ private fun BarButton(label: String, background: Color, foreground: Color, modif
             .fillMaxSize()
             .clip(RoundedCornerShape(9.dp))
             .background(if (down) downColor else background)
+            .clearAndSetSemantics {
+                contentDescription = spoken
+                role = Role.Button
+                selected?.let { this.selected = it }
+                onClick { onPress(); true }
+            }
             .pointerInput(repeat) {
                 detectTapGestures(onPress = {
                     down = true
