@@ -862,6 +862,14 @@ impl Terminal {
         self.inner.set_theme(None)
     }
 
+    /// Send a `block.event` such as a mouse press, motion or release, or a
+    /// focus change. `payload_json` is the event's payload as JSON.
+    pub fn send_event(&self, kind: String, payload_json: String) {
+        if let Ok(v) = serde_json::from_str(&payload_json) {
+            self.inner.event(&kind, v)
+        }
+    }
+
     /// Wheel scroll for full-screen programs; positive is down.
     pub fn wheel(&self, col: u16, row: u16, lines: f32) {
         self.inner.wheel(col, row, lines)

@@ -124,6 +124,7 @@ enum Input {
     Text(String),
     Key(KeyPress),
     Paste(String),
+    Event(String, serde_json::Value),
 }
 
 pub struct TerminalSession {
@@ -334,6 +335,14 @@ impl TerminalSession {
                     Input::Text(t) => conn.write(&self.session_id, &self.block_id, t).await,
                     Input::Key(k) => conn.key(&self.session_id, &self.block_id, k).await,
                     Input::Paste(p) => conn.paste(&self.session_id, &self.block_id, p).await,
+                    Input::Event(kind, payload) => conn
+                        .call(
+                            "block.event",
+                            json!({"session_id": self.session_id, "block_id": self.block_id,
+                            "event": {"type": kind, "payload": payload}}),
+                        )
+                        .await
+                        .map(drop),
                 };
                 if let Err(e) = r {
                     tracing::warn!("input: {e}");
@@ -537,6 +546,11 @@ impl TerminalSession {
                     .await;
             }
         });
+    }
+
+    /// Send a `block.event` (mouse, wheel, focus) in order with typed input.
+    pub fn event(&self, kind: &str, payload: serde_json::Value) {
+        let _ = self.input.send(Input::Event(kind.to_owned(), payload));
     }
 
     /// Scroll wheel for full-screen programs (vim, less, htop). Positive is down.
