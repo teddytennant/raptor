@@ -50,7 +50,7 @@ makes a good headless backend). Raptor's own multiplexer server is planned for v
 | `apps/android` | Android app: Jetpack Compose UI, Canvas terminal view | Kotlin |
 | `apps/ios` | iOS/iPadOS app: SwiftUI, Core Text terminal, UIKit input (`RaptorKit` package + app target) | Swift |
 | `apps/linux` | Linux app: GTK 4 + libadwaita, Cairo/Pango terminal, tiled panes | Rust |
-| `apps/macos` | macOS app: SwiftUI sidebar and settings, AppKit terminal view on the shared `RaptorKit` renderer | Swift |
+| `apps/macos` | macOS app: SwiftUI title bar, session switcher and settings, AppKit terminal view on the shared `RaptorKit` renderer | Swift |
 
 The Rex protocol is documented by every Rex server at `GET /llms.txt`.
 
