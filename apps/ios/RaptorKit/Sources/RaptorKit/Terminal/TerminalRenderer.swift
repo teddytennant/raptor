@@ -103,12 +103,15 @@ public final class TerminalRenderer {
 
         for (row, line) in frame.lines.enumerated() {
             let top = CGFloat(row) * m.height
+            // Unantialiased, so neighbouring backgrounds meet on a pixel edge with no seam.
+            ctx.setShouldAntialias(false)
             for run in line.runs {
                 let selected = run.style & styleSelected != 0
                 guard let color = selected ? selection : run.bg else { continue }
                 ctx.setFillColor(cg(color))
                 ctx.fill(CGRect(x: CGFloat(run.col) * m.width, y: top, width: CGFloat(run.cells) * m.width, height: m.height + 0.5))
             }
+            ctx.setShouldAntialias(true)
             for run in line.runs where !run.text.allSatisfy({ $0 == " " }) {
                 var color = run.fg
                 if run.style & styleFaint != 0 { color = blend(color, frame.background, 0.5) }
@@ -147,7 +150,7 @@ public final class TerminalRenderer {
             let w = CGFloat(i < widths.count ? widths[i] : 1)
             let g = graphemes[i]
             let x = origin.x + col * m.width
-            if let scalar = g.unicodeScalars.first, g.unicodeScalars.count == 1, (0x2500...0x259F).contains(scalar.value) {
+            if let scalar = g.unicodeScalars.first, g.unicodeScalars.count == 1, (0x2500...0x259F).contains(scalar.value) || (0xE0B0...0xE0BF).contains(scalar.value) {
                 if drawBox(scalar.value, x: x, top: origin.y, cells: w, color: color, in: ctx) {
                     col += w
                     i += 1
@@ -257,17 +260,75 @@ public final class TerminalRenderer {
         case 0x2501: hl(x, r, T)
         case 0x2502: vl(top, b)
         case 0x2503: vl(top, b, T)
-        case 0x250C, 0x256D: hl(cx - t / 2, r); vl(cy - t / 2, b)
-        case 0x2510, 0x256E: hl(x, cx + t / 2); vl(cy - t / 2, b)
-        case 0x2514, 0x2570: hl(cx - t / 2, r); vl(top, cy + t / 2)
-        case 0x2518, 0x256F: hl(x, cx + t / 2); vl(top, cy + t / 2)
+        case 0x250C: hl(cx - t / 2, r); vl(cy - t / 2, b)
+        case 0x2510: hl(x, cx + t / 2); vl(cy - t / 2, b)
+        case 0x2514: hl(cx - t / 2, r); vl(top, cy + t / 2)
+        case 0x2518: hl(x, cx + t / 2); vl(top, cy + t / 2)
+        case 0x250F: hl(cx - T / 2, r, T); vl(cy - T / 2, b, T)
+        case 0x2513: hl(x, cx + T / 2, T); vl(cy - T / 2, b, T)
+        case 0x2517: hl(cx - T / 2, r, T); vl(top, cy + T / 2, T)
+        case 0x251B: hl(x, cx + T / 2, T); vl(top, cy + T / 2, T)
+        case 0x256D, 0x256E, 0x2570, 0x256F:
+            // Rounded corners: a quarter circle into the cell's center lines.
+            let right = cp == 0x256D || cp == 0x2570, down = cp == 0x256D || cp == 0x256E
+            let rad = min(w, h) / 2
+            ctx.setStrokeColor(color)
+            ctx.setLineWidth(t)
+            ctx.beginPath()
+            ctx.move(to: CGPoint(x: right ? r : x, y: cy))
+            ctx.addArc(tangent1End: CGPoint(x: cx, y: cy), tangent2End: CGPoint(x: cx, y: down ? b : top), radius: rad)
+            ctx.addLine(to: CGPoint(x: cx, y: down ? b : top))
+            ctx.strokePath()
         case 0x251C: vl(top, b); hl(cx, r)
         case 0x2524: vl(top, b); hl(x, cx)
         case 0x252C: hl(x, r); vl(cy, b)
         case 0x2534: hl(x, r); vl(top, cy)
         case 0x253C: hl(x, r); vl(top, b)
+        case 0x2523: vl(top, b, T); hl(cx, r, T)
+        case 0x252B: vl(top, b, T); hl(x, cx, T)
+        case 0x2533: hl(x, r, T); vl(cy, b, T)
+        case 0x253B: hl(x, r, T); vl(top, cy, T)
+        case 0x254B: hl(x, r, T); vl(top, b, T)
+        case 0x2574: hl(x, cx + t / 2)
+        case 0x2575: vl(top, cy + t / 2)
+        case 0x2576: hl(cx - t / 2, r)
+        case 0x2577: vl(cy - t / 2, b)
         case 0x2550: ctx.fill(CGRect(x: x, y: cy - T, width: w, height: t)); ctx.fill(CGRect(x: x, y: cy + T - t, width: w, height: t))
         case 0x2551: ctx.fill(CGRect(x: cx - T, y: top, width: t, height: h)); ctx.fill(CGRect(x: cx + T - t, y: top, width: t, height: h))
+        case 0x2554, 0x2557, 0x255A, 0x255D:
+            // Double corners: two nested corners on the double lines' tracks.
+            let right = cp == 0x2554 || cp == 0x255A, down = cp == 0x2554 || cp == 0x2557
+            let outer = (right ? cx - T : cx + T - t, down ? cy - T : cy + T - t)
+            let inner = (right ? cx + T - t : cx - T, down ? cy + T - t : cy - T)
+            for (vx, hy) in [outer, inner] {
+                ctx.fill(right ? CGRect(x: vx, y: hy, width: r - vx, height: t) : CGRect(x: x, y: hy, width: vx + t - x, height: t))
+                ctx.fill(down ? CGRect(x: vx, y: hy, width: t, height: b - hy) : CGRect(x: vx, y: top, width: t, height: hy + t - top))
+            }
+        case 0xE0B0, 0xE0B2, 0xE0B8, 0xE0BA, 0xE0BC, 0xE0BE:
+            // Powerline solid shapes, drawn to the cell edges so segments join cleanly.
+            let pts: [CGPoint] = switch cp {
+            case 0xE0B0: [CGPoint(x: x, y: top), CGPoint(x: r, y: cy), CGPoint(x: x, y: b)]
+            case 0xE0B2: [CGPoint(x: r, y: top), CGPoint(x: x, y: cy), CGPoint(x: r, y: b)]
+            case 0xE0B8: [CGPoint(x: x, y: top), CGPoint(x: r, y: b), CGPoint(x: x, y: b)]
+            case 0xE0BA: [CGPoint(x: r, y: top), CGPoint(x: r, y: b), CGPoint(x: x, y: b)]
+            case 0xE0BC: [CGPoint(x: x, y: top), CGPoint(x: r, y: top), CGPoint(x: x, y: b)]
+            default: [CGPoint(x: x, y: top), CGPoint(x: r, y: top), CGPoint(x: r, y: b)]
+            }
+            ctx.addLines(between: pts)
+            ctx.closePath()
+            ctx.fillPath()
+        case 0xE0B1, 0xE0B3:
+            ctx.setStrokeColor(color)
+            ctx.setLineWidth(t)
+            ctx.addLines(between: cp == 0xE0B1
+                ? [CGPoint(x: x, y: top), CGPoint(x: r - t / 2, y: cy), CGPoint(x: x, y: b)]
+                : [CGPoint(x: r, y: top), CGPoint(x: x + t / 2, y: cy), CGPoint(x: r, y: b)])
+            ctx.strokePath()
+        case 0xE0B4, 0xE0B6:
+            ctx.saveGState()
+            ctx.clip(to: CGRect(x: x, y: top, width: w, height: h))
+            ctx.fillEllipse(in: CGRect(x: cp == 0xE0B4 ? x - w : x, y: top, width: w * 2, height: h))
+            ctx.restoreGState()
         case 0x2580: ctx.fill(CGRect(x: x, y: top, width: w, height: h / 2))
         case 0x2584: ctx.fill(CGRect(x: x, y: cy, width: w, height: h / 2))
         case 0x2588: ctx.fill(CGRect(x: x, y: top, width: w, height: h))
