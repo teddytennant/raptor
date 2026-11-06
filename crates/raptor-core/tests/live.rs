@@ -477,3 +477,40 @@ fn network_loss_resumes_byte_exact() {
     assert!(!after.contains(&TerminalStatus::Connecting), "stream restarted instead of resuming: {after:?}");
 }
 
+
+#[test]
+fn control_survives_a_new_client() {
+    let Some(l) = Live::new() else { return };
+    let (term, _) = l.open(&l.bid);
+    term.set_device_grid(90, 28, 9, 18);
+    term.take_control();
+    assert!(wait(10, || term.size() == (90, 28)), "size {:?}", term.size());
+    // Saving the server again reconnects as a brand-new client, which owns nothing.
+    let addr = l.raptor.state().server(&l.id).unwrap().address.clone();
+    l.raptor.update_server(&l.id, "", &addr).unwrap();
+    assert!(wait(10, || l.raptor.state().server(&l.id).unwrap().connectivity == Connectivity::Online));
+    assert!(wait(10, || l.block(&l.bid).is_some_and(|b| b.owned_by_me)), "{:?}", l.block(&l.bid));
+    assert!(wait(10, || term.status() == TerminalStatus::Live));
+    // Someone else resizes; ours wins again because we still hold control.
+    let side = l.side();
+    let (sid, bid) = (l.sid.clone(), l.bid.clone());
+    l.raptor.block_on(async move { side.resize(&sid, &bid, 70, 20, None).await.unwrap() });
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(term.size(), (90, 28));
+}
+
+#[test]
+fn take_then_release_quickly() {
+    let Some(l) = Live::new() else { return };
+    let (term, _) = l.open(&l.bid);
+    term.set_device_grid(90, 28, 9, 18);
+    for _ in 0..5 {
+        term.take_control();
+        term.release_control();
+    }
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(!term.has_control());
+    assert!(l.block(&l.bid).is_some_and(|b| !b.owned_by_me), "{:?}", l.block(&l.bid));
+    term.take_control();
+    assert!(wait(10, || l.block(&l.bid).is_some_and(|b| b.owned_by_me)), "{:?}", l.block(&l.bid));
+}

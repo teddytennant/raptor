@@ -180,6 +180,7 @@ pub struct TerminalSession {
     resize_gen: Arc<AtomicU64>,
     control: AtomicBool,
     forced: Mutex<Option<ColorTheme>>,
+    control_lock: tokio::sync::Mutex<()>,
     server_theme: Mutex<ServerTheme>,
     /// Methods are called from UI threads, so spawn on the engine's runtime explicitly.
     rt: tokio::runtime::Handle,
@@ -204,6 +205,7 @@ impl TerminalSession {
             resize_gen: Arc::new(AtomicU64::new(0)),
             control: AtomicBool::new(false),
             forced: Mutex::new(None),
+            control_lock: tokio::sync::Mutex::new(()),
             server_theme: Mutex::new(ServerTheme::default()),
             rt: tokio::runtime::Handle::current(),
         });
@@ -314,7 +316,13 @@ impl TerminalSession {
             };
             let (Some(ev), Some(me)) = (ev, this.upgrade()) else { return };
             match ev {
-                DataEvent::Started => me.set_status(TerminalStatus::Connecting),
+                DataEvent::Started => {
+                    // A fresh stream can mean a fresh client, which owns nothing yet.
+                    if me.has_control() {
+                        me.rt.spawn(Self::sync_control(me.clone()));
+                    }
+                    me.set_status(TerminalStatus::Connecting);
+                }
                 DataEvent::Snapshot(s) => {
                     let r = {
                         let mut t = me.term.lock();
@@ -506,26 +514,36 @@ impl TerminalSession {
     /// Own the block so the remote terminal uses this device's size.
     pub fn take_control(self: &Arc<Self>) {
         self.control.store(true, Ordering::Release);
-        let this = self.clone();
-        self.rt.spawn(async move {
-            if let Some(c) = this.server.wait_connection(Duration::from_secs(10)).await {
-                if let Err(e) = c.own_block(&this.session_id, &this.block_id, true).await {
-                    tracing::warn!("own_block: {e}");
-                }
-                this.push_resize();
-            }
-        });
+        self.rt.spawn(Self::sync_control(self.clone()));
     }
 
     /// Give the size back to whoever had it (e.g. the desktop app).
     pub fn release_control(self: &Arc<Self>) {
         if self.control.swap(false, Ordering::AcqRel) {
-            let this = self.clone();
-            self.rt.spawn(async move {
-                if let Some(c) = this.server.connection() {
-                    let _ = c.disown_block(&this.session_id, &this.block_id).await;
-                }
-            });
+            self.rt.spawn(Self::sync_control(self.clone()));
+        }
+    }
+
+    /// Make the server's owner match what the user last asked for. One at a
+    /// time and reading the wish when it runs, so quick take/release taps
+    /// can't land out of order and leave the wrong client owning the block.
+    async fn sync_control(this: Arc<Self>) {
+        let _one = this.control_lock.lock().await;
+        let Some(c) = this.server.wait_connection(Duration::from_secs(10)).await else { return };
+        let (sid, bid) = (&this.session_id, &this.block_id);
+        if !this.control.load(Ordering::Acquire) {
+            let _ = c.disown_block(sid, bid).await;
+            return;
+        }
+        if let Err(e) = c.own_block(sid, bid, true).await {
+            tracing::warn!("own_block: {e}");
+        }
+        let device = *this.device.lock();
+        if let Some((cols, rows, cw, ch)) = device {
+            let px = (cw > 0 && ch > 0).then_some((cw, ch));
+            if let Err(e) = c.resize(sid, bid, cols as u32, rows as u32, px).await {
+                tracing::warn!("resize: {e}");
+            }
         }
     }
 
@@ -544,19 +562,6 @@ impl TerminalSession {
                 return; // a newer size superseded this one
             }
             let Some((cols, rows, cw, ch)) = device else { return };
-            if let Some(c) = server.connection() {
-                let px = (cw > 0 && ch > 0).then_some((cw, ch));
-                if let Err(e) = c.resize(&sid, &bid, cols as u32, rows as u32, px).await {
-                    tracing::warn!("resize: {e}");
-                }
-            }
-        });
-    }
-
-    fn push_resize(&self) {
-        let Some((cols, rows, cw, ch)) = *self.device.lock() else { return };
-        let (server, sid, bid) = (self.server.clone(), self.session_id.clone(), self.block_id.clone());
-        self.rt.spawn(async move {
             if let Some(c) = server.connection() {
                 let px = (cw > 0 && ch > 0).then_some((cw, ch));
                 if let Err(e) = c.resize(&sid, &bid, cols as u32, rows as u32, px).await {
