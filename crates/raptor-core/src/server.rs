@@ -592,16 +592,33 @@ impl ServerEntry {
                 }
                 sink.changed();
             }
-            SessionEvent::Block { block_id, event, .. } => self.apply_block(session_id, block_id, event, sink),
+            SessionEvent::Block { block_id, event, .. } => self.apply_block(conn, session_id, block_id, event, sink),
             _ => {}
         }
     }
 
-    fn apply_block(&self, session_id: String, block_id: String, event: TerminalEvent, sink: &Arc<dyn Sink>) {
+    fn apply_block(&self, conn: &Connection, session_id: String, block_id: String, event: TerminalEvent, sink: &Arc<dyn Sink>) {
         let server_id = self.id();
-        if let TerminalEvent::Clipboard { text: Some(t), .. } = &event {
-            if let Some(term) = self.terminals.lock().get(&block_id).and_then(|w| w.upgrade()) {
-                term.on_clipboard(t.clone());
+        if let TerminalEvent::Clipboard { text, id } = event {
+            let Some(term) = self.terminals.lock().get(&block_id).cloned() else { return };
+            match (text, id) {
+                (Some(t), _) => {
+                    if let Some(term) = term.upgrade() {
+                        term.on_clipboard(t);
+                    }
+                }
+                // Too large for the event: read it in parts.
+                (None, Some(id)) => {
+                    let conn = conn.clone();
+                    tokio::spawn(async move {
+                        if let Some(text) = read_clipboard(&conn, &session_id, &block_id, id).await
+                            && let Some(term) = term.upgrade()
+                        {
+                            term.on_clipboard(text);
+                        }
+                    });
+                }
+                (None, None) => {}
             }
             return;
         }
@@ -700,6 +717,20 @@ impl ServerEntry {
     pub fn clear_bell(&self, block_id: &str) {
         if let Some(m) = self.model.lock().meta.get_mut(block_id) {
             m.bell = false;
+        }
+    }
+}
+
+/// Read a copied text that was too large for its event.
+async fn read_clipboard(conn: &Connection, session_id: &str, block_id: &str, id: u64) -> Option<String> {
+    let mut text = String::new();
+    loop {
+        let args = json!({"id": id, "offset": text.len(), "max_bytes": 983_040});
+        let v = conn.terminal(session_id, block_id, "clipboard_read", args).await.ok()?;
+        let data = v.get("data").and_then(Value::as_str).unwrap_or_default();
+        text.push_str(data);
+        if data.is_empty() || v.get("eof").and_then(Value::as_bool).unwrap_or(true) || text.len() > 64 << 20 {
+            return Some(text);
         }
     }
 }
