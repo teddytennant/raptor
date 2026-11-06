@@ -33,6 +33,8 @@ pub struct Fake {
     pub log: Arc<Mutex<Vec<(String, Value)>>>,
     pub control_connects: Arc<AtomicUsize>,
     pub data_connects: Arc<AtomicUsize>,
+    /// Senders for every live control connection, for pushing events.
+    conns: Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>>,
     _rt: tokio::runtime::Runtime,
 }
 
@@ -45,10 +47,11 @@ impl Fake {
         let control_connects = Arc::new(AtomicUsize::new(0));
         let data_connects = Arc::new(AtomicUsize::new(0));
         let opts = Arc::new(opts);
-        let (l, c, d) = (log.clone(), control_connects.clone(), data_connects.clone());
+        let conns = Arc::new(Mutex::new(Vec::new()));
+        let (l, c, d, cs) = (log.clone(), control_connects.clone(), data_connects.clone(), conns.clone());
         rt.spawn(async move {
             while let Ok((tcp, _)) = listener.accept().await {
-                let (l, c, d, opts) = (l.clone(), c.clone(), d.clone(), opts.clone());
+                let (l, c, d, cs, opts) = (l.clone(), c.clone(), d.clone(), cs.clone(), opts.clone());
                 tokio::spawn(async move {
                     let path = Arc::new(Mutex::new(String::new()));
                     let p = path.clone();
@@ -64,7 +67,7 @@ impl Fake {
                     let path = path.lock().clone();
                     if path == "/api/control" {
                         c.fetch_add(1, Ordering::SeqCst);
-                        control(ws, l, opts).await;
+                        control(ws, l, cs, opts).await;
                     } else {
                         d.fetch_add(1, Ordering::SeqCst);
                         data(ws, opts.data_reject).await;
@@ -72,7 +75,26 @@ impl Fake {
                 });
             }
         });
-        Self { addr, log, control_connects, data_connects, _rt: rt }
+        Self { addr, log, control_connects, data_connects, conns, _rt: rt }
+    }
+
+    /// Send an event to every connection.
+    pub fn emit(&self, event: Value) {
+        let msg = json!({"type": "event", "seq": 1, "payload": event}).to_string();
+        self.conns.lock().retain(|tx| tx.send(msg.clone()).is_ok());
+    }
+
+    /// Send a session event from the fake session.
+    pub fn emit_session(&self, kind: &str, payload: Value) {
+        self.emit(json!({"type": "session_event", "payload": {"session_id": SESSION, "event": {"type": kind, "payload": payload}}}));
+    }
+
+    /// Send an event from the fake terminal block.
+    pub fn emit_block(&self, name: &str, payload: Value) {
+        self.emit_session(
+            "block_event",
+            json!({"block_id": BLOCK, "creator_name": "com.superlogical.terminal", "name": name, "payload": payload}),
+        );
     }
 
     pub fn methods(&self) -> Vec<String> {
@@ -87,9 +109,17 @@ fn view() -> Value {
              "blocks": [{"block_id": BLOCK, "label": "shell", "creator_name": "com.superlogical.terminal"}]}]}]})
 }
 
-async fn control(ws: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>, log: Arc<Mutex<Vec<(String, Value)>>>, opts: Arc<Options>) {
+async fn control(
+    ws: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    log: Arc<Mutex<Vec<(String, Value)>>>,
+    conns: Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>>,
+    opts: Arc<Options>,
+) {
     let (mut sink, mut stream) = ws.split();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    conns.lock().push(tx.clone());
+    // Like Rex, session methods fail until the connection attaches to the session.
+    let attached = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let writer = tokio::spawn(async move {
         while let Some(m) = rx.recv().await {
             if sink.send(Message::text(m)).await.is_err() {
@@ -115,21 +145,38 @@ async fn control(ws: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>, 
         let id = v["id"].as_str().unwrap_or_default().to_owned();
         let method = v["method"].as_str().unwrap_or_default().to_owned();
         log.lock().push((method.clone(), v.get("payload").cloned().unwrap_or(Value::Null)));
+        let p = v.get("payload").cloned().unwrap_or(Value::Null);
+        let attaches_here = p["attach_session_ids"].as_array().is_some_and(|a| a.iter().any(|s| s == SESSION));
         let payload = match method.as_str() {
             "session.bootstrap" => json!({"client_id": "client:me", "server_status": {},
-                "attach_all": {"sessions": [{"session_id": SESSION, "label": "one"}]}, "selected_session": null, "attached_sessions": []}),
+                "attach_all": {"sessions": [{"session_id": SESSION, "label": "one"}]}, "selected_session": null,
+                "attached_sessions": if attaches_here { json!([{"session": {"session_id": SESSION, "label": "one"}, "view": view()}]) } else { json!([]) }}),
             "session.attach" => json!({"client_id": "client:me", "view": view()}),
             "session.view" => view(),
             "data.connect" => json!({"ticket": "AAAAAAAAAAAAAAAAAAAAAA"}),
+            "client.inspect" => json!({"client": {"client_id": p["client_id"], "info": {"name": "Inspected"}, "principal": {"display": "someone"}}}),
+            "com.superlogical.terminal.clipboard_read" => json!({"id": 5, "data": "copied in full", "total": 14, "eof": true}),
             _ => json!({}),
         };
+        let needs_attach = method == "data.connect" || method.starts_with("com.superlogical.terminal.") || method == "client.key";
         let delay = opts.delays.iter().find(|(m, _)| *m == method).map(|(_, d)| *d);
-        let tx = tx.clone();
+        let (tx, attached) = (tx.clone(), attached.clone());
+        if attaches_here {
+            attached.store(true, Ordering::SeqCst);
+        }
         let reply = async move {
             if let Some(d) = delay {
                 tokio::time::sleep(d).await;
             }
-            let _ = tx.send(json!({"type": "response", "id": id, "seq": 0, "payload": payload}).to_string());
+            let msg = if needs_attach && !attached.load(Ordering::SeqCst) {
+                json!({"type": "response", "id": id, "seq": 0, "error": {"code": "conflict", "message": "not attached", "status": 409}})
+            } else {
+                if method == "session.attach" {
+                    attached.store(true, Ordering::SeqCst);
+                }
+                json!({"type": "response", "id": id, "seq": 0, "payload": payload})
+            };
+            let _ = tx.send(msg.to_string());
         };
         if delay.is_some() {
             tokio::spawn(reply);
