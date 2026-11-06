@@ -124,7 +124,7 @@ impl std::fmt::Display for CoreError {
         match self {
             Self::UnknownServer => f.write_str("Unknown server"),
             Self::NotConnected => f.write_str("Not connected to that server"),
-            Self::InvalidAddress(s) => write!(f, "Invalid address: {s}"),
+            Self::InvalidAddress(s) => f.write_str(s),
             Self::Server(s) => f.write_str(s),
         }
     }

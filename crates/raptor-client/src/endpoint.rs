@@ -26,7 +26,7 @@ impl Endpoint {
     pub fn parse(input: &str) -> Result<Self, ClientError> {
         let s = input.trim();
         if s.is_empty() {
-            return Err(ClientError::BadEndpoint("empty".into()));
+            return Err(ClientError::BadEndpoint("Enter a server address".into()));
         }
         if let Some(path) = s.strip_prefix("unix://") {
             let decoded = percent_decode(path);
@@ -44,10 +44,10 @@ impl Endpoint {
         } else {
             format!("http://{s}:7878")
         };
-        let url = Url::parse(&with_scheme).map_err(|e| ClientError::BadEndpoint(format!("{s}: {e}")))?;
+        let url = Url::parse(&with_scheme).map_err(|_| ClientError::BadEndpoint(format!("\"{s}\" isn't a valid address")))?;
         match url.scheme() {
             "http" | "https" | "ws" | "wss" if url.host_str().is_some() => Ok(Self::Url(url)),
-            other => Err(ClientError::BadEndpoint(format!("unsupported scheme {other}"))),
+            _ => Err(ClientError::BadEndpoint("Use a host name, host:port, a .ts.net name, or a socket path".into())),
         }
     }
 
@@ -88,12 +88,12 @@ impl Endpoint {
                 #[cfg(not(unix))]
                 {
                     let _ = p;
-                    return Err(ClientError::BadEndpoint("unix sockets are unsupported here".into()));
+                    return Err(ClientError::BadEndpoint("Socket paths only work for a server on this device".into()));
                 }
             }
             Self::Url(u) => {
                 let tls = matches!(u.scheme(), "https" | "wss");
-                let host = u.host_str().ok_or_else(|| ClientError::BadEndpoint("no host".into()))?;
+                let host = u.host_str().ok_or_else(|| ClientError::BadEndpoint("That address has no host name".into()))?;
                 let port = u.port().unwrap_or(if tls { 443 } else { 80 });
                 let tcp = tokio::net::TcpStream::connect((host, port)).await?;
                 tcp.set_nodelay(true)?;

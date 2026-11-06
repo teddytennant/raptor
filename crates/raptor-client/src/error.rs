@@ -3,7 +3,7 @@ use raptor_proto::data::HandshakeError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
-    #[error("invalid server address: {0}")]
+    #[error("{0}")]
     BadEndpoint(String),
     #[error("could not reach the server: {0}")]
     Io(#[from] std::io::Error),

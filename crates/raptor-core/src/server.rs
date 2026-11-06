@@ -845,10 +845,11 @@ pub(crate) fn friendly(e: &raptor_client::ClientError) -> String {
         E::Io(io) => match io.kind() {
             std::io::ErrorKind::ConnectionRefused => "Server isn't running there".into(),
             std::io::ErrorKind::NotFound => "No server at that address".into(),
-            std::io::ErrorKind::TimedOut => "Timed out — is the server reachable?".into(),
+            std::io::ErrorKind::TimedOut => "Timed out. Is the server reachable?".into(),
+            _ if is_dns_failure(io) => "Can't find that host. Check the name, and that Tailscale is connected.".into(),
             _ => format!("Can't reach the server ({io})"),
         },
-        E::Timeout => "Timed out — check the address and your network (Tailscale?)".into(),
+        E::Timeout => "Timed out. Check the address and your network (Tailscale?)".into(),
         E::WebSocket(w) => {
             let s = w.to_string();
             if s.contains("403") {
@@ -860,6 +861,11 @@ pub(crate) fn friendly(e: &raptor_client::ClientError) -> String {
         E::Protocol(p) if p.contains("no common API revision") => "Server version isn't supported".into(),
         other => other.to_string(),
     }
+}
+
+fn is_dns_failure(e: &std::io::Error) -> bool {
+    let s = e.to_string();
+    ["lookup address", "Name or service not known", "nodename nor servname", "No address associated", "No such host"].iter().any(|m| s.contains(m))
 }
 
 /// `0.0.1793420730-g6d0d9a` → `g6d0d9a` style builds read better as their commit.
@@ -908,6 +914,20 @@ fn splits(w: &raptor_proto::Window) -> Vec<SplitState> {
         walk(n, &mut out);
     }
     out
+}
+
+#[cfg(test)]
+mod error_tests {
+    use raptor_client::{ClientError, Endpoint};
+
+    #[test]
+    fn errors_read_like_sentences() {
+        let dns = ClientError::Io(std::io::Error::other("failed to lookup address information: Name or service not known"));
+        assert_eq!(super::friendly(&dns), "Can't find that host. Check the name, and that Tailscale is connected.");
+        let bad = Endpoint::parse("my box").unwrap_err().to_string();
+        assert_eq!(bad, "\"my box\" isn't a valid address");
+        assert_eq!(Endpoint::parse("ftp://x").unwrap_err().to_string(), "Use a host name, host:port, a .ts.net name, or a socket path");
+    }
 }
 
 #[cfg(test)]
