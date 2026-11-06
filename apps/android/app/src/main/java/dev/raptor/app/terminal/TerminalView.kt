@@ -827,9 +827,8 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
         actionMode = startActionMode(object : ActionMode.Callback2() {
             override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
                 menu.add(0, 1, 0, android.R.string.copy)
-                menu.add(0, 3, 1, "Copy All")
-                menu.add(0, 2, 2, android.R.string.paste)
-                menu.add(0, 3, 2, android.R.string.selectAll)
+                menu.add(0, 2, 1, android.R.string.paste)
+                menu.add(0, 3, 2, "Copy All")
                 return true
             }
 
