@@ -514,3 +514,29 @@ fn take_then_release_quickly() {
     term.take_control();
     assert!(wait(10, || l.block(&l.bid).is_some_and(|b| b.owned_by_me)), "{:?}", l.block(&l.bid));
 }
+
+#[test]
+fn floating_layers_minimize() {
+    let Some(l) = Live::new() else { return };
+    let side = l.side();
+    let sid = l.sid.clone();
+    let float = l.raptor.block_on(async move {
+        let v = side
+            .call(
+                "session.new_layer",
+                json!({"session_id": sid, "bounds": [0.1, 0.1, 0.5, 0.5],
+                    "layout": {"block": {"flavor": "com.superlogical.terminal.shell"}}}),
+            )
+            .await
+            .unwrap();
+        v["block_ids"][0].as_str().unwrap().to_owned()
+    });
+    assert!(wait(10, || l.block(&float).is_some_and(|b| b.floating && !b.minimized)), "{:?}", l.block(&float));
+    let b = l.block(&float).unwrap();
+    assert_eq!(b.rect, [0.1, 0.1, 0.5, 0.5]);
+    l.raptor.block_on(l.raptor.set_layer_minimized(&l.id, &l.sid, &b.layer_id, true)).unwrap();
+    assert!(wait(10, || l.block(&float).is_some_and(|b| b.minimized)), "{:?}", l.block(&float));
+    assert!(!l.block(&l.bid).unwrap().minimized, "the tiled layer stays");
+    l.raptor.block_on(l.raptor.set_layer_minimized(&l.id, &l.sid, &b.layer_id, false)).unwrap();
+    assert!(wait(10, || l.block(&float).is_some_and(|b| !b.minimized)));
+}
