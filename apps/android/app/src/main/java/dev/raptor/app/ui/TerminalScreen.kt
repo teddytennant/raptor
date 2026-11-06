@@ -523,6 +523,7 @@ private fun LiveTerminal(
             Prefs.string(Prefs.CURSOR),
             Prefs.flag(Prefs.BLINK),
         )
+        view.smartKeyboard = Prefs.flag(Prefs.SMART_KEYBOARD, default = false)
         app.core.setting("font_size")?.toFloatOrNull()?.let { if (it != view.fontSize) view.fontSize = it }
     }
 

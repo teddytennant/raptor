@@ -77,6 +77,7 @@ object Prefs {
     const val LINE_HEIGHT = "line_height"
     const val CURSOR = "cursor_style"
     const val BLINK = "cursor_blink"
+    const val SMART_KEYBOARD = "smart_keyboard"
 
     fun string(key: String): String? = RaptorApplication.instance.core.setting(key)?.takeIf { it.isNotEmpty() }
     fun setString(key: String, v: String) {
@@ -268,8 +269,11 @@ fun SettingsScreen(onClose: () -> Unit, onAddServer: () -> Unit, onEditServer: (
                 Toggle("Blinking cursor", Prefs.BLINK) { RaptorApplication.instance.appearance.value++ }
                 Divider()
                 Toggle("Fit to this screen when opening", Prefs.FIT_ON_OPEN)
-                Divider()
+            }
+            Section("Keyboard", footer = "Off, the keyboard sends exactly the keys you press. On, it can compose: voice typing, swipe, and Chinese, Japanese and Korean input, along with habits like a period after two spaces.") {
                 Toggle("Key bar above the keyboard", Prefs.KEY_BAR)
+                Divider()
+                Toggle("Voice, swipe and CJK input", Prefs.SMART_KEYBOARD, default = false) { RaptorApplication.instance.appearance.value++ }
             }
             Section("Notifications") {
                 Toggle("An agent needs you", Prefs.NOTIFY_BLOCKED)

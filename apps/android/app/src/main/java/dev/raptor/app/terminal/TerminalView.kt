@@ -12,6 +12,7 @@ import android.text.InputType
 import android.view.ActionMode
 import android.view.GestureDetector
 import android.view.HapticFeedbackConstants
+import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.Menu
 import android.view.MenuItem
@@ -221,6 +222,17 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
     }
 
     /** Font, line spacing and cursor from Settings; applies to the open terminal. */
+    /**
+     * Raw keys (the default) or a keyboard that can compose: voice typing, swipe,
+     * CJK. Composing keyboards also bring their own habits, like a period on double space.
+     */
+    var smartKeyboard = false
+        set(v) {
+            if (field == v) return
+            field = v
+            context.getSystemService(InputMethodManager::class.java).restartInput(this)
+        }
+
     fun applyAppearance(fontId: String?, lineHeight: Float, cursor: String?, blink: Boolean) {
         typefaces = TermFonts.byId(fontId).typefaces(context)
         this.lineHeight = lineHeight.coerceIn(1.0f, 1.6f)
@@ -433,6 +445,10 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
 
         f.cursor?.let { c ->
             if (f.scrollOffset + f.scrollLen < f.scrollTotal) return@let // scrolled into history
+            if (composing.isNotEmpty()) {
+                drawComposing(canvas, c.col.toInt() * cellW, c.row.toInt() * cellH, bg, f.cursorColor?.toInt() ?: fgDefault)
+                return@let
+            }
             if (blinkAllowed && c.blinking && !blinkOn && hasFocus()) return@let
             val shape = cursorOverride ?: c.shape
             val cx = c.col.toInt() * cellW
@@ -611,6 +627,20 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
             else -> return false
         }
         return true
+    }
+
+    private fun drawComposing(canvas: Canvas, x: Float, top: Float, bg: Int, fg: Int) {
+        text.typeface = typefaces[0]
+        text.color = fg
+        val w = text.measureText(composing)
+        fill.color = bg
+        canvas.drawRect(x, top, x + w, top + cellH, fill)
+        canvas.drawText(composing, x, top + baseline, text)
+        line.color = fg
+        line.strokeWidth = max(1f, density)
+        canvas.drawLine(x, top + cellH - density, x + w, top + cellH - density, line)
+        fill.color = fg
+        canvas.drawRect(x + w, top, x + w + 2 * density, top + cellH, fill)
     }
 
     private fun drawCurly(canvas: Canvas, x0: Float, x1: Float, y: Float) {
@@ -878,25 +908,59 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
     override fun onCheckIsTextEditor() = true
 
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
-        // Visible-password text gives raw characters from most IMEs (no autocorrect,
-        // no composing), which is what a shell wants.
-        outAttrs.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        // Visible-password text gets raw characters from most keyboards: no autocorrect,
+        // no composing, a number row. The smart mode lets them compose.
+        outAttrs.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or
+            if (smartKeyboard) 0 else InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN or EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_ACTION_NONE
+        outAttrs.initialSelStart = 0
+        outAttrs.initialSelEnd = 0
+        composing = ""
         return object : BaseInputConnection(this, false) {
             override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
+                composing = ""
                 typeText(text.toString())
                 return true
             }
 
             override fun setComposingText(text: CharSequence, newCursorPosition: Int): Boolean {
-                // Some keyboards compose anyway; commit as they go so nothing is lost.
+                composing = text.toString()
                 return true
             }
 
-            override fun finishComposingText(): Boolean = true
+            override fun setComposingRegion(start: Int, end: Int): Boolean = true
+
+            // Keyboards rewrite what they just typed (Gboard's period on double space).
+            override fun replaceText(start: Int, end: Int, text: CharSequence, newCursorPosition: Int, textAttribute: android.view.inputmethod.TextAttribute?): Boolean {
+                composing = ""
+                repeat(end - start) { key(Key.Backspace) }
+                typeText(text.toString())
+                return true
+            }
+
+            override fun finishComposingText(): Boolean {
+                val c = composing
+                composing = ""
+                if (c.isNotEmpty()) typeText(c)
+                return true
+            }
+
+            // We never report text around the cursor, so keyboards send backspace as a key
+            // on an empty line; when they do delete text they think is there, pass it on.
+            override fun getTextBeforeCursor(n: Int, flags: Int): CharSequence = ""
+
+            override fun getTextAfterCursor(n: Int, flags: Int): CharSequence = ""
 
             override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
-                repeat(max(1, beforeLength)) { key(Key.Backspace) }
+                repeat(beforeLength) { key(Key.Backspace) }
+                repeat(afterLength) { key(Key.Delete) }
+                return true
+            }
+
+            override fun deleteSurroundingTextInCodePoints(beforeLength: Int, afterLength: Int) = deleteSurroundingText(beforeLength, afterLength)
+
+            override fun performEditorAction(actionCode: Int): Boolean {
+                key(Key.Enter)
                 return true
             }
 
@@ -909,6 +973,7 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
 
     private fun typeText(s: String) {
         val t = terminal ?: return
+        restartBlink()
         for (part in s.split('\n').withIndex()) {
             if (part.index > 0) key(Key.Enter)
             val str = part.value
@@ -925,17 +990,28 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
 
     fun key(k: Key, ctrl: Boolean = false, alt: Boolean = false, shift: Boolean = false) {
         val t = terminal ?: return
+        restartBlink()
         val (sc, sa) = if (!ctrl && !alt) modifiers.consume() else (false to false)
         t.sendKey(k, ctrl || sc, alt || sa, shift, false)
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean = handleKey(keyCode, event) || super.onKeyDown(keyCode, event)
 
+    /** A dead key (accent) waiting for the letter it goes on. */
+    private var deadAccent = 0
+
     private fun handleKey(keyCode: Int, e: KeyEvent): Boolean {
+        val t = terminal ?: return false
         val ctrl = e.isCtrlPressed
         val alt = e.isAltPressed
         val shift = e.isShiftPressed
         val meta = e.isMetaPressed
+        restartBlink()
+        // Hardware-keyboard shortcuts that belong to the app, not the shell.
+        if (ctrl && shift && keyCode == KeyEvent.KEYCODE_V) { pasteClipboard(); return true }
+        if (ctrl && shift && keyCode == KeyEvent.KEYCODE_C) { t.selectionText()?.let(::copy); return true }
+        if (ctrl && shift && keyCode == KeyEvent.KEYCODE_P) { onPalette?.invoke(); return true }
+        if (ctrl && keyCode == KeyEvent.KEYCODE_TAB) { onSwipePane?.invoke(if (shift) -1 else 1); return true }
         val k: Key? = when (keyCode) {
             KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> Key.Enter
             KeyEvent.KEYCODE_TAB -> Key.Tab
@@ -956,23 +1032,32 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
         }
         if (k != null) {
             val (sc, sa) = modifiers.consume()
-            terminal?.sendKey(k, ctrl || sc, alt || sa, shift, meta)
+            t.sendKey(k, ctrl || sc, alt || sa, shift, meta)
             return true
         }
-        // Hardware-keyboard shortcuts that belong to the app, not the shell.
-        if (ctrl && shift && keyCode == KeyEvent.KEYCODE_V) { pasteClipboard(); return true }
-        if (ctrl && shift && keyCode == KeyEvent.KEYCODE_P) { onPalette?.invoke(); return true }
-        if (ctrl && keyCode == KeyEvent.KEYCODE_TAB) { onSwipePane?.invoke(if (shift) -1 else 1); return true }
-        if (ctrl && shift && keyCode == KeyEvent.KEYCODE_C) { terminal?.selectionText()?.let(::copy); return true }
-        val uc = e.getUnicodeChar(e.metaState and (KeyEvent.META_CTRL_MASK or KeyEvent.META_ALT_MASK).inv())
-        if (uc != 0) {
-            val ch = String(Character.toChars(uc))
-            val (sc, sa) = modifiers.consume()
-            if (ctrl || alt || sc || sa) terminal?.sendKey(Key.Char(ch), ctrl || sc, alt || sa, false, meta)
-            else terminal?.sendText(ch)
+        val noMods = e.metaState and (KeyEvent.META_CTRL_MASK or KeyEvent.META_ALT_MASK or KeyEvent.META_META_MASK).inv()
+        var uc = e.getUnicodeChar(noMods)
+        // AltGr (right Alt) types characters on many layouts; send those as text.
+        if (e.metaState and KeyEvent.META_ALT_RIGHT_ON != 0 && !ctrl) {
+            val altGr = e.getUnicodeChar(e.metaState and (KeyEvent.META_CTRL_MASK or KeyEvent.META_META_MASK).inv())
+            if (altGr != 0 && altGr != uc) {
+                t.sendText(String(Character.toChars(altGr)))
+                return true
+            }
+        }
+        if (uc and KeyCharacterMap.COMBINING_ACCENT != 0) {
+            deadAccent = uc and KeyCharacterMap.COMBINING_ACCENT_MASK
             return true
         }
-        return false
+        if (uc == 0) return false
+        if (deadAccent != 0) {
+            KeyEvent.getDeadChar(deadAccent, uc).takeIf { it != 0 }?.let { uc = it }
+            deadAccent = 0
+        }
+        val ch = String(Character.toChars(uc))
+        val (sc, sa) = modifiers.consume()
+        if (ctrl || alt || meta || sc || sa) t.sendKey(Key.Char(ch), ctrl || sc, alt || sa, false, meta) else t.sendText(ch)
+        return true
     }
 
     fun showKeyboard() {
