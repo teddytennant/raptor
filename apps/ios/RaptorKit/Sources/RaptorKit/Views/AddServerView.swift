@@ -10,6 +10,8 @@ public struct AddServerView: View {
     @State private var probe: Probe = .idle
     @State private var error: String?
     @FocusState private var field: Field?
+    @Environment(\.scenePhase) private var phase
+    @State private var retest = 0
 
     enum Field { case address, name }
     enum Probe: Equatable {
@@ -26,6 +28,7 @@ public struct AddServerView: View {
     }
 
     public var body: some View {
+        let c = Chrome(model.theme)
         NavigationStack {
             Form {
                 Section {
@@ -55,6 +58,8 @@ public struct AddServerView: View {
                     Section { Text(error).foregroundStyle(Palette.error) }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(c.bg)
             .navigationTitle(editing == nil ? "Add Server" : "Edit Server")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -65,9 +70,13 @@ public struct AddServerView: View {
                     Button("Save", action: save).bold().disabled(address.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
-            .task(id: address) { await test() }
+            .task(id: "\(address)#\(retest)") { await test() }
             .onAppear { field = .address }
+            // Coming back from the Local Network prompt or Settings: try again.
+            .onChange(of: phase) { _, p in if p == .active, case .failed = probe { retest += 1 } }
         }
+        .tint(c.accent)
+        .preferredColorScheme(c.scheme)
         .presentationDetents([.medium, .large])
     }
 
@@ -81,6 +90,7 @@ public struct AddServerView: View {
             Label("Connected · Rex \(v)", systemImage: "checkmark.circle.fill").foregroundStyle(Palette.accent)
         case .failed(let m):
             Label(m, systemImage: "exclamationmark.triangle.fill").foregroundStyle(Palette.error)
+            if localNetworkBlocked(address: address, error: m) { LocalNetworkHelp() }
         }
     }
 
@@ -124,4 +134,42 @@ func describe(_ error: Error) -> String {
         }
     }
     return error.localizedDescription
+}
+
+/// iOS blocks connections to the local network until the user allows it, and a
+/// refusal looks like an unreachable host. Say what to do instead.
+func localNetworkBlocked(address: String, error: String) -> Bool {
+    #if os(iOS)
+    let unreachable = ["No route to host", "os error 65", "Network is unreachable", "os error 51"].contains { error.contains($0) }
+    return unreachable && isLocalAddress(address)
+    #else
+    return false
+    #endif
+}
+
+func isLocalAddress(_ address: String) -> Bool {
+    var host = address.lowercased()
+    if let r = host.range(of: "://") { host = String(host[r.upperBound...]) }
+    if let at = host.lastIndex(of: "@") { host = String(host[host.index(after: at)...]) }
+    host = String(host.prefix { $0 != ":" && $0 != "/" })
+    if host.hasSuffix(".local") || !host.contains(".") { return true }
+    let o = host.split(separator: ".").compactMap { Int($0) }
+    guard o.count == 4 else { return false }
+    return o[0] == 10 || (o[0] == 192 && o[1] == 168) || (o[0] == 172 && (16...31).contains(o[1])) || (o[0] == 169 && o[1] == 254)
+}
+
+struct LocalNetworkHelp: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Raptor needs Local Network access to reach this address. Allow it in Settings.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            #if os(iOS)
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+            }
+            .font(.footnote.weight(.semibold))
+            #endif
+        }
+    }
 }
