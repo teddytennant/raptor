@@ -135,6 +135,9 @@ async fn control(
     });
     let mut welcomed = false;
     while let Some(Ok(msg)) = stream.next().await {
+        if let Message::Close(_) = msg {
+            log.lock().push(("close frame".into(), Value::Null));
+        }
         let Message::Text(t) = msg else { continue };
         let v: Value = serde_json::from_str(&t).unwrap();
         if !welcomed {

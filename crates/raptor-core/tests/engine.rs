@@ -318,3 +318,24 @@ fn failed_reconnect_keeps_the_token() {
     let hello = fake.log.lock().iter().find(|(m, _)| m == "hello").unwrap().1.clone();
     assert_eq!(hello["reconnect_token"], "tok", "the client must resume, not start over: {hello}");
 }
+
+#[test]
+fn quitting_says_goodbye() {
+    // A close frame ends the client on the server at once; without one it lingers for a minute.
+    let fake = Fake::start(Options::default());
+    let (raptor, _) = online(&fake);
+    drop(raptor);
+    assert!(wait(1.0, || fake.methods().contains(&"close frame".to_owned())), "{:?}", fake.methods());
+}
+
+#[test]
+fn dropped_connection_closes() {
+    let fake = Fake::start(Options::default());
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let ep = Endpoint::parse(&fake.addr).unwrap();
+    rt.block_on(async {
+        let (conn, _events) = raptor_client::Connection::connect(&ep, raptor_client::ConnectOptions::default()).await.unwrap();
+        conn.call("server.version", serde_json::json!({})).await.unwrap();
+    });
+    assert!(wait(1.0, || fake.methods().contains(&"close frame".to_owned())), "{:?}", fake.methods());
+}

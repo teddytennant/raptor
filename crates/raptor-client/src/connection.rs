@@ -129,7 +129,9 @@ impl Connection {
         });
 
         let (mut sink, mut stream) = ws.split();
-        let reader_inner = inner.clone();
+        // Weak, so that dropping the last handle closes the socket (the reader
+        // sees the outgoing channel end and says goodbye).
+        let reader_inner = Arc::downgrade(&inner);
         tokio::spawn(async move {
             let mut last_heard = Instant::now();
             let mut ticker = tokio::time::interval(PING_EVERY);
@@ -138,11 +140,13 @@ impl Connection {
                 tokio::select! {
                     msg = stream.next() => {
                         last_heard = Instant::now();
-                        reader_inner.heard_ms.store(reader_inner.born.elapsed().as_millis() as u64, Ordering::Relaxed);
+                        if let Some(i) = reader_inner.upgrade() {
+                            i.heard_ms.store(i.born.elapsed().as_millis() as u64, Ordering::Relaxed);
+                        }
                         match msg {
                             Some(Ok(Message::Text(t))) => match ServerMessage::parse(&t) {
                                 Ok(ServerMessage::Response(r)) => {
-                                    let tx = reader_inner.pending.lock().unwrap().remove(&r.id);
+                                    let tx = reader_inner.upgrade().and_then(|i| i.pending.lock().unwrap().remove(&r.id));
                                     if let Some(tx) = tx { let _ = tx.send(r); }
                                 }
                                 Ok(ServerMessage::Event(e)) => {
@@ -168,8 +172,10 @@ impl Connection {
                     }
                 }
             };
-            reader_inner.closed.store(true, Ordering::SeqCst);
-            reader_inner.pending.lock().unwrap().clear(); // drops senders => callers see Closed
+            if let Some(i) = reader_inner.upgrade() {
+                i.closed.store(true, Ordering::SeqCst);
+                i.pending.lock().unwrap().clear(); // drops senders => callers see Closed
+            }
             let _ = ev_tx.send(ConnEvent::Closed { reason });
         });
 
