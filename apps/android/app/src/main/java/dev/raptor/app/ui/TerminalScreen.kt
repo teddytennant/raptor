@@ -168,6 +168,7 @@ fun TerminalScreen(serverId: String, sessionId: String, initialBlockId: String?,
 
     DisposableEffect(serverId, sid, blockId) {
         app.focus = Focus(serverId, sid, blockId)
+        blockId?.let { app.clearNotification(serverId, it) }
         onDispose { app.focus = null }
     }
 

@@ -67,6 +67,11 @@ class RaptorApplication : Application() {
         if (runCatching { AgentWatchService.start(this) }.isSuccess) watching = true
     }
 
+    private fun notificationId(serverId: String, blockId: String) = (serverId + blockId).hashCode()
+
+    /** You're looking at this pane now; its notification has done its job. */
+    fun clearNotification(serverId: String, blockId: String) = NotificationManagerCompat.from(this).cancel(notificationId(serverId, blockId))
+
     /** Back on screen: the app holds the connection itself again. */
     fun stopWatching() {
         if (!watching) return
@@ -150,7 +155,7 @@ class RaptorApplication : Application() {
             putExtra(EXTRA_SESSION, n.sessionId)
             putExtra(EXTRA_BLOCK, n.blockId)
         }
-        val id = (n.serverId + n.blockId).hashCode()
+        val id = notificationId(n.serverId, n.blockId)
         val pi = PendingIntent.getActivity(this, id, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val title = when (n.kind) {
             NotificationKind.AGENT_BLOCKED -> "${n.title} needs you"
