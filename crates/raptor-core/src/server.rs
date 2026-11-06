@@ -50,6 +50,9 @@ pub(crate) struct SessionModel {
     pub summary: SessionSummary,
     pub view: Option<SessionView>,
     pub clients: HashMap<String, String>,
+    /// A `session.view` read is in flight; `refresh_again` asks for one more after it.
+    pub refreshing: bool,
+    pub refresh_again: bool,
 }
 
 #[derive(Default)]
@@ -327,27 +330,46 @@ impl ServerEntry {
         fg: &mut watch::Receiver<bool>,
         token: &mut Option<String>,
     ) -> Served {
-        let boot = match conn.bootstrap(Some(&[]), None).await {
+        // Attach the sessions we already know in the same round trip (a reconnect),
+        // then any others, before telling anyone we're online: until a session is
+        // attached the server refuses input and data tickets for it.
+        let known = self.model.lock().order.clone();
+        let boot = match conn.bootstrap(Some(&known), None).await {
             Ok(b) => b,
             Err(e) => return Served::Lost(friendly(&e)),
         };
-        // Time a tiny call for a true round-trip figure (connect time includes TLS etc.).
-        let t = Instant::now();
-        let version = conn.call("server.version", json!({})).await.ok();
-        let rtt = (t.elapsed().as_millis() as u32).min(rtt.max(1));
-        let account =
-            conn.call("server.whoami", json!({})).await.ok().and_then(|v| v.get("account").and_then(Value::as_str).map(str::to_owned));
+        let mut views: Vec<(String, SessionView)> =
+            boot.attached().into_iter().map(|a| (a.session.session_id.clone(), a.view.clone())).collect();
+        let others: Vec<String> =
+            boot.sessions().iter().map(|s| s.session_id.clone()).filter(|id| !views.iter().any(|(v, _)| v == id)).collect();
+        let timed_version = async {
+            // Time a tiny call for a true round-trip figure (connect time includes TLS etc.).
+            let t = Instant::now();
+            let v = conn.call("server.version", json!({})).await.ok();
+            (v, t.elapsed().as_millis() as u32)
+        };
+        let ((version, call_rtt), account, attached) = tokio::join!(
+            timed_version,
+            conn.call("server.whoami", json!({})),
+            futures_util::future::join_all(others.iter().map(|id| conn.attach(id))),
+        );
+        for (id, r) in others.into_iter().zip(attached) {
+            match r {
+                Ok((_, view)) => views.push((id, view)),
+                Err(e) => tracing::warn!("attach {id}: {e}"),
+            }
+        }
         {
             let mut m = self.model.lock();
             m.client_id = Some(boot.client_id.clone()).filter(|s| !s.is_empty()).or_else(|| conn.client_id().map(str::to_owned));
-            m.latency_ms = Some(rtt);
+            m.latency_ms = Some(call_rtt.min(rtt.max(1)));
             m.version = version.as_ref().and_then(|v| v.get("rex_version")).and_then(Value::as_str).map(short_version);
             m.host_name = boot
                 .server_status
                 .pointer("/tailscale/dns_name")
                 .and_then(Value::as_str)
                 .map(|s| s.split('.').next().unwrap_or(s).to_owned());
-            m.account = account;
+            m.account = account.ok().and_then(|v| v.get("account").and_then(Value::as_str).map(str::to_owned));
             m.order = boot.sessions().iter().map(|s| s.session_id.clone()).collect();
             let keep: std::collections::HashSet<_> = m.order.iter().cloned().collect();
             m.sessions.retain(|k, _| keep.contains(k));
@@ -355,12 +377,16 @@ impl ServerEntry {
                 m.sessions.entry(s.session_id.clone()).or_default().summary = s.clone();
             }
         }
+        for (id, view) in &views {
+            self.apply_view(id, view.clone());
+        }
         *self.conn.lock() = Some(conn.clone());
         self.conn_tx.send_modify(|v| *v += 1);
-        for s in boot.sessions() {
-            self.clone().attach(conn.clone(), s.session_id.clone(), sink.clone());
-        }
         self.set_connectivity(Connectivity::Online, &**sink);
+        sink.changed();
+        for (id, view) in views {
+            self.clone().load_details(conn.clone(), id, &view, sink.clone());
+        }
 
         loop {
             tokio::select! {
@@ -401,61 +427,94 @@ impl ServerEntry {
         tokio::spawn(async move {
             match conn.attach(&session_id).await {
                 Ok((_, view)) => {
-                    let blocks: Vec<String> = view.all_blocks().filter_map(|(_, b)| b.block_id.clone()).collect();
-                    {
-                        let mut m = self.model.lock();
-                        let s = m.sessions.entry(session_id.clone()).or_default();
-                        s.summary.session_id = session_id.clone();
-                        if s.summary.label.is_empty() {
-                            s.summary.label = view.label.clone();
-                        }
-                        s.view = Some(view);
-                    }
+                    self.apply_view(&session_id, view.clone());
                     sink.changed();
-                    self.fetch_meta(&conn, &session_id, blocks, &sink).await;
-                    if let Ok(v) = conn.call("session.list_clients", json!({"session_id": session_id})).await {
-                        let mut m = self.model.lock();
-                        if let Some(s) = m.sessions.get_mut(&session_id) {
-                            s.clients = v
-                                .get("clients")
-                                .and_then(Value::as_array)
-                                .into_iter()
-                                .flatten()
-                                .filter_map(|c| {
-                                    let id = c.get("client_id")?.as_str()?.to_owned();
-                                    Some((id, describe_client(c)))
-                                })
-                                .collect();
-                        }
-                        drop(m);
-                        sink.changed();
-                    }
+                    self.load_details(conn, session_id, &view, sink);
                 }
                 Err(e) => tracing::warn!("attach {session_id}: {e}"),
             }
         });
     }
 
-    fn refresh_view(self: Arc<Self>, conn: Connection, session_id: String, sink: Arc<dyn Sink>) {
+    /// Take a session's view unless we already hold a newer one.
+    fn apply_view(&self, session_id: &str, view: SessionView) {
+        let mut m = self.model.lock();
+        let s = m.sessions.entry(session_id.to_owned()).or_default();
+        s.summary.session_id = session_id.to_owned();
+        if s.summary.label.is_empty() {
+            s.summary.label = view.label.clone();
+        }
+        if s.view.as_ref().is_none_or(|old| old.revision <= view.revision) {
+            s.view = Some(view);
+        }
+    }
+
+    /// Block titles, statuses and the client list: nice to have, so after going online.
+    fn load_details(self: Arc<Self>, conn: Connection, session_id: String, view: &SessionView, sink: Arc<dyn Sink>) {
+        let blocks: Vec<String> = view.all_blocks().filter_map(|(_, b)| b.block_id.clone()).collect();
         tokio::spawn(async move {
-            if let Ok((_, view)) = conn.view(&session_id).await {
-                let new_blocks: Vec<String> = {
-                    let mut m = self.model.lock();
-                    let known: Vec<String> = view
-                        .all_blocks()
-                        .filter_map(|(_, b)| b.block_id.clone())
-                        .filter(|id| !m.meta.get(id).is_some_and(|x| x.fetched))
+            self.fetch_meta(&conn, &session_id, blocks, &sink).await;
+            if let Ok(v) = conn.call("session.list_clients", json!({"session_id": session_id})).await {
+                let mut m = self.model.lock();
+                if let Some(s) = m.sessions.get_mut(&session_id) {
+                    s.clients = v
+                        .get("clients")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|c| {
+                            let id = c.get("client_id")?.as_str()?.to_owned();
+                            Some((id, describe_client(c)))
+                        })
                         .collect();
-                    if let Some(s) = m.sessions.get_mut(&session_id)
-                        && s.view.as_ref().is_none_or(|old| old.revision <= view.revision) {
-                            s.summary.label = view.label.clone();
-                            s.view = Some(view);
-                        }
-                    known
+                }
+                drop(m);
+                sink.changed();
+            }
+        });
+    }
+
+    /// Re-read a session's view. A burst of changes (a script laying out a
+    /// window) costs one read in flight plus one more for whatever it missed.
+    fn refresh_view(self: Arc<Self>, conn: Connection, session_id: String, sink: Arc<dyn Sink>) {
+        {
+            let mut m = self.model.lock();
+            let Some(s) = m.sessions.get_mut(&session_id) else { return };
+            if s.refreshing {
+                s.refresh_again = true;
+                return;
+            }
+            s.refreshing = true;
+        }
+        tokio::spawn(async move {
+            loop {
+                let view = conn.view(&session_id).await;
+                let (again, new_blocks) = {
+                    let mut m = self.model.lock();
+                    let new_blocks: Vec<String> = match &view {
+                        Ok((_, v)) => v
+                            .all_blocks()
+                            .filter_map(|(_, b)| b.block_id.clone())
+                            .filter(|id| !m.meta.get(id).is_some_and(|x| x.fetched))
+                            .collect(),
+                        Err(_) => Vec::new(),
+                    };
+                    let Some(s) = m.sessions.get_mut(&session_id) else { return };
+                    if let Ok((_, v)) = view
+                        && s.view.as_ref().is_none_or(|old| old.revision <= v.revision)
+                    {
+                        s.summary.label = v.label.clone();
+                        s.view = Some(v);
+                    }
+                    s.refreshing = std::mem::take(&mut s.refresh_again) && !conn.is_closed();
+                    (s.refreshing, new_blocks)
                 };
                 sink.changed();
                 if !new_blocks.is_empty() {
                     self.fetch_meta(&conn, &session_id, new_blocks, &sink).await;
+                }
+                if !again {
+                    return;
                 }
             }
         });
