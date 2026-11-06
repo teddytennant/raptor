@@ -292,6 +292,28 @@ final class TourUITests: XCTestCase {
         shot("inbox-sent")
     }
 
+    func testSidebarAndLightTheme() throws {
+        open("build")
+        XCTAssertTrue(app.textViews["Terminal"].firstMatch.waitForExistence(timeout: 15))
+        sleep(3)
+        shot("sidebar-shown")
+        app.buttons.matching(identifier: "Sessions").firstMatch.tap()
+        sleep(2)
+        shot("sidebar-hidden")
+        if !app.buttons["Settings"].firstMatch.exists { app.buttons.matching(identifier: "Sessions").firstMatch.tap(); sleep(1) }
+        app.buttons["Settings"].firstMatch.tap()
+        app.buttons["Solarized"].firstMatch.tap()
+        sleep(1)
+        shot("light-settings")
+        app.buttons["Done"].tap()
+        sleep(2)
+        shot("light-theme")
+        if !app.buttons["Settings"].firstMatch.exists { app.buttons.matching(identifier: "Sessions").firstMatch.tap(); sleep(1) }
+        app.buttons["Settings"].firstMatch.tap()
+        app.buttons["Tokyo"].firstMatch.tap()
+        app.buttons["Done"].tap()
+    }
+
     func testSettings() throws {
         app.launch()
         sleep(2)

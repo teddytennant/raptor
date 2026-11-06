@@ -56,8 +56,12 @@ struct RootView: View {
                     .background(Chrome(model.theme).bg.ignoresSafeArea())
                     .navigationTitle("Sessions")
                     .toolbar {
-                        ToolbarItem(placement: .topBarLeading) { Button { settings = true } label: { Image(systemName: "gearshape") } }
-                        ToolbarItem(placement: .topBarTrailing) { Button { addingServer = true } label: { Image(systemName: "plus") } }
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button { settings = true } label: { Image(systemName: "gearshape") }.accessibilityLabel("Settings")
+                        }
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button { addingServer = true } label: { Image(systemName: "plus") }.accessibilityLabel("Add server")
+                        }
                     }
                 } detail: {
                     detail
