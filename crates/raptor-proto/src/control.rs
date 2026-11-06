@@ -61,6 +61,8 @@ pub struct Welcome {
     pub api_revision: u32,
     #[serde(default)]
     pub api_server_revision: u32,
+    #[serde(default)]
+    pub api_min_revision: u32,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, thiserror::Error)]
@@ -134,11 +136,11 @@ mod tests {
         let m = ClientMessage::Hello {
             reconnect_token: None,
             client: ClientInfo { kind: Some("app".into()), name: Some("Raptor".into()), ..Default::default() },
-            api_revision: 8,
-            api_min_revision: 8,
+            api_revision: crate::API_REVISION,
+            api_min_revision: crate::API_MIN_REVISION,
         };
         let s = serde_json::to_string(&m).unwrap();
-        assert_eq!(s, r#"{"type":"hello","client":{"kind":"app","name":"Raptor"},"api_revision":8,"api_min_revision":8}"#);
+        assert_eq!(s, r#"{"type":"hello","client":{"kind":"app","name":"Raptor"},"api_revision":10,"api_min_revision":8}"#);
     }
 
     #[test]

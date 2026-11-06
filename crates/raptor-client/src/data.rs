@@ -16,6 +16,8 @@ use crate::{ClientError, Endpoint};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const DEAD_AFTER: Duration = Duration::from_secs(40);
+/// How long a stream has to answer [`DataStream::check`].
+const CHECK_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DataEvent {
@@ -55,6 +57,7 @@ pub enum DataEvent {
 pub struct DataStream {
     ticket_tx: mpsc::UnboundedSender<String>,
     stop_tx: watch::Sender<bool>,
+    check_tx: watch::Sender<u64>,
 }
 
 impl Drop for DataStream {
@@ -68,8 +71,16 @@ impl DataStream {
         let (ev_tx, ev_rx) = mpsc::unbounded_channel();
         let (ticket_tx, ticket_rx) = mpsc::unbounded_channel();
         let (stop_tx, stop_rx) = watch::channel(false);
-        tokio::spawn(run(endpoint, ticket, ticket_rx, stop_rx, ev_tx));
-        (Self { ticket_tx, stop_tx }, ev_rx)
+        let (check_tx, check_rx) = watch::channel(0);
+        tokio::spawn(run(endpoint, ticket, ticket_rx, stop_rx, check_rx, ev_tx));
+        (Self { ticket_tx, stop_tx, check_tx }, ev_rx)
+    }
+
+    /// Make sure the connection still works (after the system wakes or the
+    /// network changes): if the server doesn't answer a ping within a few
+    /// seconds, drop the socket and resume on a new one.
+    pub fn check(&self) {
+        self.check_tx.send_modify(|n| *n += 1);
     }
 
     /// Start over with a fresh ticket from `data.connect`.
@@ -92,6 +103,7 @@ async fn run(
     first_ticket: String,
     mut ticket_rx: mpsc::UnboundedReceiver<String>,
     mut stop: watch::Receiver<bool>,
+    mut check: watch::Receiver<u64>,
     tx: mpsc::UnboundedSender<DataEvent>,
 ) {
     let mut ticket = Some(first_ticket);
@@ -104,9 +116,10 @@ async fn run(
         if *stop.borrow() {
             return;
         }
+        let fresh = ticket.is_some();
         let attempt = match (ticket.take(), &session) {
-            (Some(t), _) => connect(&endpoint, Hand::Hello(t)).await.map(|r| (r, true)),
-            (None, Some((w, n))) => connect(&endpoint, Hand::Resume(w.reconnect_token, *n)).await.map(|r| (r, false)),
+            (Some(t), _) => connect(&endpoint, Hand::Hello(t)).await,
+            (None, Some((w, n))) => connect(&endpoint, Hand::Resume(w.reconnect_token, *n)).await,
             (None, None) => {
                 let _ = tx.send(DataEvent::NeedsTicket);
                 tokio::select! {
@@ -117,7 +130,7 @@ async fn run(
         };
 
         let (mut ws, welcome) = match attempt {
-            Ok(((ws, w), fresh)) => {
+            Ok((ws, w)) => {
                 if fresh {
                     splitter = StreamSplitter::new(w.nonce);
                     framer = Some(SnapshotFramer::new());
@@ -133,14 +146,24 @@ async fn run(
             }
             Err(ClientError::Handshake(HandshakeError::Rejected(r))) => {
                 tracing::info!("data handshake rejected: {r}");
+                // A refused HELLO that no ticket can fix (the block closed) is the end.
+                if fresh && !r.retryable() {
+                    let _ = tx.send(DataEvent::Ended { reason: r.to_string() });
+                    return;
+                }
+                // Otherwise start over with a new ticket, but not in a tight loop.
                 session = None;
-                continue; // asks for a ticket
+                if fresh {
+                    tokio::select! {
+                        _ = tokio::time::sleep(backoff) => {}
+                        _ = stop.changed() => return,
+                    }
+                    backoff = (backoff * 2).min(Duration::from_secs(5));
+                }
+                continue;
             }
             Err(e) => {
                 tracing::debug!("data connect failed: {e}");
-                if session.is_none() && ticket.is_none() {
-                    continue;
-                }
                 tokio::select! {
                     _ = tokio::time::sleep(backoff) => {}
                     t = ticket_rx.recv() => if let Some(t) = t { ticket = Some(t); session = None; },
@@ -161,6 +184,7 @@ async fn run(
             &mut stop,
             &mut ticket_rx,
             &mut ticket,
+            &mut check,
         )
         .await;
         match outcome {
@@ -194,13 +218,16 @@ async fn pump(
     stop: &mut watch::Receiver<bool>,
     ticket_rx: &mut mpsc::UnboundedReceiver<String>,
     ticket: &mut Option<String>,
+    check: &mut watch::Receiver<u64>,
 ) -> Outcome {
     let mut ticker = tokio::time::interval(Duration::from_secs(15));
     let mut last = tokio::time::Instant::now();
+    let mut answer_by: Option<tokio::time::Instant> = None;
     loop {
         tokio::select! {
             m = ws.next() => {
                 last = tokio::time::Instant::now();
+                answer_by = None;
                 match m {
                     Some(Ok(Message::Binary(b))) => {
                         *received += b.len() as u64;
@@ -248,6 +275,12 @@ async fn pump(
                 if let Some(t) = t { *ticket = Some(t); let _ = ws.close(Some(close_frame(CloseCode::Normal))).await; return Outcome::Fresh; }
             }
             _ = stop.changed() => return Outcome::Stopped,
+            r = check.changed() => {
+                if r.is_err() { return Outcome::Stopped; }
+                answer_by.get_or_insert(tokio::time::Instant::now() + CHECK_TIMEOUT);
+                if ws.send(Message::Ping(Default::default())).await.is_err() { return Outcome::Dropped; }
+            }
+            _ = tokio::time::sleep_until(answer_by.unwrap_or_else(tokio::time::Instant::now)), if answer_by.is_some() => return Outcome::Dropped,
             _ = ticker.tick() => {
                 if last.elapsed() > DEAD_AFTER { return Outcome::Dropped; }
                 if ws.send(Message::Ping(Default::default())).await.is_err() { return Outcome::Dropped; }

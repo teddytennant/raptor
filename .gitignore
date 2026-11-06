@@ -15,5 +15,6 @@ apps/ios/RaptorKit/.swiftpm/
 apps/ios/RaptorKit/RaptorFFI.xcframework/
 apps/ios/RaptorKit/Sources/RaptorKit/Generated/
 apps/ios/Raptor.xcodeproj/
+apps/macos/RaptorMac.xcodeproj/
 xcuserdata/
 DerivedData/

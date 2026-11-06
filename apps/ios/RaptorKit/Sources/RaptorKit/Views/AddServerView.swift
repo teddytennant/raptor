@@ -125,7 +125,7 @@ public struct AddServerView: View {
     }
 }
 
-func describe(_ error: Error) -> String {
+public func describe(_ error: Error) -> String {
     if let e = error as? RaptorError {
         switch e {
         case .UnknownServer: return "Unknown server"

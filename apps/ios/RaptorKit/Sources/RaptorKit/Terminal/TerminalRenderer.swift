@@ -37,14 +37,7 @@ public final class TerminalRenderer {
     public private(set) var fontSize: CGFloat
     public private(set) var metrics: CellMetrics
     private var fonts: [CTFont] = []
-    private struct LineKey: Hashable {
-        var text: String
-        var font: Int
-        var color: UInt32
-    }
-    /// Shaped text by content, face and color: most of a screen is the same from
-    /// one frame to the next, and shaping is the expensive part of drawing.
-    private var lineCache: [LineKey: CTLine] = [:]
+    private var lineCache: [String: CTLine] = [:]
 
     public private(set) var font: TermFont = Fonts.byId(nil)
     public private(set) var lineHeight: CGFloat = 1.06
@@ -76,17 +69,7 @@ public final class TerminalRenderer {
         lineCache.removeAll(keepingCapacity: true)
     }
 
-    private func face(_ style: UInt16) -> Int { (style & styleBold != 0 ? 1 : 0) + (style & styleItalic != 0 ? 2 : 0) }
-
-    private func shaped(_ s: String, font: Int, color: UInt32) -> CTLine {
-        let key = LineKey(text: s, font: font, color: color)
-        if let l = lineCache[key] { return l }
-        if lineCache.count > 4096 { lineCache.removeAll(keepingCapacity: true) }
-        let attrs: [CFString: Any] = [kCTFontAttributeName: fonts[font], kCTForegroundColorAttributeName: cg(color)]
-        let l = CTLineCreateWithAttributedString(CFAttributedStringCreate(nil, s as CFString, attrs as CFDictionary))
-        lineCache[key] = l
-        return l
-    }
+    private func font(bold: Bool, italic: Bool) -> CTFont { fonts[(bold ? 1 : 0) + (italic ? 2 : 0)] }
 
     /// Grid that fits `size` points.
     public func grid(for size: CGSize, padding: CGFloat) -> (cols: Int, rows: Int) {
@@ -101,6 +84,8 @@ public final class TerminalRenderer {
         public var cursorVisible = true
         /// Forced cursor shape from Settings; nil follows the program.
         public var cursorShape: CursorShape?
+        /// Draw the thin history position bar (off where the platform has its own scroller).
+        public var historyBar = true
         /// Text an input method is still composing, drawn at the cursor.
         public var preedit = ""
         public init() {}
@@ -123,16 +108,20 @@ public final class TerminalRenderer {
         for (row, line) in frame.lines.enumerated() {
             let top = CGFloat(row) * m.height
             guard top + m.height * 2 >= clip.minY, top - m.height <= clip.maxY else { continue }
+            // Unantialiased, so neighbouring backgrounds meet on a pixel edge with no seam.
+            ctx.setShouldAntialias(false)
             for run in line.runs {
                 let selected = run.style & styleSelected != 0
                 guard let color = selected ? selection : run.bg else { continue }
                 ctx.setFillColor(cg(color))
                 ctx.fill(CGRect(x: CGFloat(run.col) * m.width, y: top, width: CGFloat(run.cells) * m.width, height: m.height + 0.5))
             }
+            ctx.setShouldAntialias(true)
             for run in line.runs where !run.text.allSatisfy({ $0 == " " }) {
                 var color = readable(run.fg, on: run.bg ?? frame.background, fallback: frame.foreground)
                 if run.style & styleFaint != 0 { color = blend(color, frame.background, 0.5) }
-                drawRun(run, font: face(run.style), color: color, at: CGPoint(x: CGFloat(run.col) * m.width, y: top), in: ctx)
+                let f = font(bold: run.style & styleBold != 0, italic: run.style & styleItalic != 0)
+                drawRun(run, font: f, color: cg(color), at: CGPoint(x: CGFloat(run.col) * m.width, y: top), in: ctx)
                 decorate(run, color: cg(run.underlineColor ?? color), top: top, in: ctx)
             }
         }
@@ -145,7 +134,7 @@ public final class TerminalRenderer {
         ctx.restoreGState()
 
         // History indicator.
-        if frame.scrollTotal > frame.scrollLen, frame.scrollOffset + frame.scrollLen < frame.scrollTotal {
+        if o.historyBar, frame.scrollTotal > frame.scrollLen, frame.scrollOffset + frame.scrollLen < frame.scrollTotal {
             let track = size.height - o.padding * 2
             let thumb = max(24, track * CGFloat(frame.scrollLen) / CGFloat(frame.scrollTotal))
             let y = o.padding + (track - thumb) * CGFloat(frame.scrollOffset) / CGFloat(frame.scrollTotal - frame.scrollLen)
@@ -155,11 +144,11 @@ public final class TerminalRenderer {
         }
     }
 
-    private func drawRun(_ run: Run, font: Int, color: UInt32, at origin: CGPoint, in ctx: CGContext) {
+    private func drawRun(_ run: Run, font: CTFont, color: CGColor, at origin: CGPoint, in ctx: CGContext) {
         let m = metrics
         let baseline = origin.y + (m.height - (m.ascent + m.descent)) / 2 + m.ascent
-        let graphemes = Array(run.text)
         let widths = [UInt8](run.widths)
+        let graphemes = cellTexts(run.text, count: widths.count)
         var col: CGFloat = 0
         // Group consecutive simple ASCII so Core Text shapes them in one pass;
         // everything else is placed on its own cell so it can't drift off the grid.
@@ -168,18 +157,18 @@ public final class TerminalRenderer {
             let w = CGFloat(i < widths.count ? widths[i] : 1)
             let g = graphemes[i]
             let x = origin.x + col * m.width
-            if let scalar = g.unicodeScalars.first, g.unicodeScalars.count == 1, (0x2500...0x259F).contains(scalar.value) {
-                if drawBox(scalar.value, x: x, top: origin.y, cells: w, color: cg(color), in: ctx) {
+            if let scalar = g.unicodeScalars.first, g.unicodeScalars.count == 1, (0x2500...0x259F).contains(scalar.value) || (0xE0B0...0xE0BF).contains(scalar.value) {
+                if drawBox(scalar.value, x: x, top: origin.y, cells: w, color: color, in: ctx) {
                     col += w
                     i += 1
                     continue
                 }
             }
-            if g.isASCII && w == 1 {
+            if g.utf8.count == 1 && w == 1 {
                 var j = i
                 var s = ""
-                while j < graphemes.count, graphemes[j].isASCII, (j < widths.count ? widths[j] : 1) == 1 {
-                    s.append(graphemes[j])
+                while j < graphemes.count, graphemes[j].utf8.count == 1, (j < widths.count ? widths[j] : 1) == 1 {
+                    s += graphemes[j]
                     j += 1
                 }
                 drawText(s, font: font, color: color, x: x, baseline: baseline, in: ctx)
@@ -187,14 +176,25 @@ public final class TerminalRenderer {
                 i = j
                 continue
             }
-            drawText(String(g), font: font, color: color, x: x, baseline: baseline, in: ctx, fitWidth: w * m.width)
+            drawText(g, font: font, color: color, x: x, baseline: baseline, in: ctx, fitWidth: w * m.width)
             col += w
             i += 1
         }
     }
 
-    private func drawText(_ s: String, font: Int, color: UInt32, x: CGFloat, baseline: CGFloat, in ctx: CGContext, fitWidth: CGFloat? = nil) {
-        let line = shaped(s, font: font, color: color)
+    private func drawText(_ s: String, font: CTFont, color: CGColor, x: CGFloat, baseline: CGFloat, in ctx: CGContext, fitWidth: CGFloat? = nil) {
+        // Lines take their color from the context, so one cached line serves every color.
+        let key = "\(CFHash(font))\u{0}\(s)"
+        let line: CTLine
+        if let cached = lineCache[key] {
+            line = cached
+        } else {
+            let attrs: [CFString: Any] = [kCTFontAttributeName: font, kCTForegroundColorFromContextAttributeName: true]
+            line = CTLineCreateWithAttributedString(CFAttributedStringCreate(nil, s as CFString, attrs as CFDictionary))
+            if lineCache.count > 8192 { lineCache.removeAll(keepingCapacity: true) }
+            lineCache[key] = line
+        }
+        ctx.setFillColor(color)
         var dx: CGFloat = 0
         if let fit = fitWidth {
             let w = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
@@ -277,17 +277,75 @@ public final class TerminalRenderer {
         case 0x2501: hl(x, r, T)
         case 0x2502: vl(top, b)
         case 0x2503: vl(top, b, T)
-        case 0x250C, 0x256D: hl(cx - t / 2, r); vl(cy - t / 2, b)
-        case 0x2510, 0x256E: hl(x, cx + t / 2); vl(cy - t / 2, b)
-        case 0x2514, 0x2570: hl(cx - t / 2, r); vl(top, cy + t / 2)
-        case 0x2518, 0x256F: hl(x, cx + t / 2); vl(top, cy + t / 2)
+        case 0x250C: hl(cx - t / 2, r); vl(cy - t / 2, b)
+        case 0x2510: hl(x, cx + t / 2); vl(cy - t / 2, b)
+        case 0x2514: hl(cx - t / 2, r); vl(top, cy + t / 2)
+        case 0x2518: hl(x, cx + t / 2); vl(top, cy + t / 2)
+        case 0x250F: hl(cx - T / 2, r, T); vl(cy - T / 2, b, T)
+        case 0x2513: hl(x, cx + T / 2, T); vl(cy - T / 2, b, T)
+        case 0x2517: hl(cx - T / 2, r, T); vl(top, cy + T / 2, T)
+        case 0x251B: hl(x, cx + T / 2, T); vl(top, cy + T / 2, T)
+        case 0x256D, 0x256E, 0x2570, 0x256F:
+            // Rounded corners: a quarter circle into the cell's center lines.
+            let right = cp == 0x256D || cp == 0x2570, down = cp == 0x256D || cp == 0x256E
+            let rad = min(w, h) / 2
+            ctx.setStrokeColor(color)
+            ctx.setLineWidth(t)
+            ctx.beginPath()
+            ctx.move(to: CGPoint(x: right ? r : x, y: cy))
+            ctx.addArc(tangent1End: CGPoint(x: cx, y: cy), tangent2End: CGPoint(x: cx, y: down ? b : top), radius: rad)
+            ctx.addLine(to: CGPoint(x: cx, y: down ? b : top))
+            ctx.strokePath()
         case 0x251C: vl(top, b); hl(cx, r)
         case 0x2524: vl(top, b); hl(x, cx)
         case 0x252C: hl(x, r); vl(cy, b)
         case 0x2534: hl(x, r); vl(top, cy)
         case 0x253C: hl(x, r); vl(top, b)
+        case 0x2523: vl(top, b, T); hl(cx, r, T)
+        case 0x252B: vl(top, b, T); hl(x, cx, T)
+        case 0x2533: hl(x, r, T); vl(cy, b, T)
+        case 0x253B: hl(x, r, T); vl(top, cy, T)
+        case 0x254B: hl(x, r, T); vl(top, b, T)
+        case 0x2574: hl(x, cx + t / 2)
+        case 0x2575: vl(top, cy + t / 2)
+        case 0x2576: hl(cx - t / 2, r)
+        case 0x2577: vl(cy - t / 2, b)
         case 0x2550: ctx.fill(CGRect(x: x, y: cy - T, width: w, height: t)); ctx.fill(CGRect(x: x, y: cy + T - t, width: w, height: t))
         case 0x2551: ctx.fill(CGRect(x: cx - T, y: top, width: t, height: h)); ctx.fill(CGRect(x: cx + T - t, y: top, width: t, height: h))
+        case 0x2554, 0x2557, 0x255A, 0x255D:
+            // Double corners: two nested corners on the double lines' tracks.
+            let right = cp == 0x2554 || cp == 0x255A, down = cp == 0x2554 || cp == 0x2557
+            let outer = (right ? cx - T : cx + T - t, down ? cy - T : cy + T - t)
+            let inner = (right ? cx + T - t : cx - T, down ? cy + T - t : cy - T)
+            for (vx, hy) in [outer, inner] {
+                ctx.fill(right ? CGRect(x: vx, y: hy, width: r - vx, height: t) : CGRect(x: x, y: hy, width: vx + t - x, height: t))
+                ctx.fill(down ? CGRect(x: vx, y: hy, width: t, height: b - hy) : CGRect(x: vx, y: top, width: t, height: hy + t - top))
+            }
+        case 0xE0B0, 0xE0B2, 0xE0B8, 0xE0BA, 0xE0BC, 0xE0BE:
+            // Powerline solid shapes, drawn to the cell edges so segments join cleanly.
+            let pts: [CGPoint] = switch cp {
+            case 0xE0B0: [CGPoint(x: x, y: top), CGPoint(x: r, y: cy), CGPoint(x: x, y: b)]
+            case 0xE0B2: [CGPoint(x: r, y: top), CGPoint(x: x, y: cy), CGPoint(x: r, y: b)]
+            case 0xE0B8: [CGPoint(x: x, y: top), CGPoint(x: r, y: b), CGPoint(x: x, y: b)]
+            case 0xE0BA: [CGPoint(x: r, y: top), CGPoint(x: r, y: b), CGPoint(x: x, y: b)]
+            case 0xE0BC: [CGPoint(x: x, y: top), CGPoint(x: r, y: top), CGPoint(x: x, y: b)]
+            default: [CGPoint(x: x, y: top), CGPoint(x: r, y: top), CGPoint(x: r, y: b)]
+            }
+            ctx.addLines(between: pts)
+            ctx.closePath()
+            ctx.fillPath()
+        case 0xE0B1, 0xE0B3:
+            ctx.setStrokeColor(color)
+            ctx.setLineWidth(t)
+            ctx.addLines(between: cp == 0xE0B1
+                ? [CGPoint(x: x, y: top), CGPoint(x: r - t / 2, y: cy), CGPoint(x: x, y: b)]
+                : [CGPoint(x: r, y: top), CGPoint(x: x + t / 2, y: cy), CGPoint(x: r, y: b)])
+            ctx.strokePath()
+        case 0xE0B4, 0xE0B6:
+            ctx.saveGState()
+            ctx.clip(to: CGRect(x: x, y: top, width: w, height: h))
+            ctx.fillEllipse(in: CGRect(x: cp == 0xE0B4 ? x - w : x, y: top, width: w * 2, height: h))
+            ctx.restoreGState()
         case 0x2580: ctx.fill(CGRect(x: x, y: top, width: w, height: h / 2))
         case 0x2584: ctx.fill(CGRect(x: x, y: cy, width: w, height: h / 2))
         case 0x2588: ctx.fill(CGRect(x: x, y: top, width: w, height: h))
@@ -337,10 +395,11 @@ public final class TerminalRenderer {
             // Redraw the character under the block in the background color.
             if let line = frame.lines[safe: Int(c.row)], let run = line.runs.first(where: { c.col >= $0.col && c.col < $0.col + $0.cells }) {
                 let idx = graphemeIndex(run.widths, Int(c.col - run.col))
-                let chars = Array(run.text)
+                let chars = cellTexts(run.text, count: run.widths.count)
                 if idx < chars.count, chars[idx] != " " {
+                    let f = font(bold: run.style & styleBold != 0, italic: run.style & styleItalic != 0)
                     let baseline = rect.minY + (m.height - (m.ascent + m.descent)) / 2 + m.ascent
-                    drawText(String(chars[idx]), font: face(run.style), color: frame.background, x: rect.minX, baseline: baseline, in: ctx)
+                    drawText(chars[idx], font: f, color: cg(frame.background), x: rect.minX, baseline: baseline, in: ctx)
                 }
             }
         }
@@ -357,13 +416,14 @@ public final class TerminalRenderer {
         let width = CGFloat(cells) * m.width
         ctx.setFillColor(cg(frame.background))
         ctx.fill(CGRect(x: x, y: top, width: width, height: m.height))
+        let fg = cg(frame.foreground)
         let baseline = top + (m.height - (m.ascent + m.descent)) / 2 + m.ascent
         for g in text {
             let w = CGFloat(cellWidth(g)) * m.width
-            drawText(String(g), font: 0, color: frame.foreground, x: x, baseline: baseline, in: ctx, fitWidth: w)
+            drawText(String(g), font: fonts[0], color: fg, x: x, baseline: baseline, in: ctx, fitWidth: w)
             x += w
         }
-        ctx.setFillColor(cg(frame.foreground))
+        ctx.setFillColor(fg)
         ctx.fill(CGRect(x: CGFloat(col) * m.width, y: top + m.height - 1.5, width: width, height: 1))
         ctx.fill(CGRect(x: x, y: top, width: 2, height: m.height))
     }
@@ -376,6 +436,10 @@ public final class TerminalRenderer {
         }
         return max(0, widths.count - 1)
     }
+}
+
+func cg(_ argb: UInt32) -> CGColor {
+    CGColor(srgbRed: CGFloat((argb >> 16) & 0xFF) / 255, green: CGFloat((argb >> 8) & 0xFF) / 255, blue: CGFloat(argb & 0xFF) / 255, alpha: 1)
 }
 
 /// Cells a string takes on the grid (East Asian wide characters and emoji take two).
@@ -393,9 +457,6 @@ func cellWidth(_ c: Character) -> Int {
     default:
         return 1
     }
-}
-func cg(_ argb: UInt32) -> CGColor {
-    CGColor(srgbRed: CGFloat((argb >> 16) & 0xFF) / 255, green: CGFloat((argb >> 8) & 0xFF) / 255, blue: CGFloat(argb & 0xFF) / 255, alpha: 1)
 }
 
 /// Text in a palette color that nearly matches its background (white on a light

@@ -11,13 +11,22 @@ public struct TerminalScreen: View {
     @State private var termColors: (UInt32, UInt32)?
     /// Every open terminal by block; tiled iPad windows have several.
     @State private var controllers: [String: TerminalController] = [:]
-    @Environment(\.horizontalSizeClass) private var hsize
     @State private var topInset: CGFloat = 0
     @State private var showPalette = false
     @State private var keyboard = false
     /// Windows that existed when we asked for a new one; the one that appears next is ours to show.
     @State private var windowsBeforeNew: Set<String>?
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var hsize
     @Environment(\.verticalSizeClass) private var vsize
+    /// Room for every pane of a window side by side (iPad).
+    private var wide: Bool { hsize == .regular }
+    /// A landscape phone: with the keyboard up, the top bar costs rows.
+    private var squat: Bool { vsize == .compact && keyboard }
+    #else
+    private let wide = true
+    private let squat = false
+    #endif
     @State private var slideEdge: Edge = .trailing
     /// Set by the app root: the left button and the title open the session
     /// switcher, and switching sessions goes through the root.
@@ -56,7 +65,7 @@ public struct TerminalScreen: View {
 
         ZStack(alignment: .top) {
             c.bg.ignoresSafeArea()
-            if let w = window, w.blocks.count > 1, hsize == .regular, blockId != nil {
+            if let w = window, w.blocks.count > 1, wide, blockId != nil {
                 tiles(w, chrome: c, session: session)
             } else if let b = blockId {
                 LiveTerminal(serverId: serverId, sessionId: sessionId, blockId: b, theme: model.theme, chrome: c,
@@ -96,7 +105,7 @@ public struct TerminalScreen: View {
             // The top bar sits over the terminal like glass: live rows start
             // below it, and scrollback moving up behind it shows through blurred.
             // A landscape phone with the keyboard up needs every row, so it goes.
-            if !(vsize == .compact && keyboard) {
+            if !squat {
             VStack(spacing: 8) {
                 header(c, server: server, session: session, window: window, block: block)
                 // Windows as slim tabs in the top bar: always reachable, even while typing.
@@ -131,10 +140,12 @@ public struct TerminalScreen: View {
         .environment(\.chrome, c)
         .tint(c.accent)
         .preferredColorScheme(c.scheme)
+        #if os(iOS)
         .toolbar(.hidden, for: .navigationBar)
         .statusBarHidden(false)
+        #endif
         .onPreferenceChange(TopInsetKey.self) { topInset = $0 }
-        .animation(.snappy(duration: 0.25), value: vsize == .compact && keyboard)
+        .animation(.snappy(duration: 0.25), value: squat)
         #if os(iOS)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboard = true }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboard = false }
@@ -372,7 +383,7 @@ public struct TerminalScreen: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Sessions")
 
-            if let window, window.blocks.count > 1, hsize != .regular {
+            if let window, window.blocks.count > 1, !wide {
                 PaneMap(window: window, selected: blockId) { picked in
                     blockId = picked
                     Haptics.select()
