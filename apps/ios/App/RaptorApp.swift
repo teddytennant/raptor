@@ -109,8 +109,13 @@ struct RootView: View {
         } else if let c = current {
             TerminalScreen(serverId: c.serverId, sessionId: c.sessionId, blockId: c.blockId, onSessions: { switcher = true }, onOpen: open)
                 .id("\(c.serverId)/\(c.sessionId)")
-        } else {
+        } else if hsize == .regular {
             PickSessionView { switcher = true }
+        } else {
+            NavigationStack {
+                HomeView(onOpen: { s, ses, b in open(Focus(serverId: s, sessionId: ses, blockId: b)) },
+                         onAdd: { addingServer = true }, onEdit: { editing = $0 }, onSettings: { settings = true })
+            }
         }
     }
 
@@ -122,7 +127,6 @@ struct RootView: View {
     private func forget() {
         current = nil
         model.core.setSetting(key: "last_open", value: "")
-        switcher = true
     }
 
     private func lastOpen() -> Focus? {

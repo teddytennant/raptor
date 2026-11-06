@@ -4,17 +4,25 @@ import SwiftUI
 public struct HomeView: View {
     @Environment(RaptorModel.self) private var model
     var onOpen: (String, String, String?) -> Void
+    var onAdd: (() -> Void)?
+    var onEdit: ((Server) -> Void)?
+    var onSettings: (() -> Void)?
     @State private var addingServer = false
     @State private var editing: Server?
 
-    public init(onOpen: @escaping (_ server: String, _ session: String, _ block: String?) -> Void) {
+    /// Without `onAdd`/`onEdit`, the home screen presents its own server sheets.
+    public init(onOpen: @escaping (_ server: String, _ session: String, _ block: String?) -> Void,
+                onAdd: (() -> Void)? = nil, onEdit: ((Server) -> Void)? = nil, onSettings: (() -> Void)? = nil) {
         self.onOpen = onOpen
+        self.onAdd = onAdd
+        self.onEdit = onEdit
+        self.onSettings = onSettings
     }
 
     public var body: some View {
         let c = Chrome(model.theme)
         ScrollView {
-            HomeList(onOpen: onOpen, onAdd: { addingServer = true }, onEdit: { editing = $0 })
+            HomeList(onOpen: onOpen, onAdd: add, onEdit: edit)
                 .padding(.bottom, 40)
         }
         .background(c.bg.ignoresSafeArea())
@@ -28,8 +36,14 @@ public struct HomeView: View {
         .toolbarBackground(c.bg, for: .navigationBar)
         #endif
         .toolbar {
+            if let onSettings {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(action: onSettings) { Image(systemName: "gearshape") }
+                        .accessibilityLabel("Settings")
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
-                Button { addingServer = true } label: { Image(systemName: "plus") }
+                Button(action: add) { Image(systemName: "plus") }
                     .accessibilityLabel("Add server")
             }
         }
@@ -39,6 +53,9 @@ public struct HomeView: View {
         .sheet(isPresented: $addingServer) { AddServerView(editing: nil) { addingServer = false } }
         .sheet(item: $editing) { srv in AddServerView(editing: srv) { editing = nil } }
     }
+
+    private func add() { if let onAdd { onAdd() } else { addingServer = true } }
+    private func edit(_ srv: Server) { if let onEdit { onEdit(srv) } else { editing = srv } }
 }
 
 extension Server: Identifiable {}
@@ -152,10 +169,13 @@ private struct ServerSection: View {
 
             VStack(spacing: 0) {
                 if case .offline(let error, _) = server.connectivity {
-                    HStack {
-                        Text(error).font(.subheadline).foregroundStyle(c.secondary).lineLimit(2)
-                        Spacer()
-                        Button("Retry") { model.core.reconnect(serverId: server.id) }.font(.subheadline.weight(.semibold))
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text(error).font(.subheadline).foregroundStyle(c.secondary).lineLimit(2)
+                            Spacer()
+                            Button("Retry") { model.core.reconnect(serverId: server.id) }.font(.subheadline.weight(.semibold))
+                        }
+                        if localNetworkBlocked(address: server.address, error: error) { LocalNetworkHelp() }
                     }
                     .padding(.horizontal, 16).padding(.vertical, 12)
                 } else {
