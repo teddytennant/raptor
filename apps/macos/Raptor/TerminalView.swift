@@ -30,7 +30,6 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
     private(set) var frameCache: Frame?
     private let padding: CGFloat = 8
     private var marked = NSMutableAttributedString()
-    private var markedSelection = NSRange(location: 0, length: 0)
     private var scrollAccumulator: CGFloat = 0
     private var blinkOn = true
     private var blinkTimer: Timer?
@@ -43,7 +42,7 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
     private var lastDragPoint = NSPoint.zero
     private let scroller = HistoryScroller()
     private var trackingArea: NSTrackingArea?
-    private var lastGrid: (Int, Int)?
+    private var lastMouseTracking = false
     /// Where the last find matched: absolute row (history offset + row) and column.
     var findPos: (row: Int, col: Int)?
 
@@ -55,7 +54,6 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
         super.init(frame: .zero)
         wantsLayer = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
-        layer?.drawsAsynchronously = false
         controller.onFrame = { [weak self] in self?.refresh() }
         controller.onClipboard = { text in
             NSPasteboard.general.clearContents()
@@ -91,11 +89,14 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
             layer?.backgroundColor = cgColor(f.background)
             scroller.color = NSColor(cgColor: cgColor(f.foreground)) ?? .white
         }
-        if prev?.cols != f.cols || prev?.rows != f.rows { invalidateIntrinsicContentSize() }
         blinkOn = true
         scroller.update(total: f.scrollTotal, offset: f.scrollOffset, len: f.scrollLen)
         updateBlink()
-        updateCursorRects()
+        let tracking = programWantsMouse
+        if tracking != lastMouseTracking {
+            lastMouseTracking = tracking
+            window?.invalidateCursorRects(for: self)
+        }
         needsDisplay = true
     }
 
@@ -154,7 +155,6 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
 
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
-        lastGrid = nil
         pushGrid()
     }
 
@@ -165,7 +165,6 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
         t.setDeviceGrid(cols: UInt16(g.cols), rows: UInt16(g.rows),
                         cellWidthPx: UInt32((renderer.metrics.width * px).rounded()),
                         cellHeightPx: UInt32((renderer.metrics.height * px).rounded()))
-        lastGrid = (g.cols, g.rows)
     }
 
     // MARK: focus and blink
@@ -256,15 +255,17 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
         guard window?.firstResponder === self else { return false }
         let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if mods.contains(.command) {
+            let shift = mods.contains(.shift)
             switch Int(e.keyCode) {
-            case kVK_UpArrow where mods == [.command]: terminal?.jumpPrompt(delta: -1); return true
-            case kVK_DownArrow where mods == [.command]: terminal?.jumpPrompt(delta: 1); return true
-            case kVK_Home, kVK_UpArrow where mods == [.command, .shift]: scrollTo(fraction: 0); return true
-            case kVK_End, kVK_DownArrow where mods == [.command, .shift]: terminal?.scrollToBottom(); return true
-            case kVK_PageUp: page(-1); return true
-            case kVK_PageDown: page(1); return true
+            case kVK_UpArrow where !shift: terminal?.jumpPrompt(delta: -1)
+            case kVK_DownArrow where !shift: terminal?.jumpPrompt(delta: 1)
+            case kVK_UpArrow, kVK_Home: scrollTo(fraction: 0)
+            case kVK_DownArrow, kVK_End: terminal?.scrollToBottom()
+            case kVK_PageUp: page(-1)
+            case kVK_PageDown: page(1)
             default: return false
             }
+            return true
         }
         // Ctrl+Tab and friends reach keyDown only through here.
         if mods.contains(.control), [kVK_Tab, kVK_Return, kVK_Escape].contains(Int(e.keyCode)) {
@@ -355,7 +356,6 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
     func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
         let s = (string as? NSAttributedString)?.string ?? (string as? String) ?? ""
         marked = NSMutableAttributedString(string: s)
-        markedSelection = selectedRange
         needsDisplay = true
     }
 
@@ -451,10 +451,6 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
 
     override func cursorUpdate(with event: NSEvent) {
         (programWantsMouse ? NSCursor.arrow : NSCursor.iBeam).set()
-    }
-
-    private func updateCursorRects() {
-        window?.invalidateCursorRects(for: self)
     }
 
     override func resetCursorRects() {
