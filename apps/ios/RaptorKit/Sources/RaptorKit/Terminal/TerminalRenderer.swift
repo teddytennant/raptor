@@ -176,8 +176,18 @@ public final class TerminalRenderer {
     }
 
     private func drawText(_ s: String, font: CTFont, color: CGColor, x: CGFloat, baseline: CGFloat, in ctx: CGContext, fitWidth: CGFloat? = nil) {
-        let attrs: [CFString: Any] = [kCTFontAttributeName: font, kCTForegroundColorAttributeName: color]
-        let line = CTLineCreateWithAttributedString(CFAttributedStringCreate(nil, s as CFString, attrs as CFDictionary))
+        // Lines take their color from the context, so one cached line serves every color.
+        let key = "\(CFHash(font))\u{0}\(s)"
+        let line: CTLine
+        if let cached = lineCache[key] {
+            line = cached
+        } else {
+            let attrs: [CFString: Any] = [kCTFontAttributeName: font, kCTForegroundColorFromContextAttributeName: true]
+            line = CTLineCreateWithAttributedString(CFAttributedStringCreate(nil, s as CFString, attrs as CFDictionary))
+            if lineCache.count > 8192 { lineCache.removeAll(keepingCapacity: true) }
+            lineCache[key] = line
+        }
+        ctx.setFillColor(color)
         var dx: CGFloat = 0
         if let fit = fitWidth {
             let w = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
