@@ -1,0 +1,43 @@
+name: RaptorMac
+options:
+  bundleIdPrefix: dev.raptor
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+packages:
+  RaptorKit:
+    path: ../ios/RaptorKit
+targets:
+  Raptor:
+    type: application
+    platform: macOS
+    sources:
+      - Raptor
+    dependencies:
+      - package: RaptorKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.raptor.mac
+        PRODUCT_NAME: Raptor
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.0"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Raptor
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        INFOPLIST_KEY_NSHumanReadableCopyright: "Open source under the MIT license."
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: "Raptor connects to Rex servers on your network and tailnet."
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        DEVELOPMENT_TEAM: ""
+        ENABLE_HARDENED_RUNTIME: NO
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        ARCHS: arm64
+schemes:
+  Raptor:
+    build:
+      targets:
+        Raptor: all
+    run:
+      config: Debug
