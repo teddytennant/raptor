@@ -1,7 +1,7 @@
 import AppKit
 import RaptorKit
 import SwiftUI
-import UserNotifications
+@preconcurrency import UserNotifications
 
 @main
 struct RaptorMacApp: App {

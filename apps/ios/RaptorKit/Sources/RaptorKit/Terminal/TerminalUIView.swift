@@ -842,7 +842,7 @@ final class KeyBar: UIInputView {
             t.send(k)
             if repeats {
                 stopRepeat()
-                repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.38, repeats: false) { [weak self] _ in
+                repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.38, repeats: false) { [weak self, weak t] _ in
                     MainActor.assumeIsolated {
                         self?.repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.045, repeats: true) { [weak t] _ in
                             MainActor.assumeIsolated { t?.send(k) }

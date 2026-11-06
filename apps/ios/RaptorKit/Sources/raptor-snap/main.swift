@@ -97,7 +97,7 @@ func snapViews(_ address: String, _ outDir: String) {
     }
     withSession(model, server) { _, _ in
         spin(1)
-        func home(_ scheme: ColorScheme) -> some View {
+        @MainActor func home(_ scheme: ColorScheme) -> some View {
             VStack(alignment: .leading, spacing: 0) {
                 HStack { Spacer(); Image(systemName: "plus").font(.title3).foregroundStyle(Palette.accent) }.padding(.horizontal, 20).padding(.top, 58)
                 Text("Raptor").font(.largeTitle.bold()).padding(.horizontal, 20).padding(.top, 4)
