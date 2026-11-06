@@ -86,6 +86,8 @@ public final class TerminalRenderer {
         public var cursorShape: CursorShape?
         /// Draw the thin history position bar (off where the platform has its own scroller).
         public var historyBar = true
+        /// Text an input method is still composing, drawn at the cursor.
+        public var preedit = ""
         public init() {}
     }
 
@@ -101,8 +103,11 @@ public final class TerminalRenderer {
         let fgDefault = frame.foreground
         let selection = blend(fgDefault, frame.background, 0.30)
 
+        // Only rows the dirty rect touches (a blinking cursor redraws one cell).
+        let clip = ctx.boundingBoxOfClipPath
         for (row, line) in frame.lines.enumerated() {
             let top = CGFloat(row) * m.height
+            guard top + m.height * 2 >= clip.minY, top - m.height <= clip.maxY else { continue }
             // Unantialiased, so neighbouring backgrounds meet on a pixel edge with no seam.
             ctx.setShouldAntialias(false)
             for run in line.runs {
@@ -113,7 +118,7 @@ public final class TerminalRenderer {
             }
             ctx.setShouldAntialias(true)
             for run in line.runs where !run.text.allSatisfy({ $0 == " " }) {
-                var color = run.fg
+                var color = readable(run.fg, on: run.bg ?? frame.background, fallback: frame.foreground)
                 if run.style & styleFaint != 0 { color = blend(color, frame.background, 0.5) }
                 let f = font(bold: run.style & styleBold != 0, italic: run.style & styleItalic != 0)
                 drawRun(run, font: f, color: cg(color), at: CGPoint(x: CGFloat(run.col) * m.width, y: top), in: ctx)
@@ -121,7 +126,9 @@ public final class TerminalRenderer {
             }
         }
 
-        if let c = frame.cursor, o.cursorVisible, frame.scrollOffset + frame.scrollLen >= frame.scrollTotal {
+        if let c = frame.cursor, !o.preedit.isEmpty {
+            drawPreedit(o.preedit, at: c, frame: frame, in: ctx)
+        } else if let c = frame.cursor, o.cursorVisible, frame.scrollOffset + frame.scrollLen >= frame.scrollTotal {
             drawCursor(c, frame: frame, in: ctx, focused: o.focused, shape: o.cursorShape ?? c.shape)
         }
         ctx.restoreGState()
@@ -398,6 +405,29 @@ public final class TerminalRenderer {
         }
     }
 
+    /// An IME composition: underlined over the cells it will take, with a caret
+    /// after it. Shifted left if it would run past the right edge.
+    private func drawPreedit(_ text: String, at c: Cursor, frame: Frame, in ctx: CGContext) {
+        let m = metrics
+        let cells = cellCount(text)
+        let col = max(0, min(Int(c.col), Int(frame.cols) - cells))
+        let top = CGFloat(c.row) * m.height
+        var x = CGFloat(col) * m.width
+        let width = CGFloat(cells) * m.width
+        ctx.setFillColor(cg(frame.background))
+        ctx.fill(CGRect(x: x, y: top, width: width, height: m.height))
+        let fg = cg(frame.foreground)
+        let baseline = top + (m.height - (m.ascent + m.descent)) / 2 + m.ascent
+        for g in text {
+            let w = CGFloat(cellWidth(g)) * m.width
+            drawText(String(g), font: fonts[0], color: fg, x: x, baseline: baseline, in: ctx, fitWidth: w)
+            x += w
+        }
+        ctx.setFillColor(fg)
+        ctx.fill(CGRect(x: CGFloat(col) * m.width, y: top + m.height - 1.5, width: width, height: 1))
+        ctx.fill(CGRect(x: x, y: top, width: 2, height: m.height))
+    }
+
     private func graphemeIndex(_ widths: Data, _ cellOffset: Int) -> Int {
         var c = 0
         for (i, w) in widths.enumerated() {
@@ -410,6 +440,39 @@ public final class TerminalRenderer {
 
 func cg(_ argb: UInt32) -> CGColor {
     CGColor(srgbRed: CGFloat((argb >> 16) & 0xFF) / 255, green: CGFloat((argb >> 8) & 0xFF) / 255, blue: CGFloat(argb & 0xFF) / 255, alpha: 1)
+}
+
+/// Cells a string takes on the grid (East Asian wide characters and emoji take two).
+func cellCount(_ s: String) -> Int {
+    s.reduce(0) { $0 + cellWidth($1) }
+}
+
+func cellWidth(_ c: Character) -> Int {
+    guard let v = c.unicodeScalars.first else { return 1 }
+    if v.properties.isEmojiPresentation { return 2 }
+    switch v.value {
+    case 0x1100...0x115F, 0x2E80...0x303E, 0x3041...0x33FF, 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xA000...0xA4CF,
+         0xAC00...0xD7A3, 0xF900...0xFAFF, 0xFE30...0xFE4F, 0xFF00...0xFF60, 0xFFE0...0xFFE6, 0x20000...0x3FFFD:
+        return 2
+    default:
+        return 1
+    }
+}
+
+/// Text in a palette color that nearly matches its background (white on a light
+/// theme, say) is drawn in the default foreground instead. Equal colors are kept:
+/// that's a program hiding text on purpose.
+func readable(_ fg: UInt32, on bg: UInt32, fallback: UInt32) -> UInt32 {
+    guard fg & 0xFFFFFF != bg & 0xFFFFFF else { return fg }
+    func lum(_ c: UInt32) -> Double {
+        func ch(_ s: UInt32) -> Double {
+            let v = Double((c >> s) & 0xFF) / 255
+            return v <= 0.03928 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * ch(16) + 0.7152 * ch(8) + 0.0722 * ch(0)
+    }
+    let a = lum(fg), b = lum(bg)
+    return (max(a, b) + 0.05) / (min(a, b) + 0.05) < 1.35 ? fallback : fg
 }
 
 func blend(_ a: UInt32, _ b: UInt32, _ t: Double) -> UInt32 {

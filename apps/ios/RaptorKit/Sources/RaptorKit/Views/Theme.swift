@@ -181,8 +181,8 @@ public extension View {
 /// A short glyph for what a pane is running, shown on tiles and in the dock.
 public func glyph(_ b: Block?) -> String {
     guard let b else { return ">_" }
-    let p = b.process.lowercased()
     let shells: Set<String> = ["bash", "zsh", "fish", "sh", "nu", "dash", "ksh", "login"]
+    let p = runningName(b)?.lowercased() ?? ""
     if p.isEmpty || shells.contains(p) { return ">_" }
     if p.hasPrefix("nvim") { return "N" }
     if p == "vim" || p == "vi" { return "V" }
@@ -202,6 +202,8 @@ public func glyph(_ b: Block?) -> String {
 public func runningName(_ b: Block) -> String? {
     let shells: Set<String> = ["bash", "zsh", "fish", "sh", "nu", "dash", "ksh", "tcsh", "login"]
     let p = b.process.trimmingCharacters(in: .whitespaces)
+    // An agent run through an interpreter (python, node) goes by the name it reports.
+    if let app = b.agent?.app, !app.isEmpty, !shells.contains(p) { return app }
     let junk = p.isEmpty || !p.contains(where: \.isLetter) || shells.contains(p)
     let t = b.name.trimmingCharacters(in: .whitespaces)
     let title: String? = (!t.isEmpty && t != b.shortPwd && !shells.contains(t) && t.contains(where: \.isLetter)) ? t : nil

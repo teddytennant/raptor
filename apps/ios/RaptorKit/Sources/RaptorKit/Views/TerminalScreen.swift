@@ -9,20 +9,42 @@ public struct TerminalScreen: View {
     @State private var windowId: String?
     @State private var blockId: String?
     @State private var termColors: (UInt32, UInt32)?
-    @State private var controller: TerminalController?
+    /// Every open terminal by block; tiled iPad windows have several.
+    @State private var controllers: [String: TerminalController] = [:]
     @State private var topInset: CGFloat = 0
-    @State private var bottomInset: CGFloat = 0
-    @State private var keyboard = false
     @State private var showPalette = false
+    @State private var keyboard = false
+    /// Windows that existed when we asked for a new one; the one that appears next is ours to show.
+    @State private var windowsBeforeNew: Set<String>?
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var hsize
+    @Environment(\.verticalSizeClass) private var vsize
+    /// Room for every pane of a window side by side (iPad).
+    private var wide: Bool { hsize == .regular }
+    /// A landscape phone: with the keyboard up, the top bar costs rows.
+    private var squat: Bool { vsize == .compact && keyboard }
+    #else
+    private let wide = true
+    private let squat = false
+    #endif
     @State private var slideEdge: Edge = .trailing
     /// Set by the app root: the left button and the title open the session
     /// switcher, and switching sessions goes through the root.
     var onSessions: (() -> Void)?
     var onOpen: ((Focus) -> Void)?
+    var onSettings: (() -> Void)?
+    /// Bumped by the app each time it asks for `requestedBlock` (a notification
+    /// for a pane in this session, say), even if it asked for it before.
+    let request: Int
+    let requestedBlock: String?
 
-    public init(serverId: String, sessionId: String, blockId: String?, onSessions: (() -> Void)? = nil, onOpen: ((Focus) -> Void)? = nil) {
+    public init(serverId: String, sessionId: String, blockId: String?, request: Int = 0, onSessions: (() -> Void)? = nil,
+                onOpen: ((Focus) -> Void)? = nil, onSettings: (() -> Void)? = nil) {
+        self.request = request
+        self.requestedBlock = blockId
         self.onSessions = onSessions
         self.onOpen = onOpen
+        self.onSettings = onSettings
         self.serverId = serverId
         _sessionId = State(initialValue: sessionId)
         _blockId = State(initialValue: blockId)
@@ -43,19 +65,48 @@ public struct TerminalScreen: View {
 
         ZStack(alignment: .top) {
             c.bg.ignoresSafeArea()
-            if let b = blockId {
+            if let w = window, w.blocks.count > 1, wide, blockId != nil {
+                tiles(w, chrome: c, session: session)
+            } else if let b = blockId {
                 LiveTerminal(serverId: serverId, sessionId: sessionId, blockId: b, theme: model.theme, chrome: c,
-                             insetTop: topInset, insetBottom: bottomInset, controller: $controller,
-                             onSwipe: { swipe($0, session: session) }, onPalette: { showPalette = true }) { termColors = ($0, $1) }
+                             insetTop: topInset, controller: slot(b),
+                             onSwipe: { swipe($0, session: session) }) { termColors = ($0, $1) }
                     .id(b)
                     .transition(.asymmetric(insertion: .move(edge: slideEdge), removal: .move(edge: slideEdge == .trailing ? .leading : .trailing)))
                     .ignoresSafeArea(.container, edges: [.top, .bottom])
+            } else if let session, session.windows.isEmpty {
+                ContentUnavailableView {
+                    Label("No windows", systemImage: "macwindow")
+                } description: {
+                    Text("Everything in \(session.label) has exited.")
+                } actions: {
+                    Button("New Window") { newWindow(session) }
+                        .buttonStyle(.borderedProminent)
+                        .foregroundStyle(c.bg)
+                    Button("End Session", role: .destructive) {
+                        Task { try? await model.core.destroySession(serverId: serverId, sessionId: sessionId) }
+                    }
+                }
+                .foregroundStyle(c.text)
+                .tint(c.accent)
+            } else if case .offline(let error, _) = server?.connectivity {
+                ContentUnavailableView {
+                    Label("Can't reach \(server.map(serverTitle) ?? "the server")", systemImage: "wifi.exclamationmark")
+                } description: {
+                    Text(error)
+                } actions: {
+                    Button("Try Again") { model.core.reconnect(serverId: serverId) }.buttonStyle(.borderedProminent).foregroundStyle(c.bg)
+                }
+                .foregroundStyle(c.text)
+                .tint(c.accent)
             } else {
                 ProgressView().tint(c.accent).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
             // The top bar sits over the terminal like glass: live rows start
             // below it, and scrollback moving up behind it shows through blurred.
+            // A landscape phone with the keyboard up needs every row, so it goes.
+            if !squat {
             VStack(spacing: 8) {
                 header(c, server: server, session: session, window: window, block: block)
                 // Windows as slim tabs in the top bar: always reachable, even while typing.
@@ -69,7 +120,7 @@ public struct TerminalScreen: View {
                         Haptics.select()
                         Task { try? await model.core.focusWindow(serverId: serverId, sessionId: sessionId, windowId: w.id) }
                     } onNew: {
-                        Task { try? await model.core.newWindow(serverId: serverId, sessionId: sessionId) }
+                        newWindow(session)
                     }
                 }
             }
@@ -83,30 +134,82 @@ public struct TerminalScreen: View {
                         .ignoresSafeArea(edges: .top)
                 }
                 .background(GeometryReader { g in Color.clear.preference(key: TopInsetKey.self, value: g.frame(in: .global).maxY) })
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
 
         }
         .environment(\.chrome, c)
+        .tint(c.accent)
         .preferredColorScheme(c.scheme)
         #if os(iOS)
         .toolbar(.hidden, for: .navigationBar)
         .statusBarHidden(false)
         #endif
         .onPreferenceChange(TopInsetKey.self) { topInset = $0 }
-        .onPreferenceChange(BottomInsetKey.self) { bottomInset = keyboard ? 0 : $0 }
-        .animation(.snappy(duration: 0.25), value: keyboard)
+        .animation(.snappy(duration: 0.25), value: squat)
         #if os(iOS)
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboard = true; bottomInset = 0 }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboard = true }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboard = false }
         #endif
         .onAppear { pick(session) }
         .onChange(of: session) { pick(model.session(serverId, sessionId)) }
+        .onChange(of: session?.windows.map(\.id)) { _, ids in
+            guard let before = windowsBeforeNew, let id = ids?.first(where: { !before.contains($0) }),
+                  let w = session?.windows.first(where: { $0.id == id }) else { return }
+            windowsBeforeNew = nil
+            showWindow(w, edge: .trailing)
+        }
         .onChange(of: sessionId) { blockId = nil; windowId = nil; pick(model.session(serverId, sessionId)) }
         .onChange(of: blockId) { model.focus = Focus(serverId: serverId, sessionId: sessionId, blockId: blockId) }
+        .onChange(of: request) {
+            guard let b = requestedBlock, b != blockId, let w = session?.windows.first(where: { $0.blocks.contains { $0.id == b } }) else { return }
+            windowId = w.id
+            blockId = b
+            Task { try? await model.core.focusBlock(serverId: serverId, sessionId: sessionId, blockId: b) }
+        }
         .onDisappear { model.focus = nil }
+        .focusedSceneValue(\.terminalActions, actions(session: session))
         .sheet(isPresented: $showPalette) {
             CommandPalette(serverId: serverId, local: localCommands(session: session), sessionId: sessionId, blockId: blockId)
                 .environment(\.chrome, c)
         }
+    }
+
+    private var controller: TerminalController? { blockId.flatMap { controllers[$0] } }
+
+    private func slot(_ id: String) -> Binding<TerminalController?> {
+        Binding(get: { controllers[id] }, set: { controllers[id] = $0 })
+    }
+
+    /// iPad: every pane of the window at once, laid out as on the desktop.
+    /// Tapping a pane gives it the keyboard.
+    private func tiles(_ w: Window, chrome c: Chrome, session: Session?) -> some View {
+        GeometryReader { g in
+            ZStack(alignment: .topLeading) {
+                ForEach(w.blocks, id: \.id) { b in
+                    let focused = b.id == blockId
+                    LiveTerminal(serverId: serverId, sessionId: sessionId, blockId: b.id, theme: model.theme, chrome: c,
+                                 insetTop: 0, controller: slot(b.id), onSwipe: { cycleWindow($0, session: session) },
+                                 focused: focused, onFocus: { if blockId != b.id { focus(b.id) } }) { termColors = ($0, $1) }
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .strokeBorder(focused ? c.accent.opacity(0.7) : c.hairline, lineWidth: focused ? 1.5 : 1))
+                        .frame(width: max(1, b.w * g.size.width - 4), height: max(1, b.h * g.size.height - 4))
+                        .offset(x: b.x * g.size.width + 2, y: b.y * g.size.height + 2)
+                        .accessibilityElement(children: .contain)
+                        .accessibilityLabel(runningName(b) ?? "Shell")
+                }
+            }
+        }
+        .padding(.top, topInset)
+        .padding(.horizontal, 2)
+        .ignoresSafeArea(.container, edges: [.top, .bottom])
+    }
+
+    private func focus(_ b: String) {
+        blockId = b
+        Haptics.select()
+        Task { try? await model.core.focusBlock(serverId: serverId, sessionId: sessionId, blockId: b) }
     }
 
     /// Every pane in the session, in window order then layout order.
@@ -114,22 +217,36 @@ public struct TerminalScreen: View {
         (s?.windows ?? []).flatMap { w in w.blocks.map { (w.id, $0.id) } }
     }
 
-    /// Swipe to the next (+1) or previous (-1) pane, crossing into other windows.
     /// Swipe left/right moves between tabs (windows), landing on each tab's
     /// focused pane. With a single tab, it cycles that tab's panes instead.
     private func swipe(_ dir: Int, session: Session?) {
-        if let wins = session?.windows, wins.count > 1 {
-            let i = wins.firstIndex { $0.id == windowId } ?? 0
-            let w = wins[(i + dir + wins.count) % wins.count]
-            slideEdge = dir > 0 ? .trailing : .leading
-            Haptics.select()
-            withAnimation(.snappy(duration: 0.28)) {
-                windowId = w.id
-                blockId = w.blocks.first { $0.id == w.focusedBlockId }?.id ?? w.blocks.first?.id
-            }
-            Task { try? await model.core.focusWindow(serverId: serverId, sessionId: sessionId, windowId: w.id) }
-            return
+        if let wins = session?.windows, wins.count > 1 { cycleWindow(dir, session: session) } else { cyclePane(dir, session: session) }
+    }
+
+    private func cycleWindow(_ dir: Int, session: Session?) {
+        guard let wins = session?.windows, wins.count > 1 else { return }
+        let i = wins.firstIndex { $0.id == windowId } ?? 0
+        showWindow(wins[(i + dir + wins.count) % wins.count], edge: dir > 0 ? .trailing : .leading)
+    }
+
+    private func showWindow(_ w: Window, edge: Edge) {
+        guard w.id != windowId else { return }
+        slideEdge = edge
+        Haptics.select()
+        withAnimation(.snappy(duration: 0.28)) {
+            windowId = w.id
+            blockId = w.blocks.first { $0.id == w.focusedBlockId }?.id ?? w.blocks.first?.id
         }
+        Task { try? await model.core.focusWindow(serverId: serverId, sessionId: sessionId, windowId: w.id) }
+    }
+
+    private func newWindow(_ session: Session?) {
+        windowsBeforeNew = Set(session?.windows.map(\.id) ?? [])
+        Task { try? await model.core.newWindow(serverId: serverId, sessionId: sessionId) }
+    }
+
+    /// The next (+1) or previous (-1) pane, crossing into other windows.
+    private func cyclePane(_ dir: Int, session: Session?) {
         let all = panes(session)
         guard all.count > 1, let i = all.firstIndex(where: { $0.block == blockId }) else { return }
         let next = all[(i + dir + all.count) % all.count]
@@ -142,6 +259,33 @@ public struct TerminalScreen: View {
         Task { try? await model.core.focusBlock(serverId: serverId, sessionId: sessionId, blockId: next.block) }
     }
 
+    /// What the keyboard shortcuts and the iPad menu bar can do here.
+    private func actions(session: Session?) -> TerminalActions {
+        let core = model.core, srv = serverId, sid = sessionId, ctl = controller
+        return TerminalActions(
+            newWindow: { newWindow(session) },
+            split: { vertical in
+                guard let b = blockId else { return }
+                Task { _ = try? await core.split(serverId: srv, sessionId: sid, blockId: b, vertical: vertical) }
+            },
+            closePane: { if let b = blockId { closePane(b, session: session) } },
+            cycleWindow: { cycleWindow($0, session: session) },
+            cyclePane: { cyclePane($0, session: session) },
+            selectWindow: { n in
+                guard let wins = session?.windows, wins.indices.contains(n) else { return }
+                let cur = wins.firstIndex { $0.id == windowId } ?? 0
+                showWindow(wins[n], edge: n > cur ? .trailing : .leading)
+            },
+            jumpPrompt: { ctl?.terminal?.jumpPrompt(delta: Int32($0)) },
+            fontStep: { ctl?.onFontStep?($0) },
+            toggleFit: { ctl?.toggleControl() },
+            hasControl: ctl?.hasControl ?? false,
+            palette: { showPalette = true },
+            sessions: onSessions,
+            settings: onSettings
+        )
+    }
+
     private func localCommands(session: Session?) -> [PaletteItem] {
         var items: [PaletteItem] = []
         let srv = serverId, sid = sessionId, bid = blockId
@@ -151,7 +295,7 @@ public struct TerminalScreen: View {
         }
         add("next-pane", "Next Tab", "arrow.right.square", keywords: "switch window pane") { swipe(1, session: session) }
         add("prev-pane", "Previous Tab", "arrow.left.square", keywords: "switch window pane") { swipe(-1, session: session) }
-        add("new-window", "New Window", "plus.square.on.square") { Task { try? await core.newWindow(serverId: srv, sessionId: sid) } }
+        add("new-window", "New Window", "plus.square.on.square") { newWindow(session) }
         if let b = bid {
             add("split-right", "Split Right", "rectangle.split.2x1") { Task { _ = try? await core.split(serverId: srv, sessionId: sid, blockId: b, vertical: false) } }
             add("split-down", "Split Down", "rectangle.split.1x2") { Task { _ = try? await core.split(serverId: srv, sessionId: sid, blockId: b, vertical: true) } }
@@ -223,14 +367,14 @@ public struct TerminalScreen: View {
             Button { onSessions?() } label: {
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 6) {
-                        Text(block.flatMap(runningName) ?? "terminal").font(.system(size: 15, weight: .semibold)).foregroundStyle(c.text)
+                        Text(block.flatMap(runningName) ?? "terminal").font(.subheadline.weight(.semibold)).foregroundStyle(c.text)
                         if let p = block?.shortPwd, !p.isEmpty {
                             Text(p).font(.mono(13)).foregroundStyle(c.secondary).truncationMode(.middle)
                         }
                     }
                     .lineLimit(1)
                     HStack(spacing: 3) {
-                        Text(session?.label ?? "").font(.system(size: 12)).foregroundStyle(c.tertiary)
+                        Text(session?.label ?? "").font(.caption).foregroundStyle(c.tertiary)
                         Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold)).foregroundStyle(c.tertiary)
                     }
                 }
@@ -240,7 +384,7 @@ public struct TerminalScreen: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Sessions")
 
-            if let window, window.blocks.count > 1 {
+            if let window, window.blocks.count > 1, !wide {
                 PaneMap(window: window, selected: blockId) { picked in
                     blockId = picked
                     Haptics.select()
@@ -249,7 +393,8 @@ public struct TerminalScreen: View {
                 .frame(width: 54, height: 38)
             }
 
-            MoreMenu(serverId: serverId, sessionId: sessionId, blockId: blockId, controller: controller, onClosePane: { closePane($0, session: session) }) { showPalette = true }
+            MoreMenu(serverId: serverId, sessionId: sessionId, blockId: blockId, controller: controller, onClosePane: { closePane($0, session: session) },
+                     onNewWindow: { newWindow(session) }) { showPalette = true }
         }
         .padding(.horizontal, 12)
         .padding(.top, 4)
@@ -261,10 +406,6 @@ private struct TopInsetKey: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
-private struct BottomInsetKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
-}
 
 /// The window's pane layout in miniature. Tap a pane to switch to it.
 private struct PaneMap: View {
@@ -279,15 +420,21 @@ private struct PaneMap: View {
                 ForEach(window.blocks, id: \.id) { b in
                     let tint = b.agent.flatMap { $0.state == .idle ? nil : Palette.agent($0.state) }
                     RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .fill(b.id == selected ? c.accent.opacity(0.6) : (tint?.opacity(0.55) ?? c.key))
+                        .fill(b.id == selected ? c.accent.opacity(0.75) : (tint?.opacity(0.55) ?? c.text.opacity(0.18)))
                         .frame(width: max(2, b.w * g.size.width - 2), height: max(2, b.h * g.size.height - 2))
                         .offset(x: b.x * g.size.width + 1, y: b.y * g.size.height + 1)
                         .onTapGesture { onPick(b.id) }
+                        .accessibilityElement()
+                        .accessibilityLabel(runningName(b) ?? "Shell")
+                        .accessibilityValue(b.agent.map { $0.label } ?? "")
+                        .accessibilityAddTraits(b.id == selected ? [.isButton, .isSelected] : .isButton)
+                        .accessibilityAction { onPick(b.id) }
                 }
             }
         }
         .padding(4)
         .glass(RoundedRectangle(cornerRadius: 10, style: .continuous), c)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel("Panes")
     }
 }
@@ -312,7 +459,7 @@ private struct WindowTabs: View {
                             if w.blocks.contains(where: { $0.agent?.state == .blocked }) {
                                 Circle().fill(Palette.blocked).frame(width: 6, height: 6)
                             }
-                            Text(label).font(.system(size: 13, weight: sel ? .semibold : .regular)).foregroundStyle(sel ? c.text : c.secondary).lineLimit(1)
+                            Text(label).font(.footnote.weight(sel ? .semibold : .regular)).foregroundStyle(sel ? c.text : c.secondary).lineLimit(1)
                             if w.blocks.count > 1 {
                                 Text("\(w.blocks.count)").font(.mono(11)).foregroundStyle(c.tertiary)
                             }
@@ -342,14 +489,13 @@ private struct MoreMenu: View {
     let blockId: String?
     let controller: TerminalController?
     var onClosePane: (String) -> Void
+    var onNewWindow: () -> Void
     var onPalette: () -> Void
 
     var body: some View {
         Menu {
             Button("Command Palette", systemImage: "command", action: onPalette)
-            Button("New Window", systemImage: "plus.square.on.square") {
-                Task { try? await model.core.newWindow(serverId: serverId, sessionId: sessionId) }
-            }
+            Button("New Window", systemImage: "plus.square.on.square", action: onNewWindow)
             Divider()
             if let ctl = controller {
                 Button(ctl.hasControl ? "Use Desktop Size" : "Fit to This Screen",
@@ -397,18 +543,18 @@ struct LiveTerminal: View {
     let theme: ThemeSpec
     let chrome: Chrome
     let insetTop: CGFloat
-    let insetBottom: CGFloat
     @Binding var controller: TerminalController?
     var onSwipe: (Int) -> Void
-    var onPalette: () -> Void
+    var focused = true
+    var onFocus: (() -> Void)? = nil
     var onColors: (UInt32, UInt32) -> Void
     @State private var own: TerminalController?
 
     var body: some View {
         ZStack {
             if let ctl = own {
-                TerminalSurface(controller: ctl, fontSize: fontSize, chrome: chrome, insetTop: insetTop, insetBottom: insetBottom,
-                                appearance: TerminalAppearance(model), onColors: onColors, onSwipe: onSwipe, onPalette: onPalette) {
+                TerminalSurface(controller: ctl, fontSize: fontSize, chrome: chrome, insetTop: insetTop,
+                                appearance: TerminalAppearance(model), onColors: onColors, onSwipe: onSwipe, focused: focused, onFocus: onFocus) {
                     model.core.setSetting(key: "font_size", value: String(Double($0)))
                 }
                 if let text = ctl.status.banner {
@@ -437,6 +583,7 @@ struct LiveTerminal: View {
         .onDisappear {
             own?.close()
             own = nil
+            controller = nil
         }
     }
 
@@ -449,11 +596,11 @@ struct TerminalSurface: UIViewRepresentable {
     let fontSize: CGFloat
     let chrome: Chrome
     let insetTop: CGFloat
-    let insetBottom: CGFloat
     let appearance: TerminalAppearance
     var onColors: (UInt32, UInt32) -> Void
     var onSwipe: (Int) -> Void
-    var onPalette: () -> Void
+    var focused: Bool
+    var onFocus: (() -> Void)?
     var onFontSize: (CGFloat) -> Void
 
     final class Coordinator { var applied: TerminalAppearance? }
@@ -474,10 +621,10 @@ struct TerminalSurface: UIViewRepresentable {
         }
         v.chrome = chrome
         v.insetTop = insetTop
-        v.insetBottom = insetBottom
         v.onColors = onColors
         v.onSwipePane = onSwipe
-        v.onPalette = onPalette
+        v.onFocus = onFocus
+        if focused { v.takeKeyboardIfTyping() }
     }
 }
 #else
@@ -487,11 +634,11 @@ struct TerminalSurface: NSViewRepresentable {
     let fontSize: CGFloat
     let chrome: Chrome
     let insetTop: CGFloat
-    let insetBottom: CGFloat
     let appearance: TerminalAppearance
     var onColors: (UInt32, UInt32) -> Void
     var onSwipe: (Int) -> Void
-    var onPalette: () -> Void
+    var focused: Bool
+    var onFocus: (() -> Void)?
     var onFontSize: (CGFloat) -> Void
 
     final class View: NSView {
@@ -533,5 +680,81 @@ struct TerminalAppearance: Equatable {
         lineHeight = CGFloat(Double(model.core.setting(key: Prefs.lineHeight) ?? "") ?? 1.06)
         cursor = model.core.setting(key: Prefs.cursor)
         blink = Prefs.flag(model, Prefs.blink)
+    }
+}
+
+/// Commands for the focused terminal, for the menu bar and hardware keyboards.
+public struct TerminalActions {
+    var newWindow: () -> Void
+    var split: (_ vertical: Bool) -> Void
+    var closePane: () -> Void
+    var cycleWindow: (Int) -> Void
+    var cyclePane: (Int) -> Void
+    var selectWindow: (Int) -> Void
+    var jumpPrompt: (Int) -> Void
+    var fontStep: (Int) -> Void
+    var toggleFit: () -> Void
+    var hasControl: Bool
+    var palette: () -> Void
+    var sessions: (() -> Void)?
+    var settings: (() -> Void)?
+}
+
+private struct TerminalActionsKey: FocusedValueKey {
+    typealias Value = TerminalActions
+}
+
+public extension FocusedValues {
+    var terminalActions: TerminalActions? {
+        get { self[TerminalActionsKey.self] }
+        set { self[TerminalActionsKey.self] = newValue }
+    }
+}
+
+/// The Terminal menu: every shortcut is listed in the menu bar and in the
+/// overlay that holding ⌘ shows.
+public struct TerminalMenuCommands: Commands {
+    @FocusedValue(\.terminalActions) private var actions
+
+    public init() {}
+
+    public var body: some Commands {
+        CommandGroup(replacing: .appSettings) {
+            Button("Settings…") { actions?.settings?() }
+                .keyboardShortcut(",")
+                .disabled(actions?.settings == nil)
+        }
+        CommandMenu("Terminal") {
+            Group { menu }.disabled(actions == nil)
+        }
+    }
+
+    @ViewBuilder private var menu: some View {
+        Button("New Window") { actions?.newWindow() }.keyboardShortcut("t")
+        Button("Split Right") { actions?.split(false) }.keyboardShortcut("d")
+        Button("Split Down") { actions?.split(true) }.keyboardShortcut("d", modifiers: [.command, .shift])
+        Button("Close Pane") { actions?.closePane() }.keyboardShortcut("w")
+        Divider()
+        Button("Next Tab") { actions?.cycleWindow(1) }.keyboardShortcut("]", modifiers: [.command, .shift])
+        Button("Previous Tab") { actions?.cycleWindow(-1) }.keyboardShortcut("[", modifiers: [.command, .shift])
+        Button("Next Pane") { actions?.cyclePane(1) }.keyboardShortcut("]")
+        Button("Previous Pane") { actions?.cyclePane(-1) }.keyboardShortcut("[")
+        Menu("Go to Tab") {
+            ForEach(1..<10) { n in
+                Button("Tab \(n)") { actions?.selectWindow(n - 1) }.keyboardShortcut(KeyEquivalent(Character("\(n)")))
+            }
+        }
+        Divider()
+        Button("Previous Prompt") { actions?.jumpPrompt(-1) }.keyboardShortcut(.upArrow)
+        Button("Next Prompt") { actions?.jumpPrompt(1) }.keyboardShortcut(.downArrow)
+        Divider()
+        Button("Bigger Text") { actions?.fontStep(1) }.keyboardShortcut("=")
+        Button("Smaller Text") { actions?.fontStep(-1) }.keyboardShortcut("-")
+        Button("Actual Size") { actions?.fontStep(0) }.keyboardShortcut("0")
+        Button(actions?.hasControl == true ? "Use Desktop Size" : "Fit to This Screen") { actions?.toggleFit() }
+            .keyboardShortcut("r", modifiers: [.command, .shift])
+        Divider()
+        Button("Sessions…") { actions?.sessions?() }.keyboardShortcut("o").disabled(actions?.sessions == nil)
+        Button("Command Palette…") { actions?.palette() }.keyboardShortcut("k")
     }
 }

@@ -1,3 +1,4 @@
+import Network
 import RaptorKit
 import SwiftUI
 import UserNotifications
@@ -14,6 +15,7 @@ struct RaptorApp: App {
         m.onNotify = Notifier.post
         _model = State(initialValue: m)
         Notifier.model = m
+        NetworkWatch.start(m)
     }
 
     var body: some Scene {
@@ -22,6 +24,7 @@ struct RaptorApp: App {
                 .environment(model)
                 .tint(Palette.accent)
         }
+        .commands { TerminalMenuCommands() }
         .onChange(of: phase) { _, p in
             model.setForeground(p != .background)
             // Only ask once there's something to be notified about.
@@ -41,11 +44,13 @@ struct RootView: View {
     @State private var addingServer = false
     @State private var editing: Server?
     @State private var loaded = false
+    @State private var columns = NavigationSplitViewVisibility.automatic
+    @State private var openCount = 0
 
     var body: some View {
         Group {
             if hsize == .regular, !model.state.servers.isEmpty {
-                NavigationSplitView {
+                NavigationSplitView(columnVisibility: $columns) {
                     ScrollView {
                         HomeList(current: current, onOpen: { s, ses, b in open(Focus(serverId: s, sessionId: ses, blockId: b)) },
                                  onAdd: { addingServer = true }, onEdit: { editing = $0 })
@@ -53,8 +58,12 @@ struct RootView: View {
                     .background(Chrome(model.theme).bg.ignoresSafeArea())
                     .navigationTitle("Sessions")
                     .toolbar {
-                        ToolbarItem(placement: .topBarLeading) { Button { settings = true } label: { Image(systemName: "gearshape") } }
-                        ToolbarItem(placement: .topBarTrailing) { Button { addingServer = true } label: { Image(systemName: "plus") } }
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button { settings = true } label: { Image(systemName: "gearshape") }.accessibilityLabel("Settings")
+                        }
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button { addingServer = true } label: { Image(systemName: "plus") }.accessibilityLabel("Add server")
+                        }
                     }
                 } detail: {
                     detail
@@ -91,6 +100,13 @@ struct RootView: View {
         .onChange(of: model.state.servers.count) { _, n in
             if n > 0 { Notifier.requestAuthorizationIfNeeded() }
         }
+        // Looking at a pane answers its notifications; the badge counts what's left.
+        .onChange(of: model.focus) { _, f in
+            if let f, let b = f.blockId { UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [f.serverId + b]) }
+        }
+        .onChange(of: model.state.attention.filter { $0.block.agent?.state.urgent == true }.count) { _, n in
+            UNUserNotificationCenter.current().setBadgeCount(n)
+        }
         // Test/automation hook: RAPTOR_OPEN=<session label> opens it once it loads.
         .task {
             guard let want = ProcessInfo.processInfo.environment["RAPTOR_OPEN"] else { return }
@@ -107,22 +123,37 @@ struct RootView: View {
         if model.state.servers.isEmpty {
             WelcomeView { addingServer = true }
         } else if let c = current {
-            TerminalScreen(serverId: c.serverId, sessionId: c.sessionId, blockId: c.blockId, onSessions: { switcher = true }, onOpen: open)
+            TerminalScreen(serverId: c.serverId, sessionId: c.sessionId, blockId: c.blockId, request: openCount, onSessions: showSessions, onOpen: open,
+                           onSettings: { settings = true })
                 .id("\(c.serverId)/\(c.sessionId)")
+        } else if hsize == .regular {
+            PickSessionView(onSessions: nil)
         } else {
-            PickSessionView { switcher = true }
+            NavigationStack {
+                HomeView(onOpen: { s, ses, b in open(Focus(serverId: s, sessionId: ses, blockId: b)) },
+                         onAdd: { addingServer = true }, onEdit: { editing = $0 }, onSettings: { settings = true })
+            }
+        }
+    }
+
+    /// iPad shows and hides the sidebar; iPhone pulls up the switcher.
+    private func showSessions() {
+        if hsize == .regular {
+            withAnimation { columns = columns == .detailOnly ? .all : .detailOnly }
+        } else {
+            switcher = true
         }
     }
 
     private func open(_ f: Focus) {
         current = f
+        openCount += 1
         model.core.setSetting(key: "last_open", value: "\(f.serverId)|\(f.sessionId)")
     }
 
     private func forget() {
         current = nil
         model.core.setSetting(key: "last_open", value: "")
-        switcher = true
     }
 
     private func lastOpen() -> Focus? {
@@ -167,6 +198,23 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             return
         }
         await MainActor.run { Notifier.model?.pendingOpen = Focus(serverId: server, sessionId: session, blockId: block) }
+    }
+}
+
+/// Wi-Fi to cellular, a VPN coming up, a new hotspot: the old sockets are dead
+/// even if nothing says so yet, so have the engine check them now.
+enum NetworkWatch {
+    private static let monitor = NWPathMonitor()
+
+    static func start(_ model: RaptorModel) {
+        var last: (NWPath.Status, [NWInterface])?
+        monitor.pathUpdateHandler = { [weak model] path in
+            let now = (path.status, path.availableInterfaces)
+            defer { last = now }
+            guard let prev = last, prev.0 != now.0 || prev.1 != now.1, path.status == .satisfied else { return }
+            DispatchQueue.main.async { MainActor.assumeIsolated { model?.core.verifyConnections() } }
+        }
+        monitor.start(queue: DispatchQueue(label: "network-watch"))
     }
 }
 

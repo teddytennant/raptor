@@ -1,17 +1,33 @@
 #if os(iOS)
+import GameController
 import SwiftUI
 import UIKit
 
 /// The iOS terminal surface: draws frames with Core Text and turns touches,
 /// the software keyboard, and hardware keyboards into terminal input.
-public final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGestureRecognizerDelegate, UIEditMenuInteractionDelegate {
+public final class TerminalUIView: UIView, UITextInputTraits, UIGestureRecognizerDelegate, UIEditMenuInteractionDelegate, UIPointerInteractionDelegate {
     public let controller: TerminalController
     public let renderer: TerminalRenderer
     public var onFontSizeChanged: ((CGFloat) -> Void)?
     /// Horizontal swipe: +1 next pane, -1 previous.
     public var onSwipePane: ((Int) -> Void)?
-    /// ⌘K / ⌘⇧P on a hardware keyboard.
-    public var onPalette: (() -> Void)?
+    /// Took the keyboard (a tap, a shortcut): the pane the user is working in.
+    public var onFocus: (() -> Void)?
+    /// Whether the user is typing: a pane or window that replaces this one takes
+    /// the keyboard over instead of dropping it.
+    static var wantsKeyboard = false
+    private var leaving = false
+
+    public override func willMove(toWindow newWindow: UIWindow?) {
+        super.willMove(toWindow: newWindow)
+        leaving = newWindow == nil
+    }
+
+    /// Called when this pane becomes the one the user works in.
+    public func takeKeyboardIfTyping() {
+        guard Self.wantsKeyboard, window != nil, !isFirstResponder else { return }
+        DispatchQueue.main.async { [weak self] in _ = self?.becomeFirstResponder() }
+    }
 
     private var frameCache: Frame?
     private let padding: CGFloat = 6
@@ -27,6 +43,12 @@ public final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGest
     private var editMenu: UIEditMenuInteraction?
     private let keyBar: KeyBar
     let modifiers = StickyModifiers()
+    var kb = KeyboardDocument()
+    private var repeatTimer: Timer?
+    private var repeatKey: UIKeyboardHIDUsage?
+    public weak var inputDelegate: UITextInputDelegate?
+    public lazy var tokenizer: UITextInputTokenizer = UITextInputStringTokenizer(textInput: self)
+    public var markedTextStyle: [NSAttributedString.Key: Any]?
 
     /// Settings: forced cursor shape (nil follows the program) and blinking.
     public var cursorShape: CursorShape?
@@ -53,6 +75,7 @@ public final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGest
         keyBar.terminal = self
         controller.onFrame = { [weak self] in self?.refresh() }
         controller.onClipboard = { UIPasteboard.general.string = $0 }
+        controller.onFontStep = { [weak self] in self?.stepFont($0) }
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(onTap(_:)))
         let doubleTap = UITapGestureRecognizer(target: self, action: #selector(onDoubleTap(_:)))
@@ -60,22 +83,20 @@ public final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGest
         tap.require(toFail: doubleTap)
         let pan = UIPanGestureRecognizer(target: self, action: #selector(onPan(_:)))
         pan.delegate = self
+        pan.allowedScrollTypesMask = .all // trackpads and mouse wheels scroll too
+        let rightClick = UITapGestureRecognizer(target: self, action: #selector(onRightClick(_:)))
+        rightClick.buttonMaskRequired = .secondary
+        rightClick.delegate = self
         let pinch = UIPinchGestureRecognizer(target: self, action: #selector(onPinch(_:)))
         let press = UILongPressGestureRecognizer(target: self, action: #selector(onLongPress(_:)))
         press.minimumPressDuration = 0.35
-        [tap, doubleTap, pan, pinch, press].forEach(addGestureRecognizer)
+        [tap, doubleTap, pan, pinch, press, rightClick].forEach(addGestureRecognizer)
+        addInteraction(UIPointerInteraction(delegate: self))
 
         let menu = UIEditMenuInteraction(delegate: self)
         addInteraction(menu)
         editMenu = menu
 
-        blinkTimer = Timer.scheduledTimer(withTimeInterval: 0.53, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, self.frameCache?.cursor?.blinking == true else { return }
-                self.blinkOn.toggle()
-                self.setNeedsDisplay()
-            }
-        }
         isAccessibilityElement = true
         accessibilityTraits = .allowsDirectInteraction
         accessibilityLabel = "Terminal"
@@ -90,14 +111,37 @@ public final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGest
 
     public override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window == nil { link?.invalidate(); link = nil }
+        if window == nil {
+            link?.invalidate()
+            link = nil
+            stopRepeat()
+        } else if GCKeyboard.coalesced != nil, !Self.simulator {
+            // With a hardware keyboard there's no on-screen keyboard to cover the
+            // screen, so be ready to type (and for ⌘ shortcuts) right away.
+            DispatchQueue.main.async { [weak self] in _ = self?.becomeFirstResponder() }
+        }
     }
+
+    /// The simulator always reports the Mac's keyboard, even while showing the on-screen one.
+    #if targetEnvironment(simulator)
+    private static let simulator = true
+    #else
+    private static let simulator = false
+    #endif
 
     // MARK: drawing
 
     /// Space covered by floating chrome; the grid is sized to what's left.
     public var insetTop: CGFloat = 0 { didSet { if insetTop != oldValue { pushGrid(); setNeedsDisplay() } } }
     public var insetBottom: CGFloat = 0 { didSet { if insetBottom != oldValue { pushGrid(); setNeedsDisplay() } } }
+    /// The background runs under the home indicator; the rows stop above it.
+    private var bottomInset: CGFloat { insetBottom + safeAreaInsets.bottom }
+
+    public override func safeAreaInsetsDidChange() {
+        super.safeAreaInsetsDidChange()
+        pushGrid()
+        setNeedsDisplay()
+    }
     /// Called when the terminal's default colors change, so chrome can match.
     public var onColors: ((UInt32, UInt32) -> Void)?
     /// Chrome colors for the key bar and keyboard appearance.
@@ -117,10 +161,50 @@ public final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGest
             onColors?(f.background, f.foreground)
         }
         blinkOn = true
-        setNeedsDisplay()
+        invalidate(from: prev, to: frameCache)
         if UIAccessibility.isVoiceOverRunning, let f = frameCache {
             accessibilityValue = f.lines.suffix(3).map { $0.runs.map(\.text).joined() }.joined(separator: "\n")
         }
+    }
+
+    /// Redraw only the rows that changed (and the cursor's old and new rows);
+    /// anything that moves the whole grid redraws everything.
+    private func invalidate(from p: Frame?, to f: Frame?) {
+        guard let p, let f, p.cols == f.cols, p.rows == f.rows, p.lines.count == f.lines.count,
+              p.background == f.background, p.foreground == f.foreground, p.alternateScreen == f.alternateScreen,
+              p.scrollOffset == f.scrollOffset, p.scrollTotal == f.scrollTotal, offsetY() == drawnOffsetY
+        else { return setNeedsDisplay() }
+        var dirty = CGRect.null
+        for i in f.lines.indices where p.lines[i] != f.lines[i] { dirty = dirty.union(rowRect(i)) }
+        if p.cursor != f.cursor || p.cursorColor != f.cursorColor {
+            for c in [p.cursor, f.cursor].compactMap({ $0 }) { dirty = dirty.union(rowRect(Int(c.row))) }
+        }
+        if !dirty.isNull { setNeedsDisplay(dirty) }
+    }
+
+    private func rowRect(_ row: Int) -> CGRect {
+        let h = renderer.metrics.height * scale
+        return CGRect(x: 0, y: insetTop - offsetY() + padding + CGFloat(row) * h - 2, width: bounds.width, height: h + 4)
+    }
+
+    private var drawnOffsetY: CGFloat = 0
+
+    /// The blink timer only runs while the terminal has the keyboard.
+    private func blink(_ on: Bool) {
+        blinkTimer?.invalidate()
+        blinkTimer = nil
+        blinkOn = true
+        guard on else { return }
+        let t = Timer(timeInterval: 0.53, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.cursorBlinks, self.frameCache?.cursor?.blinking == true else { return }
+                self.blinkOn.toggle()
+                self.setNeedsDisplay(self.cursorRect().insetBy(dx: -3, dy: -3))
+            }
+        }
+        t.tolerance = 0.05
+        RunLoop.main.add(t, forMode: .common)
+        blinkTimer = t
     }
 
     private var scale: CGFloat {
@@ -140,7 +224,8 @@ public final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGest
         ctx.fill(bounds)
         // Keep the cursor row visible when the grid is taller than the space
         // between the chrome (e.g. the keyboard just opened).
-        ctx.translateBy(x: 0, y: insetTop - offsetY())
+        drawnOffsetY = offsetY()
+        ctx.translateBy(x: 0, y: insetTop - drawnOffsetY)
         var o = TerminalRenderer.Options()
         o.padding = padding
         o.scale = scale
@@ -148,12 +233,13 @@ public final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGest
         o.focused = isFirstResponder
         o.cursorVisible = blinkOn || !isFirstResponder || !cursorBlinks
         o.cursorShape = cursorShape
+        o.preedit = kb.marked
         renderer.draw(f, in: ctx, size: bounds.size, options: o)
     }
 
     private func offsetY() -> CGFloat {
         guard let f = frameCache else { return 0 }
-        let visible = bounds.height - insetTop - insetBottom
+        let visible = bounds.height - insetTop - bottomInset
         let content = CGFloat(f.rows) * renderer.metrics.height * scale + padding * 2
         guard content > visible else { return 0 }
         let anchor = CGFloat((f.cursor.map { Int($0.row) } ?? Int(f.rows) - 1) + 1)
@@ -168,10 +254,19 @@ public final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGest
 
     private func pushGrid() {
         guard bounds.width > 0, let t = controller.terminal else { return }
-        let g = renderer.grid(for: CGSize(width: bounds.width, height: max(40, bounds.height - insetTop - insetBottom)), padding: padding)
+        let g = renderer.grid(for: CGSize(width: bounds.width, height: max(40, bounds.height - insetTop - bottomInset)), padding: padding)
         let s = window?.screen.scale ?? 3
         t.setDeviceGrid(cols: UInt16(g.cols), rows: UInt16(g.rows),
                         cellWidthPx: UInt32((renderer.metrics.width * s).rounded()), cellHeightPx: UInt32((renderer.metrics.height * s).rounded()))
+    }
+
+    /// The cursor cell in view coordinates.
+    func cursorRect() -> CGRect {
+        let s = scale, m = renderer.metrics
+        let c = frameCache?.cursor
+        let col = CGFloat(c?.col ?? 0), row = CGFloat(c?.row ?? 0)
+        return CGRect(x: padding - panX + col * m.width * s, y: insetTop - offsetY() + padding + row * m.height * s,
+                      width: m.width * s, height: m.height * s)
     }
 
     private func cell(at p: CGPoint) -> (Int, Int) {
@@ -185,6 +280,7 @@ public final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGest
     // MARK: gestures
 
     @objc private func onTap(_ g: UITapGestureRecognizer) {
+        resetKeyboardDocument()
         if selecting || controller.terminal?.selectionText() != nil {
             controller.terminal?.clearSelection()
             selecting = false
@@ -257,14 +353,48 @@ public final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGest
         selecting = false
     }
 
+    @objc private func onRightClick(_ g: UITapGestureRecognizer) {
+        showMenu(at: g.location(in: self))
+    }
+
+    public func pointerInteraction(_ interaction: UIPointerInteraction, styleFor region: UIPointerRegion) -> UIPointerStyle? {
+        UIPointerStyle(shape: .verticalBeam(length: renderer.metrics.height * scale), constrainedAxes: [])
+    }
+
     private enum PanAxis { case undecided, vertical, horizontal }
     private var panAxis = PanAxis.undecided
     private var panTotalX: CGFloat = 0
+    /// The pan started with a mouse or trackpad click: drag selects, like a desktop.
+    private var pointerTouch = false
+    private var dragSelecting = false
+
+    public func gestureRecognizer(_ g: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        if g is UIPanGestureRecognizer { pointerTouch = touch.type == .indirectPointer }
+        // A finger tap can satisfy a secondary-button mask; only a real click should.
+        if let t = g as? UITapGestureRecognizer, t.buttonMaskRequired == .secondary { return touch.type == .indirectPointer }
+        return true
+    }
+
+    private func dragSelect(_ g: UIPanGestureRecognizer, moved d: CGPoint) {
+        let p = g.location(in: self)
+        switch g.state {
+        case .began:
+            let (c, r) = cell(at: CGPoint(x: p.x - d.x, y: p.y - d.y))
+            anchor = (c, r)
+        case .changed:
+            let (c, r) = cell(at: p)
+            if let a = anchor { _ = controller.terminal?.selectRange(fromCol: UInt16(a.0), fromRow: UInt16(a.1), toCol: UInt16(c), toRow: UInt16(r)) }
+        default:
+            dragSelecting = false
+        }
+    }
 
     @objc private func onPan(_ g: UIPanGestureRecognizer) {
         if selecting { return }
         let d = g.translation(in: self)
         g.setTranslation(.zero, in: self)
+        if g.state == .began { dragSelecting = pointerTouch && g.numberOfTouches > 0 && controller.terminal?.mouseTracking() != true }
+        if dragSelecting { return dragSelect(g, moved: d) }
         let canPan = (!controller.hasControl && scale < 1) || zoom > 1
         switch g.state {
         case .began:
@@ -321,6 +451,7 @@ public final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGest
     private func startMomentum() {
         link?.invalidate()
         let l = CADisplayLink(target: self, selector: #selector(stepMomentum(_:)))
+        l.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
         l.add(to: .main, forMode: .common)
         link = l
     }
@@ -360,12 +491,20 @@ public final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGest
 
     public override func becomeFirstResponder() -> Bool {
         let r = super.becomeFirstResponder()
+        if r {
+            Self.wantsKeyboard = true
+            onFocus?()
+        }
+        blink(r)
         setNeedsDisplay()
         return r
     }
 
     public override func resignFirstResponder() -> Bool {
+        resetKeyboardDocument()
         let r = super.resignFirstResponder()
+        if r, !leaving { Self.wantsKeyboard = false }
+        blink(false)
         setNeedsDisplay()
         return r
     }
@@ -378,40 +517,65 @@ public final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGest
     public var smartDashesType: UITextSmartDashesType = .no
     public var smartInsertDeleteType: UITextSmartInsertDeleteType = .no
     public var keyboardAppearance: UIKeyboardAppearance = .dark
-    public var keyboardType: UIKeyboardType = .asciiCapable
+    public var keyboardType: UIKeyboardType = .default
     public var returnKeyType: UIReturnKeyType = .default
     public var inlinePredictionType: UITextInlinePredictionType = .no
 
     public func insertText(_ text: String) {
+        // An IME's chosen candidate replaces its composition.
+        kb.marked = ""
+        commit(kb.committed + text)
+    }
+
+    public func deleteBackward() {
+        if !kb.committed.isEmpty { kb.committed.removeLast() }
+        sendKey(.backspace)
+    }
+
+    /// Typed text to the terminal: newlines become Enter, and a sticky ctrl or
+    /// alt from the key bar applies to the first character.
+    func type(_ text: String) {
         guard let t = controller.terminal else { return }
         for (i, part) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
-            if i > 0 { send(.enter) }
+            if i > 0 {
+                sendKey(.enter)
+                DispatchQueue.main.async { [weak self] in self?.resetKeyboardDocument() }
+            }
             guard !part.isEmpty else { continue }
             let (ctrl, alt) = modifiers.consume()
             if ctrl || alt {
-                send(.char(c: String(part.prefix(1))), ctrl: ctrl, alt: alt)
+                sendKey(.char(c: String(part.prefix(1))), ctrl: ctrl, alt: alt)
                 if part.count > 1 { t.sendText(text: String(part.dropFirst())) }
+                DispatchQueue.main.async { [weak self] in self?.resetKeyboardDocument() }
             } else {
                 t.sendText(text: String(part))
             }
+            keyBar.refresh()
         }
     }
 
-    public func deleteBackward() { send(.backspace) }
-
+    /// A key from the key bar or a hardware keyboard: the keyboard's document
+    /// no longer matches the line, so start a new one.
     func send(_ k: Key, ctrl: Bool = false, alt: Bool = false, shift: Bool = false, meta: Bool = false) {
+        resetKeyboardDocument()
+        sendKey(k, ctrl: ctrl, alt: alt, shift: shift, meta: meta)
+    }
+
+    private func sendKey(_ k: Key, ctrl: Bool = false, alt: Bool = false, shift: Bool = false, meta: Bool = false) {
         let (sc, sa) = (ctrl || alt) ? (false, false) : modifiers.consume()
         controller.terminal?.sendKey(key: k, ctrl: ctrl || sc, alt: alt || sa, shift: shift, meta: meta)
         keyBar.refresh()
     }
 
     func sendLiteral(_ s: String) {
+        resetKeyboardDocument()
         let (c, a) = modifiers.consume()
         if c || a { controller.terminal?.sendKey(key: .char(c: s), ctrl: c, alt: a, shift: false, meta: false) } else { controller.terminal?.sendText(text: s) }
         keyBar.refresh()
     }
 
     public override func paste(_ sender: Any?) {
+        resetKeyboardDocument()
         if let s = UIPasteboard.general.string { controller.terminal?.paste(text: s) }
     }
 
@@ -419,43 +583,65 @@ public final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGest
         if let s = controller.terminal?.selectionText() { UIPasteboard.general.string = s }
     }
 
-    public override var keyCommands: [UIKeyCommand]? {
-        [
-            UIKeyCommand(title: "Paste", action: #selector(paste(_:)), input: "v", modifierFlags: .command),
-            UIKeyCommand(title: "Command Palette", action: #selector(palette), input: "k", modifierFlags: .command),
-            UIKeyCommand(title: "Command Palette", action: #selector(palette), input: "p", modifierFlags: [.command, .shift]),
-            UIKeyCommand(title: "Next Pane", action: #selector(nextPane), input: "]", modifierFlags: .command),
-            UIKeyCommand(title: "Previous Pane", action: #selector(prevPane), input: "[", modifierFlags: .command),
-            UIKeyCommand(title: "Copy", action: #selector(copy(_:)), input: "c", modifierFlags: .command),
-            UIKeyCommand(title: "Bigger Text", action: #selector(bigger), input: "=", modifierFlags: .command),
-            UIKeyCommand(title: "Smaller Text", action: #selector(smaller), input: "-", modifierFlags: .command),
-        ]
+    private func stepFont(_ d: Int) {
+        renderer.setFontSize(d == 0 ? 13 : renderer.fontSize + CGFloat(d))
+        pushGrid()
+        setNeedsDisplay()
+        onFontSizeChanged?(renderer.fontSize)
     }
 
-    @objc private func palette() { onPalette?() }
-    @objc private func nextPane() { onSwipePane?(1) }
-    @objc private func prevPane() { onSwipePane?(-1) }
-
-    @objc private func bigger() { renderer.setFontSize(renderer.fontSize + 1); pushGrid(); setNeedsDisplay(); onFontSizeChanged?(renderer.fontSize) }
-    @objc private func smaller() { renderer.setFontSize(renderer.fontSize - 1); pushGrid(); setNeedsDisplay(); onFontSizeChanged?(renderer.fontSize) }
-
-    /// Hardware keyboards: arrows, Esc, function keys, and Ctrl/Alt chords.
+    /// Hardware keyboards: arrows, Esc, function keys, and Ctrl/Alt chords. UIKit
+    /// doesn't repeat presses it hands us, so held keys repeat here.
     public override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        // An input method is composing: arrows, Esc and Return belong to it.
+        guard kb.marked.isEmpty else { return super.pressesBegan(presses, with: event) }
         var unhandled = Set<UIPress>()
         for press in presses {
             guard let key = press.key else { unhandled.insert(press); continue }
             let f = key.modifierFlags
             let ctrl = f.contains(.control), alt = f.contains(.alternate), shift = f.contains(.shift)
             if f.contains(.command) { unhandled.insert(press); continue }
-            if let k = Self.named(key.keyCode) {
-                send(k, ctrl: ctrl, alt: alt, shift: shift)
+            let k: Key
+            if let named = Self.named(key.keyCode) {
+                k = named
             } else if ctrl || alt, let ch = key.charactersIgnoringModifiers.first {
-                send(.char(c: String(ch)), ctrl: ctrl, alt: alt, shift: shift)
+                k = .char(c: String(ch))
             } else {
                 unhandled.insert(press)
+                continue
             }
+            send(k, ctrl: ctrl, alt: alt, shift: shift)
+            startRepeat(key.keyCode) { [weak self] in self?.send(k, ctrl: ctrl, alt: alt, shift: shift) }
         }
         if !unhandled.isEmpty { super.pressesBegan(unhandled, with: event) }
+    }
+
+    public override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if presses.contains(where: { $0.key?.keyCode == repeatKey }) { stopRepeat() }
+        super.pressesEnded(presses, with: event)
+    }
+
+    public override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        stopRepeat()
+        super.pressesCancelled(presses, with: event)
+    }
+
+    private func startRepeat(_ code: UIKeyboardHIDUsage, _ action: @escaping () -> Void) {
+        stopRepeat()
+        repeatKey = code
+        repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.repeatTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { _ in
+                    MainActor.assumeIsolated { action() }
+                }
+            }
+        }
+    }
+
+    private func stopRepeat() {
+        repeatTimer?.invalidate()
+        repeatTimer = nil
+        repeatKey = nil
     }
 
     private static func named(_ code: UIKeyboardHIDUsage) -> Key? {
@@ -465,12 +651,14 @@ public final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGest
         case .keyboardLeftArrow: return .left
         case .keyboardRightArrow: return .right
         case .keyboardEscape: return .escape
+        case .keypadEnter: return .enter
         case .keyboardTab: return .tab
         case .keyboardHome: return .home
         case .keyboardEnd: return .end
         case .keyboardPageUp: return .pageUp
         case .keyboardPageDown: return .pageDown
         case .keyboardDeleteForward: return .delete
+        case .keyboardInsert: return .insert
         case .keyboardF1: return .f(n: 1)
         case .keyboardF2: return .f(n: 2)
         case .keyboardF3: return .f(n: 3)
@@ -521,12 +709,16 @@ final class KeyBar: UIInputView {
     private var repeatTimer: Timer?
     var chrome = Chrome(Themes.all[0]) { didSet { restyle() } }
 
+    private static let spoken = ["esc": "Escape", "tab": "Tab", "ctrl": "Control", "alt": "Alt", "←": "Left", "↓": "Down", "↑": "Up", "→": "Right",
+                                 "•••": "More keys", "abc": "Arrow keys", "|": "Pipe", "~": "Tilde", "/": "Slash", "-": "Dash", "`": "Backtick",
+                                 "home": "Home", "end": "End", "pgup": "Page Up", "pgdn": "Page Down"]
+
     private enum Item { case key(String, Key, repeats: Bool), text(String), ctrl, alt, more, hide }
     private let pages: [[Item]] = [
         [.key("esc", .escape, repeats: false), .key("tab", .tab, repeats: false), .ctrl, .alt,
-         .key("←", .left, repeats: true), .key("↓", .down, repeats: true), .key("↑", .up, repeats: true), .key("→", .right, repeats: true), .more],
+         .key("←", .left, repeats: true), .key("↓", .down, repeats: true), .key("↑", .up, repeats: true), .key("→", .right, repeats: true), .more, .hide],
         [.text("|"), .text("~"), .text("/"), .text("-"), .text("`"),
-         .key("home", .home, repeats: false), .key("end", .end, repeats: false), .key("pgup", .pageUp, repeats: true), .more],
+         .key("home", .home, repeats: false), .key("end", .end, repeats: false), .key("pgup", .pageUp, repeats: true), .key("pgdn", .pageDown, repeats: true), .more, .hide],
     ]
 
     override init(frame: CGRect, inputViewStyle: UIInputView.Style = .default) {
@@ -582,11 +774,23 @@ final class KeyBar: UIInputView {
         rebuild()
     }
 
+    /// Wide keyboards (iPad, landscape) fit both pages in one row.
+    private var wide = false
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if (bounds.width >= 640) != wide {
+            wide.toggle()
+            rebuild()
+        }
+    }
+
     private func rebuild() {
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         ctrlButton = nil
         altButton = nil
-        for item in pages[page] { stack.addArrangedSubview(button(for: item)) }
+        let items = wide ? pages[0].dropLast(2) + pages[1].dropLast(2) + [.hide] : pages[page]
+        for item in items { stack.addArrangedSubview(button(for: item)) }
         refresh()
     }
 
@@ -614,7 +818,14 @@ final class KeyBar: UIInputView {
             if btn.isHighlighted { btn.configuration?.background.backgroundColor = self.ui(self.chrome.key) }
             else if btn !== self.ctrlButton && btn !== self.altButton { btn.configuration?.background.backgroundColor = .clear }
         }
-        b.accessibilityLabel = title
+        b.accessibilityLabel = Self.spoken[title] ?? title
+        b.accessibilityIdentifier = title
+        if case .hide = item {
+            b.configuration?.image = UIImage(systemName: "keyboard.chevron.compact.down",
+                                             withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .medium))
+            b.configuration?.baseForegroundColor = ui(chrome.secondary)
+            b.accessibilityLabel = "Hide keyboard"
+        }
         b.addAction(UIAction { [weak self] _ in self?.down(item) }, for: .touchDown)
         b.addAction(UIAction { [weak self] _ in self?.stopRepeat() }, for: [.touchUpInside, .touchUpOutside, .touchCancel, .touchDragExit])
         if case .ctrl = item { ctrlButton = b }
@@ -657,6 +868,7 @@ final class KeyBar: UIInputView {
         func style(_ b: UIButton?, on: Bool, locked: Bool) {
             b?.configuration?.background.backgroundColor = locked ? ui(chrome.accent) : on ? ui(chrome.accent).withAlphaComponent(0.3) : .clear
             b?.configuration?.baseForegroundColor = locked ? ui(chrome.bg) : ui(chrome.text)
+            b?.accessibilityValue = locked ? "Locked" : on ? "On" : nil
         }
         style(ctrlButton, on: m.ctrl, locked: m.ctrlLocked)
         style(altButton, on: m.alt, locked: m.altLocked)

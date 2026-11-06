@@ -4,17 +4,25 @@ import SwiftUI
 public struct HomeView: View {
     @Environment(RaptorModel.self) private var model
     var onOpen: (String, String, String?) -> Void
+    var onAdd: (() -> Void)?
+    var onEdit: ((Server) -> Void)?
+    var onSettings: (() -> Void)?
     @State private var addingServer = false
     @State private var editing: Server?
 
-    public init(onOpen: @escaping (_ server: String, _ session: String, _ block: String?) -> Void) {
+    /// Without `onAdd`/`onEdit`, the home screen presents its own server sheets.
+    public init(onOpen: @escaping (_ server: String, _ session: String, _ block: String?) -> Void,
+                onAdd: (() -> Void)? = nil, onEdit: ((Server) -> Void)? = nil, onSettings: (() -> Void)? = nil) {
         self.onOpen = onOpen
+        self.onAdd = onAdd
+        self.onEdit = onEdit
+        self.onSettings = onSettings
     }
 
     public var body: some View {
         let c = Chrome(model.theme)
         ScrollView {
-            HomeList(onOpen: onOpen, onAdd: { addingServer = true }, onEdit: { editing = $0 })
+            HomeList(onOpen: onOpen, onAdd: add, onEdit: edit)
                 .padding(.bottom, 40)
         }
         .background(c.bg.ignoresSafeArea())
@@ -28,8 +36,14 @@ public struct HomeView: View {
         .toolbarBackground(c.bg, for: .navigationBar)
         #endif
         .toolbar {
+            if let onSettings {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(action: onSettings) { Image(systemName: "gearshape") }
+                        .accessibilityLabel("Settings")
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
-                Button { addingServer = true } label: { Image(systemName: "plus") }
+                Button(action: add) { Image(systemName: "plus") }
                     .accessibilityLabel("Add server")
             }
         }
@@ -39,6 +53,9 @@ public struct HomeView: View {
         .sheet(isPresented: $addingServer) { AddServerView(editing: nil) { addingServer = false } }
         .sheet(item: $editing) { srv in AddServerView(editing: srv) { editing = nil } }
     }
+
+    private func add() { if let onAdd { onAdd() } else { addingServer = true } }
+    private func edit(_ srv: Server) { if let onEdit { onEdit(srv) } else { editing = srv } }
 }
 
 extension Server: Identifiable {}
@@ -87,7 +104,7 @@ private struct SectionHeader: View {
     @Environment(\.chrome) private var c
     var body: some View {
         Text(title.uppercased())
-            .font(.system(size: 12, weight: .medium))
+            .font(.caption.weight(.medium))
             .tracking(0.6)
             .foregroundStyle(c.tertiary)
             .padding(.horizontal, 20)
@@ -132,12 +149,12 @@ private struct ServerSection: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text(serverTitle(server).uppercased())
-                    .font(.system(size: 12, weight: .semibold)).tracking(0.6).foregroundStyle(c.secondary).lineLimit(1)
+                    .font(.caption.weight(.semibold)).tracking(0.6).foregroundStyle(c.secondary).lineLimit(1)
                 Spacer()
                 switch server.connectivity {
                 case .online: if let ms = server.latencyMs { Text("\(ms) ms").font(.mono(12)).foregroundStyle(c.tertiary) }
-                case .connecting: Text("connecting").font(.system(size: 12)).foregroundStyle(Palette.connectivity(server.connectivity))
-                case .offline: Text("offline").font(.system(size: 12)).foregroundStyle(Palette.error)
+                case .connecting: Text("connecting").font(.caption).foregroundStyle(Palette.connectivity(server.connectivity))
+                case .offline: Text("offline").font(.caption).foregroundStyle(Palette.error)
                 case .idle: EmptyView()
                 }
             }
@@ -152,10 +169,13 @@ private struct ServerSection: View {
 
             VStack(spacing: 0) {
                 if case .offline(let error, _) = server.connectivity {
-                    HStack {
-                        Text(error).font(.subheadline).foregroundStyle(c.secondary).lineLimit(2)
-                        Spacer()
-                        Button("Retry") { model.core.reconnect(serverId: server.id) }.font(.subheadline.weight(.semibold))
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text(error).font(.subheadline).foregroundStyle(c.secondary).lineLimit(2)
+                            Spacer()
+                            Button("Retry") { model.core.reconnect(serverId: server.id) }.font(.subheadline.weight(.semibold))
+                        }
+                        if localNetworkBlocked(address: server.address, error: error) { LocalNetworkHelp() }
                     }
                     .padding(.horizontal, 16).padding(.vertical, 12)
                 } else {
@@ -167,7 +187,7 @@ private struct ServerSection: View {
                         Button {
                             Task { if let id = try? await model.core.createSession(serverId: server.id, label: nil) { onOpen(id) } }
                         } label: {
-                            Label("New session", systemImage: "plus").font(.system(size: 15)).foregroundStyle(c.accent)
+                            Label("New session", systemImage: "plus").font(.subheadline).foregroundStyle(c.accent)
                                 .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.vertical, 13)
                                 .contentShape(Rectangle())
                         }
@@ -204,9 +224,10 @@ private struct SessionRow: View {
                 HStack(spacing: 14) {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 8) {
-                            Text(session.label).font(.system(size: 16, weight: .medium)).foregroundStyle(online ? c.text : c.tertiary).lineLimit(1)
+                            Text(session.label).font(.callout.weight(.medium)).foregroundStyle(online ? c.text : c.tertiary).lineLimit(1)
                             if let s = session.agentState, s != .idle {
                                 Circle().fill(Palette.agent(s)).frame(width: 7, height: 7)
+                                    .accessibilityLabel(s.spoken)
                             }
                         }
                         let d = detail(focused)
@@ -266,8 +287,8 @@ private struct NeedsRow: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Circle().fill(tint).frame(width: 7, height: 7)
-                Text(a.app.isEmpty ? item.block.name : a.app).font(.system(size: 15, weight: .medium)).foregroundStyle(c.text)
-                Text(a.label).font(.system(size: 13)).foregroundStyle(tint)
+                Text(a.app.isEmpty ? item.block.name : a.app).font(.subheadline.weight(.medium)).foregroundStyle(c.text)
+                Text(a.label).font(.footnote).foregroundStyle(tint)
                 Spacer()
                 Text(item.sessionLabel).font(.mono(11)).foregroundStyle(c.tertiary)
             }
@@ -289,6 +310,7 @@ private struct NeedsRow: View {
                     .submitLabel(.send)
                     .onSubmit(send)
                 Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.system(size: 22)) }
+                    .accessibilityLabel("Send reply")
                     .disabled(reply.isEmpty)
                     .foregroundStyle(reply.isEmpty ? c.tertiary : c.accent)
             }

@@ -62,8 +62,11 @@ public struct WelcomeView: View {
         let c = Chrome(model.theme)
         VStack(alignment: .leading, spacing: 0) {
             Spacer()
-            Image(systemName: "apple.terminal").font(.system(size: 36, weight: .medium)).foregroundStyle(c.accent)
-            Text("Raptor").font(.system(size: 34, weight: .bold)).foregroundStyle(c.text).padding(.top, 20)
+            logo
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(c.glassStroke, lineWidth: 1))
+                .accessibilityHidden(true)
+            Text("Raptor").font(.largeTitle.weight(.bold)).foregroundStyle(c.text).padding(.top, 20)
             Text("Your terminal sessions, from a Rex server on your Mac or any machine on your tailnet. They keep running when you close the app.")
                 .font(.body).foregroundStyle(c.secondary).padding(.top, 10)
             Button(action: onAddServer) {
@@ -75,26 +78,36 @@ public struct WelcomeView: View {
             Spacer()
         }
         .padding(.horizontal, 28)
+        .frame(maxWidth: 480)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(c.bg.ignoresSafeArea())
         .preferredColorScheme(c.scheme)
     }
 }
 
-/// Nothing open: point at the switcher.
+/// The app icon, for the welcome screen.
+private var logo: Image {
+    #if canImport(UIKit)
+    UIImage(named: "Logo", in: .module, compatibleWith: nil).map(Image.init(uiImage:)) ?? Image(systemName: "apple.terminal")
+    #else
+    Bundle.module.image(forResource: "Logo").map(Image.init(nsImage:)) ?? Image(systemName: "apple.terminal")
+    #endif
+}
+
+/// Nothing open: point at the switcher, or at the sidebar when there's no switcher.
 public struct PickSessionView: View {
     @Environment(RaptorModel.self) private var model
-    var onSessions: () -> Void
-    public init(onSessions: @escaping () -> Void) { self.onSessions = onSessions }
+    var onSessions: (() -> Void)?
+    public init(onSessions: (() -> Void)?) { self.onSessions = onSessions }
 
     public var body: some View {
         let c = Chrome(model.theme)
         ContentUnavailableView {
             Label("Pick a session", systemImage: "terminal")
         } description: {
-            Text("Your sessions keep running on the server.")
+            Text(onSessions == nil ? "Choose one from the list. Sessions keep running on the server." : "Your sessions keep running on the server.")
         } actions: {
-            Button("Show Sessions", action: onSessions).font(.headline)
+            if let onSessions { Button("Show Sessions", action: onSessions).font(.headline) }
         }
         .tint(c.accent)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
