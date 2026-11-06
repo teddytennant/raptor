@@ -84,6 +84,8 @@ public final class TerminalRenderer {
         public var cursorVisible = true
         /// Forced cursor shape from Settings; nil follows the program.
         public var cursorShape: CursorShape?
+        /// Draw the thin history position bar (off where the platform has its own scroller).
+        public var historyBar = true
         public init() {}
     }
 
@@ -122,7 +124,7 @@ public final class TerminalRenderer {
         ctx.restoreGState()
 
         // History indicator.
-        if frame.scrollTotal > frame.scrollLen, frame.scrollOffset + frame.scrollLen < frame.scrollTotal {
+        if o.historyBar, frame.scrollTotal > frame.scrollLen, frame.scrollOffset + frame.scrollLen < frame.scrollTotal {
             let track = size.height - o.padding * 2
             let thumb = max(24, track * CGFloat(frame.scrollLen) / CGFloat(frame.scrollTotal))
             let y = o.padding + (track - thumb) * CGFloat(frame.scrollOffset) / CGFloat(frame.scrollTotal - frame.scrollLen)
