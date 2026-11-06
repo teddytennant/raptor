@@ -98,12 +98,19 @@ public final class TerminalUIView: UIView, UITextInputTraits, UIGestureRecognize
             link?.invalidate()
             link = nil
             stopRepeat()
-        } else if GCKeyboard.coalesced != nil {
+        } else if GCKeyboard.coalesced != nil, !Self.simulator {
             // With a hardware keyboard there's no on-screen keyboard to cover the
             // screen, so be ready to type (and for ⌘ shortcuts) right away.
             DispatchQueue.main.async { [weak self] in _ = self?.becomeFirstResponder() }
         }
     }
+
+    /// The simulator always reports the Mac's keyboard, even while showing the on-screen one.
+    #if targetEnvironment(simulator)
+    private static let simulator = true
+    #else
+    private static let simulator = false
+    #endif
 
     // MARK: drawing
 
