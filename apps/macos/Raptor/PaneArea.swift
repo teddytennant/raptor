@@ -266,7 +266,9 @@ final class PaneView: NSView {
         dim.layer?.backgroundColor = cgColor(0xFF00_0000 | chrome.bgHex).copy(alpha: multiple && !focused ? 0.28 : 0)
         let status = terminal.controller.status
         let mirrored = !terminal.controller.hasControl && b.ownedByOther
-        let text = status.banner ?? (mirrored ? "Sized by another device" : nil)
+        // While the whole server is unreachable, one banner over the panes says so.
+        let serverDown = ws.server?.connectivity.isOnline == false && status.isBusy
+        let text = serverDown ? nil : status.banner ?? (mirrored ? "Sized by another device" : nil)
         bannerText = text
         banner.isHidden = text == nil
         banner.rootView = StatusBanner(

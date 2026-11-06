@@ -2,6 +2,7 @@
 import AppKit
 import Carbon.HIToolbox
 import RaptorKit
+import UserNotifications
 
 /// Debug builds only: drive the app with synthesized events without it being
 /// the active app, so UI tests can run beside other work. Commands arrive as
@@ -46,6 +47,9 @@ enum Automation {
         case "type":
             for ch in rest { key(String(ch), in: w) }
             return "ok type"
+        case "mark":
+            (w.firstResponder as? NSTextInputClient)?.setMarkedText(rest, selectedRange: NSRange(location: rest.count, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+            return "ok mark"
         case "text":
             (w.firstResponder as? NSTextInputClient)?.insertText(rest, replacementRange: NSRange(location: NSNotFound, length: 0))
             return "ok text"
@@ -123,6 +127,30 @@ enum Automation {
                 t.display()
             }
             return String(format: "perf %.2f ms per scroll step (%dx%@)", Date().timeIntervalSince(start) * 1000 / Double(n), Int(t.bounds.width), "\(Int(t.bounds.height))")
+        case "sleep", "wake":
+            // Pretend the Mac slept or woke (in this process only).
+            NSWorkspace.shared.notificationCenter.post(name: cmd == "sleep" ? NSWorkspace.willSleepNotification : NSWorkspace.didWakeNotification, object: nil)
+            return "ok \(cmd)"
+        case "set":
+            let kv = rest.split(separator: " ", maxSplits: 1).map(String.init)
+            guard kv.count == 2 else { return "err set key value" }
+            AppModel.shared.model.core.setSetting(key: kv[0], value: kv[1])
+            return "ok set"
+        case "notes":
+            // Delivered notifications, or "notes clear" to remove ours from Notification Center.
+            let center = UNUserNotificationCenter.current()
+            if rest == "clear" {
+                center.removeAllDeliveredNotifications()
+                return "ok cleared"
+            }
+            center.getDeliveredNotifications { list in
+                let lines = list.map { "\($0.request.content.title) | \($0.request.content.subtitle) | \($0.request.content.body) | \($0.request.content.categoryIdentifier) | \($0.request.content.userInfo)" }
+                DispatchQueue.main.async { log("notes \(list.count)\n" + lines.joined(separator: "\n")) }
+            }
+            center.getNotificationSettings { s in
+                DispatchQueue.main.async { log("auth \(s.authorizationStatus.rawValue) alert \(s.alertSetting.rawValue)") }
+            }
+            return "ok notes"
         case "row":
             guard let r = Int(rest), let f = AppModel.shared.current?.focusedTerminal?.frameCache, f.lines.indices.contains(r) else { return "err row n" }
             return f.lines[r].runs.map { run in
