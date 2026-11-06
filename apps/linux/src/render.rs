@@ -184,7 +184,7 @@ impl Renderer {
                 cr.rectangle(x + t / 2.0, y + t / 2.0, cw - t, m.cell_h - t);
                 let _ = cr.stroke();
             } else {
-                let bar = (m.cell_w / 8.0).max(1.0).round();
+                let bar = (m.cell_w / 6.0).round().max(2.0);
                 match c.style {
                     CursorStyle::Bar => cr.rectangle(x, y, bar, m.cell_h),
                     CursorStyle::Underline => cr.rectangle(x, y + m.cell_h - bar, cw, bar),
