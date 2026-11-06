@@ -702,6 +702,25 @@ impl TermView {
             glib::Propagation::Stop
         });
         self.area.add_controller(scroll);
+
+        // Dropping files types their paths, quoted for the shell; dropping text pastes it.
+        let drop = gtk::DropTarget::new(glib::Type::INVALID, gdk::DragAction::COPY);
+        drop.set_types(&[gdk::FileList::static_type(), glib::Type::STRING]);
+        let me = self.clone();
+        drop.connect_drop(move |_, value, _, _| {
+            let Some(s) = me.session() else { return false };
+            let text = if let Ok(files) = value.get::<gdk::FileList>() {
+                files.files().iter().filter_map(|f| f.path()).map(|p| shell_quote(&p.to_string_lossy())).collect::<Vec<_>>().join(" ")
+            } else if let Ok(t) = value.get::<String>() {
+                t
+            } else {
+                return false;
+            };
+            s.paste(&text);
+            me.area.grab_focus();
+            true
+        });
+        self.area.add_controller(drop);
     }
 
     /// Ctrl+click on a URL opens it.
@@ -813,6 +832,14 @@ fn thumb(sb: &Scrollbar, h: f64) -> (f64, f64) {
     (PAD + (track - thumb) * sb.offset as f64 / range, thumb)
 }
 
+fn shell_quote(s: &str) -> String {
+    if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+=:@%,".contains(c)) {
+        s.to_owned()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
+}
+
 /// The http(s) or file URL covering column `col` of a line, if any.
 fn url_at(line: &str, col: usize) -> Option<String> {
     let chars: Vec<char> = line.chars().collect();
@@ -871,6 +898,12 @@ mod tests {
         assert_eq!(super::url_at(l, 10).as_deref(), Some("https://example.com/a?b=1"));
         assert_eq!(super::url_at(l, 2), None);
         assert_eq!(super::url_at(l, 44).as_deref(), Some("http://x.io"));
+    }
+
+    #[test]
+    fn quotes_paths() {
+        assert_eq!(super::shell_quote("/tmp/a.txt"), "/tmp/a.txt");
+        assert_eq!(super::shell_quote("/tmp/it's here"), "'/tmp/it'\\''s here'");
     }
 }
 
