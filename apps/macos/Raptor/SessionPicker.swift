@@ -28,6 +28,11 @@ struct SessionPicker: View {
         }
     }
 
+    /// Sessions another window shows; picking one brings that window forward.
+    private var shownElsewhere: Set<String> {
+        Set(ws.app.allWorkspaces.filter { $0 !== ws }.compactMap(\.sessionId))
+    }
+
     var body: some View {
         let groups = groups
         let rows = groups.flatMap(\.rows)
@@ -69,6 +74,7 @@ struct SessionPicker: View {
                                 ForEach(g.rows) { r in
                                     SessionRow(server: r.server, session: r.session, ws: ws,
                                                current: r.session.id == ws.sessionId,
+                                               elsewhere: shownElsewhere.contains(r.session.id),
                                                highlighted: r.id == highlight)
                                         .id(r.id)
                                         .onTapGesture { open(r) }
@@ -190,6 +196,7 @@ private struct SessionRow: View {
     let session: Session
     let ws: Workspace
     let current: Bool
+    let elsewhere: Bool
     let highlighted: Bool
 
     var body: some View {
@@ -220,8 +227,13 @@ private struct SessionRow: View {
             if session.windows.count > 1 {
                 Text("\(session.windows.count) tabs").font(.system(size: 10.5).monospacedDigit()).foregroundStyle(.tertiary)
             }
-            Image(systemName: "checkmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-                .opacity(current ? 1 : 0)
+            if elsewhere {
+                Image(systemName: "macwindow").font(.system(size: 11)).foregroundStyle(.tertiary)
+                    .help("Open in another window")
+            } else {
+                Image(systemName: "checkmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                    .opacity(current ? 1 : 0)
+            }
         }
         .padding(.horizontal, 8)
         .frame(height: 42)
@@ -234,8 +246,7 @@ private struct SessionRow: View {
             }
             Button("Rename…") {
                 ws.pickerShown = false
-                ws.open(serverId: server.id, sessionId: session.id)
-                ws.renameSession()
+                ws.open(serverId: server.id, sessionId: session.id).renameSession()
             }
             Divider()
             Button("End Session…", role: .destructive) {

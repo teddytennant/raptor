@@ -54,7 +54,17 @@ final class Workspace {
 
     // MARK: opening
 
-    func open(serverId: String, sessionId: String, windowId: String? = nil, blockId: String? = nil) {
+    /// Shows the session here, or brings forward the window already showing it:
+    /// two windows on one session would fight over its terminals' data streams.
+    /// Returns the workspace that shows it.
+    @discardableResult
+    func open(serverId: String, sessionId: String, windowId: String? = nil, blockId: String? = nil) -> Workspace {
+        if self.sessionId != sessionId,
+           let other = app.allWorkspaces.first(where: { $0 !== self && $0.serverId == serverId && $0.sessionId == sessionId }) {
+            other.open(serverId: serverId, sessionId: sessionId, windowId: windowId, blockId: blockId)
+            other.window?.makeKeyAndOrderFront(nil)
+            return other
+        }
         if self.sessionId != sessionId || self.serverId != serverId {
             closeAllTerminals()
             self.serverId = serverId
@@ -65,6 +75,7 @@ final class Workspace {
         model.focus = Focus(serverId: serverId, sessionId: sessionId, blockId: blockId)
         if let windowId, windowId != session?.activeWindowId { selectTab(windowId) }
         if let blockId { focusPane(blockId) }
+        return self
     }
 
     /// Drop terminals whose blocks are gone and follow sessions that disappear.

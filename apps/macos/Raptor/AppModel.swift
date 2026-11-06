@@ -122,7 +122,7 @@ final class AppModel {
         let ws = current ?? allWorkspaces.first
         let tab = model.session(serverId, sessionId)?.windows.first { $0.blocks.contains { $0.id == blockId } }
         ws?.open(serverId: serverId, sessionId: sessionId, windowId: tab?.id, blockId: blockId)
-        ws?.window?.makeKeyAndOrderFront(nil)
+            .window?.makeKeyAndOrderFront(nil)
     }
 
     func reconnectAll() {

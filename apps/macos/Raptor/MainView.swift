@@ -62,14 +62,14 @@ struct MainView: View {
     private func restoreIfNeeded() {
         guard let ws, ws.sessionId == nil else { return }
         let servers = model.state.servers
-        if !savedSession.isEmpty, let s = model.session(savedServer, savedSession) {
+        let taken = Set(app.allWorkspaces.filter { $0 !== ws }.compactMap(\.sessionId))
+        if !savedSession.isEmpty, let s = model.session(savedServer, savedSession), !taken.contains(s.id) {
             ws.open(serverId: savedServer, sessionId: s.id)
         } else if let (srv, ses) = app.lastSession, model.session(srv, ses) != nil,
-                  !app.allWorkspaces.contains(where: { $0 !== ws && $0.sessionId == ses }) {
+                  !taken.contains(ses) {
             ws.open(serverId: srv, sessionId: ses)
-        } else if let srv = servers.first(where: { !$0.sessions.isEmpty && $0.connectivity.isOnline }), savedSession.isEmpty {
-            let taken = Set(app.allWorkspaces.compactMap(\.sessionId))
-            let s = srv.sessions.first { !taken.contains($0.id) } ?? srv.sessions[0]
+        } else if let srv = servers.first(where: { !$0.sessions.isEmpty && $0.connectivity.isOnline }), savedSession.isEmpty,
+                  let s = srv.sessions.first(where: { !taken.contains($0.id) }) {
             ws.open(serverId: srv.id, sessionId: s.id)
         }
     }
