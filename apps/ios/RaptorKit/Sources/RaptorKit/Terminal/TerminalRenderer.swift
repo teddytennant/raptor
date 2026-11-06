@@ -137,8 +137,8 @@ public final class TerminalRenderer {
     private func drawRun(_ run: Run, font: CTFont, color: CGColor, at origin: CGPoint, in ctx: CGContext) {
         let m = metrics
         let baseline = origin.y + (m.height - (m.ascent + m.descent)) / 2 + m.ascent
-        let graphemes = Array(run.text)
         let widths = [UInt8](run.widths)
+        let graphemes = cellTexts(run.text, count: widths.count)
         var col: CGFloat = 0
         // Group consecutive simple ASCII so Core Text shapes them in one pass;
         // everything else is placed on its own cell so it can't drift off the grid.
@@ -154,11 +154,11 @@ public final class TerminalRenderer {
                     continue
                 }
             }
-            if g.isASCII && w == 1 {
+            if g.utf8.count == 1 && w == 1 {
                 var j = i
                 var s = ""
-                while j < graphemes.count, graphemes[j].isASCII, (j < widths.count ? widths[j] : 1) == 1 {
-                    s.append(graphemes[j])
+                while j < graphemes.count, graphemes[j].utf8.count == 1, (j < widths.count ? widths[j] : 1) == 1 {
+                    s += graphemes[j]
                     j += 1
                 }
                 drawText(s, font: font, color: color, x: x, baseline: baseline, in: ctx)
@@ -166,7 +166,7 @@ public final class TerminalRenderer {
                 i = j
                 continue
             }
-            drawText(String(g), font: font, color: color, x: x, baseline: baseline, in: ctx, fitWidth: w * m.width)
+            drawText(g, font: font, color: color, x: x, baseline: baseline, in: ctx, fitWidth: w * m.width)
             col += w
             i += 1
         }
@@ -317,11 +317,11 @@ public final class TerminalRenderer {
             // Redraw the character under the block in the background color.
             if let line = frame.lines[safe: Int(c.row)], let run = line.runs.first(where: { c.col >= $0.col && c.col < $0.col + $0.cells }) {
                 let idx = graphemeIndex(run.widths, Int(c.col - run.col))
-                let chars = Array(run.text)
+                let chars = cellTexts(run.text, count: run.widths.count)
                 if idx < chars.count, chars[idx] != " " {
                     let f = font(bold: run.style & styleBold != 0, italic: run.style & styleItalic != 0)
                     let baseline = rect.minY + (m.height - (m.ascent + m.descent)) / 2 + m.ascent
-                    drawText(String(chars[idx]), font: f, color: cg(frame.background), x: rect.minX, baseline: baseline, in: ctx)
+                    drawText(chars[idx], font: f, color: cg(frame.background), x: rect.minX, baseline: baseline, in: ctx)
                 }
             }
         }
