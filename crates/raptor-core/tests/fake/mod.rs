@@ -33,6 +33,8 @@ pub struct Fake {
     pub log: Arc<Mutex<Vec<(String, Value)>>>,
     pub control_connects: Arc<AtomicUsize>,
     pub data_connects: Arc<AtomicUsize>,
+    /// Hang up on this many control connections before the handshake, like a network still down.
+    pub refuse_control: Arc<AtomicUsize>,
     /// Senders for every live control connection, for pushing events.
     conns: Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>>,
     _rt: tokio::runtime::Runtime,
@@ -48,9 +50,13 @@ impl Fake {
         let data_connects = Arc::new(AtomicUsize::new(0));
         let opts = Arc::new(opts);
         let conns = Arc::new(Mutex::new(Vec::new()));
-        let (l, c, d, cs) = (log.clone(), control_connects.clone(), data_connects.clone(), conns.clone());
+        let refuse_control = Arc::new(AtomicUsize::new(0));
+        let (l, c, d, cs, rc) = (log.clone(), control_connects.clone(), data_connects.clone(), conns.clone(), refuse_control.clone());
         rt.spawn(async move {
             while let Ok((tcp, _)) = listener.accept().await {
+                if rc.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok() {
+                    continue;
+                }
                 let (l, c, d, cs, opts) = (l.clone(), c.clone(), d.clone(), cs.clone(), opts.clone());
                 tokio::spawn(async move {
                     let path = Arc::new(Mutex::new(String::new()));
@@ -75,7 +81,7 @@ impl Fake {
                 });
             }
         });
-        Self { addr, log, control_connects, data_connects, conns, _rt: rt }
+        Self { addr, log, control_connects, data_connects, refuse_control, conns, _rt: rt }
     }
 
     /// Send an event to every connection.
@@ -133,6 +139,7 @@ async fn control(
         let v: Value = serde_json::from_str(&t).unwrap();
         if !welcomed {
             welcomed = true;
+            log.lock().push(("hello".into(), v.clone()));
             let w = json!({"type": "welcome", "protocol": "rex.control.v1", "limits": {"max_message_bytes": 1048576},
                 "client": {"id": "client:me", "reconnect_token": "tok"}, "api_revision": 9, "api_server_revision": 9});
             let _ = tx.send(w.to_string());

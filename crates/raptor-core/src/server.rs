@@ -282,7 +282,9 @@ impl ServerEntry {
             };
             self.set_connectivity(Connectivity::Connecting, &*sink);
             let mut opts = sink.client_options();
-            opts.reconnect_token = token.take();
+            // Keep the token until a connection replaces it: a try that fails
+            // (network still down) must not turn the next one into a new client.
+            opts.reconnect_token = token.clone();
             let started = Instant::now();
             let error = match Connection::connect(&endpoint, opts).await {
                 Ok((conn, events)) => {

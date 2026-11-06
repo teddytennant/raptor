@@ -305,3 +305,16 @@ fn huge_paste_fits_the_message_limit() {
     assert_eq!(got("paste"), text);
     assert_eq!(got("write"), text);
 }
+
+#[test]
+fn failed_reconnect_keeps_the_token() {
+    let fake = Fake::start(Options::default());
+    let (raptor, id) = online(&fake);
+    fake.log.lock().clear();
+    // The network is still down for the first two tries.
+    fake.refuse_control.store(2, Ordering::SeqCst);
+    raptor.disconnect_for_test(&id);
+    assert!(wait(10.0, || fake.methods().contains(&"hello".to_owned())));
+    let hello = fake.log.lock().iter().find(|(m, _)| m == "hello").unwrap().1.clone();
+    assert_eq!(hello["reconnect_token"], "tok", "the client must resume, not start over: {hello}");
+}
