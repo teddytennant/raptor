@@ -244,7 +244,7 @@ final class Workspace {
             let last = session?.windows.count == 1
             confirm = ConfirmRequest(
                 title: "Close tab “\(tabTitle(w))”?",
-                message: last ? "This is the last tab in the session. Closing it ends the session." : "\(busy.count == 1 ? "1 pane is" : "\(busy.count) panes are") still running a program. Closing the tab stops them on the server.",
+                message: last ? "This is the last tab in the session. Closing it ends the session." : "\(busy.count == 1 ? "A pane is still running a program. Closing the tab stops it" : "\(busy.count) panes are still running programs. Closing the tab stops them") on the server.",
                 action: "Close Tab"
             ) { [weak self] in
                 self?.run { core, srv, ses in try await core.closeWindow(serverId: srv, sessionId: ses, windowId: id) }
