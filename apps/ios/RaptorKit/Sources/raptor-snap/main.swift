@@ -115,53 +115,7 @@ func snapViews(_ address: String, _ outDir: String) {
     _ = server
 }
 
-/// The app icon: a prompt chevron and a raptor, on deep ink. Same art as Android's adaptive icon.
-func drawIcon(size: Int, to path: String) {
-    let ctx = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
-    let s = CGFloat(size)
-    // Background gradient.
-    let grad = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB), colors: [CGColor(srgbRed: 0.09, green: 0.12, blue: 0.17, alpha: 1), CGColor(srgbRed: 0.04, green: 0.05, blue: 0.08, alpha: 1)] as CFArray, locations: [0, 1])!
-    ctx.drawLinearGradient(grad, start: CGPoint(x: 0, y: s), end: CGPoint(x: s, y: 0), options: [])
-    // Art is authored in a 108-unit box (flipped y), centered.
-    ctx.translateBy(x: 0, y: s)
-    ctx.scaleBy(x: s / 108, y: -s / 108)
-    func fill(_ hex: UInt32, _ build: (CGMutablePath) -> Void) {
-        let p = CGMutablePath(); build(p)
-        ctx.addPath(p)
-        ctx.setFillColor(CGColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255, blue: CGFloat(hex & 0xFF) / 255, alpha: 1))
-        ctx.fillPath()
-    }
-    fill(0x34D399) { p in
-        p.move(to: CGPoint(x: 33, y: 40)); p.addLine(to: CGPoint(x: 47, y: 54)); p.addLine(to: CGPoint(x: 33, y: 68))
-        p.addLine(to: CGPoint(x: 38, y: 73)); p.addLine(to: CGPoint(x: 57, y: 54)); p.addLine(to: CGPoint(x: 38, y: 35)); p.closeSubpath()
-    }
-    fill(0xF3F4F6) { p in
-        p.move(to: CGPoint(x: 58, y: 66))
-        p.addCurve(to: CGPoint(x: 72, y: 52), control1: CGPoint(x: 58, y: 58), control2: CGPoint(x: 64, y: 52))
-        p.addCurve(to: CGPoint(x: 82, y: 56), control1: CGPoint(x: 76, y: 52), control2: CGPoint(x: 79, y: 53))
-        p.addLine(to: CGPoint(x: 88, y: 59))
-        p.addCurve(to: CGPoint(x: 88, y: 62), control1: CGPoint(x: 89, y: 60), control2: CGPoint(x: 89, y: 61))
-        p.addLine(to: CGPoint(x: 83, y: 64))
-        p.addCurve(to: CGPoint(x: 71, y: 73), control1: CGPoint(x: 82, y: 69), control2: CGPoint(x: 77, y: 73))
-        p.addLine(to: CGPoint(x: 62, y: 73))
-        p.addCurve(to: CGPoint(x: 58, y: 69), control1: CGPoint(x: 60, y: 73), control2: CGPoint(x: 58, y: 71))
-        p.closeSubpath()
-    }
-    fill(0xF9A8D4) { p in
-        p.move(to: CGPoint(x: 68, y: 52))
-        p.addCurve(to: CGPoint(x: 71, y: 47), control1: CGPoint(x: 67, y: 48), control2: CGPoint(x: 69, y: 46))
-        p.addCurve(to: CGPoint(x: 71, y: 52), control1: CGPoint(x: 72, y: 48), control2: CGPoint(x: 72, y: 50))
-        p.closeSubpath()
-    }
-    fill(0x111827) { p in p.addEllipse(in: CGRect(x: 74.4, y: 56.4, width: 3.2, height: 3.2)) }
-    writePNG(ctx.makeImage()!, to: path)
-}
-
 let args = CommandLine.arguments
-if args.count == 3, args[1] == "icon" {
-    drawIcon(size: 1024, to: args[2])
-    exit(0)
-}
 guard args.count >= 4 else {
     print("usage: raptor-snap terminal|views <server> <out>")
     exit(2)
