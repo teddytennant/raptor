@@ -150,7 +150,7 @@ class MainActivity : ComponentActivity() {
                 ) {
                     dev.raptor.app.ui.SettingsScreen(onClose = { settings = false }, onAddServer = addServer, onEditServer = editServer)
                 }
-                if (sheet) AddServerSheet(editing) { sheet = false }
+                if (sheet) AddServerSheet(editing, onAdded = ::maybeAskNotifications) { sheet = false }
             }
         }
     }

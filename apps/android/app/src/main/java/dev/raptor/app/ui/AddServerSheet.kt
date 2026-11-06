@@ -69,7 +69,7 @@ private sealed interface Probe {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AddServerSheet(editing: Server?, onDismiss: () -> Unit) {
+fun AddServerSheet(editing: Server?, onAdded: () -> Unit = {}, onDismiss: () -> Unit) {
     val app = RaptorApplication.instance
     val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var name by remember { mutableStateOf(editing?.name.orEmpty()) }
@@ -93,7 +93,12 @@ fun AddServerSheet(editing: Server?, onDismiss: () -> Unit) {
         val r = runCatching {
             if (editing == null) app.core.addServer(name, address.trim()) else app.core.updateServer(editing.id, name.ifBlank { editing.name }, address.trim())
         }
-        r.onSuccess { scope.launch { sheet.hide() }.invokeOnCompletion { onDismiss() } }.onFailure { error = it.message }
+        r.onSuccess {
+            scope.launch { sheet.hide() }.invokeOnCompletion {
+                onDismiss()
+                if (editing == null) onAdded()
+            }
+        }.onFailure { error = it.friendly() }
     }
     val st = LocalStatus.current
 
