@@ -100,6 +100,8 @@ pub struct Run {
     /// Cell width (1 or 2) of each grapheme in `text`, in order. Renderers
     /// that place glyphs individually use this to stay on the grid.
     pub widths: Vec<u8>,
+    /// Byte length in `text` of each of those graphemes.
+    pub lens: Vec<u16>,
     pub fg: Rgb,
     /// None means the terminal's default background (don't paint).
     pub bg: Option<Rgb>,
@@ -457,6 +459,7 @@ impl Terminal {
                         Ok(g) if !g.is_empty() => text.extend(g),
                         _ => text.push(' '),
                     }
+                    let len = text.len() as u16;
                     let underline = match style.underline {
                         vt::style::Underline::None => Underline::None,
                         vt::style::Underline::Single => Underline::Single,
@@ -488,6 +491,7 @@ impl Terminal {
                         let r = row.runs.last_mut().unwrap();
                         r.text.push_str(&text);
                         r.widths.push(width);
+                        r.lens.push(len);
                         r.cells += width as u16;
                     } else {
                         row.runs.push(Run {
@@ -495,6 +499,7 @@ impl Terminal {
                             cells: width as u16,
                             text,
                             widths: vec![width],
+                            lens: vec![len],
                             fg,
                             bg,
                             bold: style.bold,
