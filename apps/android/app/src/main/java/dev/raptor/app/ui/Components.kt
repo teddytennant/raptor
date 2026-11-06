@@ -41,6 +41,15 @@ import uniffi.raptor_ffi.AgentStatus
 import uniffi.raptor_ffi.Connectivity
 import uniffi.raptor_ffi.Window
 
+/** An error as a person should read it (uniffi's own message lists field names). */
+fun Throwable.friendly(): String = when (this) {
+    is uniffi.raptor_ffi.RaptorException.InvalidAddress -> detail
+    is uniffi.raptor_ffi.RaptorException.Server -> detail
+    is uniffi.raptor_ffi.RaptorException.NotConnected -> "Not connected to the server"
+    is uniffi.raptor_ffi.RaptorException.UnknownServer -> "That server was removed"
+    else -> message ?: "Something went wrong"
+}
+
 /** A dot that breathes while something is in progress. */
 @Composable
 fun StatusDot(color: Color, pulsing: Boolean, size: Dp = 8.dp) {

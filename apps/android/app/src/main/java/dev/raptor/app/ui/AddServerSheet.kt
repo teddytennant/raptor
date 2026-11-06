@@ -85,7 +85,7 @@ fun AddServerSheet(editing: Server?, onDismiss: () -> Unit) {
         if (address.isBlank()) { probe = Probe.Idle; return@LaunchedEffect }
         delay(600)
         probe = Probe.Testing
-        probe = runCatching { Probe.Ok(app.core.probe(address.trim())) }.getOrElse { Probe.Failed(it.message ?: "Can't connect") }
+        probe = runCatching { Probe.Ok(app.core.probe(address.trim())) }.getOrElse { Probe.Failed(it.friendly()) }
     }
 
     fun save() {
