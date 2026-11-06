@@ -42,8 +42,9 @@ enum Automation {
         }
         if cmd == "menu" { return menu(rest) ? "ok menu \(rest)" : "err no menu item \(rest)" }
         guard let main = window else { return "err no window" }
-        // Keys and clicks go to a sheet while one is up, as they would for a person.
-        let w = main.attachedSheet ?? main
+        // Keys and clicks go to a sheet or popover while one is up, as they would for a person.
+        let popover = NSApp.windows.first { $0.isVisible && String(describing: type(of: $0)).contains("Popover") }
+        let w = main.attachedSheet ?? popover ?? main
         switch cmd {
         case "key":
             // A background window's input context is inactive; dead keys and IMEs need it.
@@ -108,7 +109,7 @@ enum Automation {
         case "size":
             let n = rest.split(separator: " ").compactMap { Double($0) }
             guard n.count == 2 else { return "err size w h" }
-            w.setContentSize(NSSize(width: n[0], height: n[1]))
+            main.setContentSize(NSSize(width: n[0], height: n[1]))
             return "ok size"
         case "open":
             let m = AppModel.shared.model
@@ -124,7 +125,7 @@ enum Automation {
         case "snapself", "snapwin":
             // Offscreen render of a window's views, for when the screen can't be captured.
             // snapwin renders the frontmost other window (Settings, About, a sheet).
-            let target = cmd == "snapwin" ? NSApp.windows.filter { $0.isVisible && $0 !== w }.max { $0.orderedIndex > $1.orderedIndex } ?? w : w
+            let target = cmd == "snapwin" ? popover ?? NSApp.windows.filter { $0.isVisible && $0 !== w }.max { $0.orderedIndex > $1.orderedIndex } ?? w : main
             guard let v = target.contentView?.superview ?? target.contentView, let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { return "err snapself" }
             v.cacheDisplay(in: v.bounds, to: rep)
             try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: rest))
