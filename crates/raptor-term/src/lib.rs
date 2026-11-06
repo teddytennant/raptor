@@ -422,6 +422,8 @@ impl Terminal {
         let bg_default: Rgb = colors.as_ref().map(|c| c.background.into()).unwrap_or_default();
         let palette = |i: u8| -> Rgb { colors.as_ref().map(|c| c.palette[i as usize].into()).unwrap_or_default() };
         let cur = snapshot.cursor().ok();
+        let cursor_at = cur.as_ref().and_then(|c| c.viewport).map(|vp| (vp.x, vp.y as usize));
+        let mut cursor_on_wide = false;
 
         let mut lines = Vec::with_capacity(rows as usize);
         if let Ok(mut row_it) = self.rows_it.update(&snapshot) {
@@ -440,6 +442,9 @@ impl Terminal {
                         continue; // covered by the wide cell before it
                     }
                     let width: u8 = if matches!(wide, CellWide::Wide) { 2 } else { 1 };
+                    if width == 2 && cursor_at == Some((this_col, lines.len())) {
+                        cursor_on_wide = true;
+                    }
                     let Ok(style) = cell.style() else { continue };
                     let selected = cell.is_selected().unwrap_or(false);
                     let mut fg: Rgb = cell.fg_color().ok().flatten().map(Into::into).unwrap_or(fg_default);
@@ -514,8 +519,9 @@ impl Terminal {
 
         let cursor = cur.and_then(|c| {
             let vp = c.viewport?;
+            // On either half of a wide character, the cursor covers the whole of it.
             c.visible.then_some(Cursor {
-                col: vp.x,
+                col: if vp.at_wide_tail { vp.x.saturating_sub(1) } else { vp.x },
                 row: vp.y,
                 style: match c.visual_style {
                     CursorVisualStyle::Bar => CursorStyle::Bar,
@@ -525,7 +531,7 @@ impl Terminal {
                 },
                 blinking: c.blinking,
                 password: c.password_input,
-                wide: vp.at_wide_tail,
+                wide: vp.at_wide_tail || cursor_on_wide,
             })
         });
 
@@ -654,5 +660,67 @@ mod tests {
         assert!(t.select_line(1));
         assert_eq!(t.selection_text().as_deref(), Some("line19"));
         assert!(t.all_text().contains("line0\nline1\n"));
+    }
+
+    #[test]
+    fn cursor_on_wide_char_covers_both_cells() {
+        let mut t = Terminal::new(10, 2);
+        t.write_vt("中x\x1b[1G".as_bytes());
+        let c = t.frame().cursor.unwrap();
+        assert_eq!((c.col, c.wide), (0, true), "on the head");
+        t.write_vt(b"\x1b[2G");
+        let c = t.frame().cursor.unwrap();
+        assert_eq!((c.col, c.wide), (0, true), "on the tail: draw from the head");
+        t.write_vt(b"\x1b[3G");
+        let c = t.frame().cursor.unwrap();
+        assert_eq!((c.col, c.wide), (2, false));
+    }
+
+    #[test]
+    fn graphemes_and_styles() {
+        let mut t = Terminal::new(20, 2);
+        t.write_vt("e\u{301}🙂👩\u{200d}💻\x1b[3;4:3;58;2;1;2;3mu\x1b[0m\x1b[7mi\x1b[0m\x1b[8mh\x1b[0m".as_bytes());
+        let f = t.frame();
+        let runs = &f.lines[0].runs;
+        assert_eq!(runs[0].text, "e\u{301}🙂👩\u{200d}💻");
+        // Without grapheme clustering (mode 2027) a ZWJ sequence takes a cell
+        // per emoji, as wcwidth tells programs.
+        assert_eq!(runs[0].widths, [1, 2, 2, 2]);
+        assert_eq!(runs[0].cells, 7);
+        let u = runs.iter().find(|r| r.text == "u").unwrap();
+        assert!(u.italic);
+        assert_eq!((u.col, u.underline, u.underline_color), (7, Underline::Curly, Some(Rgb::new(1, 2, 3))));
+        let inv = runs.iter().find(|r| r.text == "i").unwrap();
+        assert_eq!((inv.fg, inv.bg), (f.background, Some(f.foreground)), "inverse swaps the defaults");
+        let hidden = runs.iter().find(|r| r.text == "h").unwrap();
+        assert_eq!(hidden.fg, f.background, "invisible text takes the background");
+        assert_eq!(f.cursor.unwrap().col, 10);
+    }
+
+    #[test]
+    fn selection_joins_wrapped_lines() {
+        let mut t = Terminal::new(10, 4);
+        t.write_vt(b"0123456789abcdefghijKLM\r\nnext");
+        assert!(t.select((0, 0), (2, 2)));
+        assert_eq!(t.selection_text().as_deref(), Some("0123456789abcdefghijKLM"));
+        assert!(t.select((5, 1), (1, 3)));
+        assert_eq!(t.selection_text().as_deref(), Some("fghijKLM\nne"));
+    }
+
+    #[test]
+    fn scrollback_limit_holds_after_restore() {
+        let mut t = Terminal::new(40, 5);
+        t.set_scrollback_limit(16 << 10);
+        let fill = |t: &mut Terminal| {
+            for i in 0..3_000 {
+                t.write_vt(format!("line {i} {}\r\n", "x".repeat(30)).as_bytes());
+            }
+            t.scrollbar().total
+        };
+        let capped = fill(&mut t);
+        assert!(capped < 3_000, "{capped}");
+        let snap = Terminal::new(40, 5).snapshot().unwrap();
+        t.restore(&snap).unwrap();
+        assert!(fill(&mut t) <= capped + 5, "limit lost on restore");
     }
 }
