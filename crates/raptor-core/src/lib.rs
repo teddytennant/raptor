@@ -545,11 +545,25 @@ impl Raptor {
 
 impl Drop for Raptor {
     fn drop(&mut self) {
+        let mut closing = Vec::new();
         for e in self.inner.servers.read().iter() {
             let _ = e.stop.send(true);
             if let Some(c) = e.connection() {
                 c.close();
+                closing.push(c);
             }
+        }
+        // Give the close frames a moment to go out before the runtime stops:
+        // without one the server keeps each client around for a minute.
+        if !closing.is_empty() && tokio::runtime::Handle::try_current().is_err() {
+            self.rt.block_on(async {
+                let all_closed = async {
+                    while !closing.iter().all(Connection::is_closed) {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                };
+                let _ = tokio::time::timeout(Duration::from_millis(500), all_closed).await;
+            });
         }
     }
 }
