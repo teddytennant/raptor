@@ -172,9 +172,32 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
         override fun run() {
             blinkOn = !blinkOn
             invalidate()
-            postDelayed(this, 530)
+            if (shouldBlink()) postDelayed(this, 530) else blinkOn = true
         }
     }
+
+    private fun shouldBlink() =
+        blinkAllowed && hasFocus() && hasWindowFocus() && windowVisibility == VISIBLE && frame?.cursor?.blinking == true
+
+    /** Show the cursor solid and start blinking again, as after a keypress. */
+    private fun restartBlink() {
+        removeCallbacks(blink)
+        if (!blinkOn) invalidate()
+        blinkOn = true
+        if (shouldBlink()) postDelayed(blink, 530)
+    }
+
+    /** A frame arrived while we weren't visible; draw it when we are. */
+    private var stale = false
+
+    /** Text the keyboard is still composing (CJK, voice, handwriting): drawn at the cursor, sent when committed. */
+    private var composing = ""
+        set(v) {
+            if (field != v) {
+                field = v
+                invalidate()
+            }
+        }
 
     // Selection.
     private var selecting = false
@@ -208,6 +231,7 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
             else -> null
         }
         blinkAllowed = blink
+        restartBlink()
         updateMetrics()
         pushDeviceGrid()
         requestLayout()
@@ -260,12 +284,19 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
     /** Called on the next vsync after the core says a frame is ready. */
     fun refresh() {
         val t = terminal ?: return
+        // In the background, skip the work: output can stream for hours.
+        if (windowVisibility != VISIBLE) {
+            stale = true
+            return
+        }
+        stale = false
         val f = t.frame()
         val prev = frame
         frame = f
         if (prev == null || prev.background != f.background || prev.foreground != f.foreground) {
             onColors?.invoke(f.background.toInt(), f.foreground.toInt())
         }
+        if (prev?.cursor?.blinking != f.cursor?.blinking) restartBlink()
         invalidate()
     }
 
@@ -278,9 +309,22 @@ class TerminalView(context: Context, val modifiers: Modifiers) : View(context) {
     var insetBottom = 0f
         set(v) { field = v; pushDeviceGrid(); invalidate() }
 
-    override fun onAttachedToWindow() {
-        super.onAttachedToWindow()
-        postDelayed(blink, 530)
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        if (visibility == VISIBLE && stale) refresh()
+        restartBlink()
+    }
+
+    override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
+        super.onWindowFocusChanged(hasWindowFocus)
+        restartBlink()
+    }
+
+    override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: android.graphics.Rect?) {
+        super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
+        if (!gainFocus) composing = ""
+        restartBlink()
+        invalidate()
     }
 
     override fun onDetachedFromWindow() {
