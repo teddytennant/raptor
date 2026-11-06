@@ -296,14 +296,14 @@ public struct TerminalScreen: View {
             Button { onSessions?() } label: {
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 6) {
-                        Text(block.flatMap(runningName) ?? "terminal").font(.system(size: 15, weight: .semibold)).foregroundStyle(c.text)
+                        Text(block.flatMap(runningName) ?? "terminal").font(.subheadline.weight(.semibold)).foregroundStyle(c.text)
                         if let p = block?.shortPwd, !p.isEmpty {
                             Text(p).font(.mono(13)).foregroundStyle(c.secondary).truncationMode(.middle)
                         }
                     }
                     .lineLimit(1)
                     HStack(spacing: 3) {
-                        Text(session?.label ?? "").font(.system(size: 12)).foregroundStyle(c.tertiary)
+                        Text(session?.label ?? "").font(.caption).foregroundStyle(c.tertiary)
                         Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold)).foregroundStyle(c.tertiary)
                     }
                 }
@@ -387,7 +387,7 @@ private struct WindowTabs: View {
                             if w.blocks.contains(where: { $0.agent?.state == .blocked }) {
                                 Circle().fill(Palette.blocked).frame(width: 6, height: 6)
                             }
-                            Text(label).font(.system(size: 13, weight: sel ? .semibold : .regular)).foregroundStyle(sel ? c.text : c.secondary).lineLimit(1)
+                            Text(label).font(.footnote.weight(sel ? .semibold : .regular)).foregroundStyle(sel ? c.text : c.secondary).lineLimit(1)
                             if w.blocks.count > 1 {
                                 Text("\(w.blocks.count)").font(.mono(11)).foregroundStyle(c.tertiary)
                             }

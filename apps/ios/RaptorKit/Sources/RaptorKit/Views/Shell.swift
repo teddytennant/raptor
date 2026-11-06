@@ -63,7 +63,7 @@ public struct WelcomeView: View {
         VStack(alignment: .leading, spacing: 0) {
             Spacer()
             Image(systemName: "apple.terminal").font(.system(size: 36, weight: .medium)).foregroundStyle(c.accent)
-            Text("Raptor").font(.system(size: 34, weight: .bold)).foregroundStyle(c.text).padding(.top, 20)
+            Text("Raptor").font(.largeTitle.weight(.bold)).foregroundStyle(c.text).padding(.top, 20)
             Text("Your terminal sessions, from a Rex server on your Mac or any machine on your tailnet. They keep running when you close the app.")
                 .font(.body).foregroundStyle(c.secondary).padding(.top, 10)
             Button(action: onAddServer) {

@@ -104,7 +104,7 @@ private struct SectionHeader: View {
     @Environment(\.chrome) private var c
     var body: some View {
         Text(title.uppercased())
-            .font(.system(size: 12, weight: .medium))
+            .font(.caption.weight(.medium))
             .tracking(0.6)
             .foregroundStyle(c.tertiary)
             .padding(.horizontal, 20)
@@ -149,12 +149,12 @@ private struct ServerSection: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text(serverTitle(server).uppercased())
-                    .font(.system(size: 12, weight: .semibold)).tracking(0.6).foregroundStyle(c.secondary).lineLimit(1)
+                    .font(.caption.weight(.semibold)).tracking(0.6).foregroundStyle(c.secondary).lineLimit(1)
                 Spacer()
                 switch server.connectivity {
                 case .online: if let ms = server.latencyMs { Text("\(ms) ms").font(.mono(12)).foregroundStyle(c.tertiary) }
-                case .connecting: Text("connecting").font(.system(size: 12)).foregroundStyle(Palette.connectivity(server.connectivity))
-                case .offline: Text("offline").font(.system(size: 12)).foregroundStyle(Palette.error)
+                case .connecting: Text("connecting").font(.caption).foregroundStyle(Palette.connectivity(server.connectivity))
+                case .offline: Text("offline").font(.caption).foregroundStyle(Palette.error)
                 case .idle: EmptyView()
                 }
             }
@@ -187,7 +187,7 @@ private struct ServerSection: View {
                         Button {
                             Task { if let id = try? await model.core.createSession(serverId: server.id, label: nil) { onOpen(id) } }
                         } label: {
-                            Label("New session", systemImage: "plus").font(.system(size: 15)).foregroundStyle(c.accent)
+                            Label("New session", systemImage: "plus").font(.subheadline).foregroundStyle(c.accent)
                                 .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.vertical, 13)
                                 .contentShape(Rectangle())
                         }
@@ -224,7 +224,7 @@ private struct SessionRow: View {
                 HStack(spacing: 14) {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 8) {
-                            Text(session.label).font(.system(size: 16, weight: .medium)).foregroundStyle(online ? c.text : c.tertiary).lineLimit(1)
+                            Text(session.label).font(.callout.weight(.medium)).foregroundStyle(online ? c.text : c.tertiary).lineLimit(1)
                             if let s = session.agentState, s != .idle {
                                 Circle().fill(Palette.agent(s)).frame(width: 7, height: 7)
                             }
@@ -286,8 +286,8 @@ private struct NeedsRow: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Circle().fill(tint).frame(width: 7, height: 7)
-                Text(a.app.isEmpty ? item.block.name : a.app).font(.system(size: 15, weight: .medium)).foregroundStyle(c.text)
-                Text(a.label).font(.system(size: 13)).foregroundStyle(tint)
+                Text(a.app.isEmpty ? item.block.name : a.app).font(.subheadline.weight(.medium)).foregroundStyle(c.text)
+                Text(a.label).font(.footnote).foregroundStyle(tint)
                 Spacer()
                 Text(item.sessionLabel).font(.mono(11)).foregroundStyle(c.tertiary)
             }
