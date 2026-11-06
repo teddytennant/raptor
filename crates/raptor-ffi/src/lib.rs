@@ -555,6 +555,12 @@ impl RaptorApp {
         self.core.set_foreground(foreground)
     }
 
+    /// Call when the system wakes from sleep or the network changes: dead
+    /// connections are found and resumed in seconds, not after a ping timeout.
+    pub fn verify_connections(&self) {
+        self.core.verify_connections()
+    }
+
     pub fn setting(&self, key: String) -> Option<String> {
         self.core.setting(&key).map(|v| v.as_str().map(str::to_owned).unwrap_or_else(|| v.to_string()))
     }

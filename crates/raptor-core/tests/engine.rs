@@ -339,3 +339,33 @@ fn dropped_connection_closes() {
     });
     assert!(wait(1.0, || fake.methods().contains(&"close frame".to_owned())), "{:?}", fake.methods());
 }
+
+#[derive(Default)]
+struct Statuses(parking_lot::Mutex<Vec<TerminalStatus>>);
+impl TerminalListener for Statuses {
+    fn frame_ready(&self) {}
+    fn status_changed(&self, s: TerminalStatus) {
+        self.0.lock().push(s);
+    }
+    fn clipboard(&self, _: String) {}
+    fn size_changed(&self, _: u16, _: u16) {}
+}
+
+#[test]
+fn wake_finds_dead_sockets_fast() {
+    let fake = Fake::start(Options::default());
+    let (raptor, id) = online(&fake);
+    let seen = Arc::new(Statuses::default());
+    let term = raptor.open_terminal(&id, fake::SESSION, fake::BLOCK, seen.clone()).unwrap();
+    assert!(wait(5.0, || term.status() == TerminalStatus::Live));
+    std::thread::sleep(Duration::from_millis(200));
+    // The laptop slept: every socket still looks open, but nothing answers.
+    fake.mute.store(true, Ordering::SeqCst);
+    let t = Instant::now();
+    raptor.verify_connections();
+    let online = || raptor.state().server(&id).unwrap().connectivity == Connectivity::Online;
+    assert!(wait(6.0, || !online() && seen.0.lock().contains(&TerminalStatus::Reconnecting)), "{:?}", seen.0.lock());
+    eprintln!("dead sockets noticed in {:?}", t.elapsed());
+    fake.mute.store(false, Ordering::SeqCst);
+    assert!(wait(6.0, || online() && term.status() == TerminalStatus::Live), "{:?}", term.status());
+}

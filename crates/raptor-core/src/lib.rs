@@ -310,6 +310,16 @@ impl Raptor {
         }
     }
 
+    /// Call when the system wakes from sleep or the network changes. Sockets
+    /// that died meanwhile are found within a few seconds instead of the
+    /// minute a ping timeout takes, and resume on new ones.
+    pub fn verify_connections(&self) {
+        let _rt = self.rt.enter();
+        for e in self.inner.servers.read().iter() {
+            e.verify();
+        }
+    }
+
     /// Mobile apps call this from their lifecycle hooks. In the background,
     /// connections close (the server keeps the client for 60s for a quick resume).
     pub fn set_foreground(&self, fg: bool) {

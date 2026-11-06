@@ -35,6 +35,8 @@ pub struct Fake {
     pub data_connects: Arc<AtomicUsize>,
     /// Hang up on this many control connections before the handshake, like a network still down.
     pub refuse_control: Arc<AtomicUsize>,
+    /// Stop answering anything, like a socket that died while the laptop slept.
+    pub mute: Arc<std::sync::atomic::AtomicBool>,
     /// Senders for every live control connection, for pushing events.
     conns: Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>>,
     _rt: tokio::runtime::Runtime,
@@ -51,13 +53,15 @@ impl Fake {
         let opts = Arc::new(opts);
         let conns = Arc::new(Mutex::new(Vec::new()));
         let refuse_control = Arc::new(AtomicUsize::new(0));
-        let (l, c, d, cs, rc) = (log.clone(), control_connects.clone(), data_connects.clone(), conns.clone(), refuse_control.clone());
+        let mute = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (l, c, d, cs, rc, mu) =
+            (log.clone(), control_connects.clone(), data_connects.clone(), conns.clone(), refuse_control.clone(), mute.clone());
         rt.spawn(async move {
             while let Ok((tcp, _)) = listener.accept().await {
                 if rc.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok() {
                     continue;
                 }
-                let (l, c, d, cs, opts) = (l.clone(), c.clone(), d.clone(), cs.clone(), opts.clone());
+                let (l, c, d, cs, mu, opts) = (l.clone(), c.clone(), d.clone(), cs.clone(), mu.clone(), opts.clone());
                 tokio::spawn(async move {
                     let path = Arc::new(Mutex::new(String::new()));
                     let p = path.clone();
@@ -73,15 +77,15 @@ impl Fake {
                     let path = path.lock().clone();
                     if path == "/api/control" {
                         c.fetch_add(1, Ordering::SeqCst);
-                        control(ws, l, cs, opts).await;
+                        control(ws, l, cs, mu, opts).await;
                     } else {
                         d.fetch_add(1, Ordering::SeqCst);
-                        data(ws, opts.data_reject).await;
+                        data(ws, opts.data_reject, mu).await;
                     }
                 });
             }
         });
-        Self { addr, log, control_connects, data_connects, refuse_control, conns, _rt: rt }
+        Self { addr, log, control_connects, data_connects, refuse_control, mute, conns, _rt: rt }
     }
 
     /// Send an event to every connection.
@@ -119,6 +123,7 @@ async fn control(
     ws: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
     log: Arc<Mutex<Vec<(String, Value)>>>,
     conns: Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>>,
+    mute: Arc<std::sync::atomic::AtomicBool>,
     opts: Arc<Options>,
 ) {
     let (mut sink, mut stream) = ws.split();
@@ -146,6 +151,9 @@ async fn control(
             let w = json!({"type": "welcome", "protocol": "rex.control.v1", "limits": {"max_message_bytes": 1048576},
                 "client": {"id": "client:me", "reconnect_token": "tok"}, "api_revision": 9, "api_server_revision": 9});
             let _ = tx.send(w.to_string());
+            continue;
+        }
+        if mute.load(Ordering::SeqCst) {
             continue;
         }
         if opts.drop_on_first_request {
@@ -196,7 +204,7 @@ async fn control(
     }
 }
 
-async fn data(mut ws: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>, reject: Option<u8>) {
+async fn data(mut ws: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>, reject: Option<u8>, mute: Arc<std::sync::atomic::AtomicBool>) {
     let Some(Ok(Message::Binary(_hello))) = ws.next().await else { return };
     if let Some(r) = reject {
         let _ = ws.send(Message::binary(vec![0x82, r])).await;
@@ -212,5 +220,15 @@ async fn data(mut ws: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
     let mut t = raptor_term::Terminal::new(80, 24);
     t.write_vt(b"fake$ ");
     let _ = ws.send(Message::binary(t.snapshot().unwrap())).await;
-    while let Some(Ok(_)) = ws.next().await {}
+    loop {
+        // While muted, don't even read: pings go unanswered.
+        if mute.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            continue;
+        }
+        match tokio::time::timeout(Duration::from_millis(20), ws.next()).await {
+            Ok(Some(Ok(_))) | Err(_) => {}
+            Ok(_) => return,
+        }
+    }
 }

@@ -552,3 +552,15 @@ fn floating_layers_minimize() {
     l.raptor.block_on(l.raptor.set_layer_minimized(&l.id, &l.sid, &b.layer_id, false)).unwrap();
     assert!(wait(10, || l.block(&float).is_some_and(|b| !b.minimized)));
 }
+
+#[test]
+fn verify_leaves_healthy_connections_alone() {
+    let Some(l) = Live::new() else { return };
+    let (term, tl) = l.open(&l.bid);
+    l.raptor.verify_connections();
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(l.raptor.state().server(&l.id).unwrap().connectivity, Connectivity::Online);
+    assert_eq!(tl.after_live(), [TerminalStatus::Live], "a healthy stream was dropped");
+    l.type_line(&term, "echo still-here");
+    assert!(wait(10, || screen(&term).contains("\nstill-here\n")), "{}", screen(&term));
+}

@@ -309,10 +309,15 @@ impl TerminalSession {
                 return;
             }
         };
+        let Some(mut probe) = this.upgrade().map(|me| me.server.probe.subscribe()) else { return };
         let (ds, mut rx) = DataStream::open(endpoint, ticket);
         loop {
             let ev = tokio::select! {
                 _ = stop.changed() => return,
+                _ = probe.changed() => {
+                    ds.check();
+                    continue;
+                }
                 ev = rx.recv() => ev,
             };
             let (Some(ev), Some(me)) = (ev, this.upgrade()) else { return };

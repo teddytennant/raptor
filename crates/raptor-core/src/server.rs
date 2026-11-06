@@ -13,6 +13,9 @@ use tokio::sync::{Notify, watch};
 use crate::state::*;
 use crate::store::Profile;
 
+/// How long the server has to answer [`ServerEntry::verify`].
+const VERIFY_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// A connection that lasted this long was healthy; losing it isn't the server's fault.
 const STABLE_AFTER: Duration = Duration::from_secs(10);
 
@@ -76,6 +79,8 @@ pub(crate) struct ServerEntry {
     pub model: Mutex<ServerModel>,
     pub wake: Notify,
     pub stop: watch::Sender<bool>,
+    /// Bumped by [`ServerEntry::verify`]; open terminals check their streams too.
+    pub probe: watch::Sender<u64>,
     /// Open terminals, for routing block events (clipboard) to them.
     pub terminals: Mutex<HashMap<String, std::sync::Weak<crate::terminal::TerminalSession>>>,
 }
@@ -96,12 +101,31 @@ impl ServerEntry {
             model: Mutex::new(ServerModel::default()),
             wake: Notify::new(),
             stop: watch::channel(false).0,
+            probe: watch::channel(0).0,
             terminals: Mutex::new(HashMap::new()),
         })
     }
 
     pub fn id(&self) -> String {
         self.profile.lock().id.clone()
+    }
+
+    /// The system woke or the network changed: a socket that looks open may be
+    /// dead, and the ping timeout would take most of a minute to say so. Ask
+    /// the server something small now; if it doesn't answer quickly, drop the
+    /// socket and resume on a new one.
+    pub fn verify(self: &Arc<Self>) {
+        self.probe.send_modify(|n| *n += 1);
+        let Some(c) = self.connection() else {
+            self.wake.notify_one();
+            return;
+        };
+        tokio::spawn(async move {
+            let answered = tokio::time::timeout(VERIFY_TIMEOUT, c.call("server.version", json!({}))).await;
+            if !matches!(answered, Ok(Ok(_))) {
+                c.abort();
+            }
+        });
     }
 
     /// Drop the live connection as a lost network would; the supervisor resumes it.
